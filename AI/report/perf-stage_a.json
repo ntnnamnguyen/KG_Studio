@@ -1,0 +1,58 @@
+{
+  "meta": {
+    "stage": "stage_a",
+    "scale": "M",
+    "timestamp": "2026-10-30T16:37:30.533195+00:00",
+    "python_version": "3.13.2 (tags/v3.13.2:4f8bb39, Feb  4 2025, 15:23:48) [MSC v.1942 64 bit (AMD64)]"
+  },
+  "benchmarks": {
+    "list_projects": {
+      "repetitions": 10,
+      "p50_seconds": 0.001008,
+      "p95_seconds": 0.00216,
+      "mean_seconds": 0.001126,
+      "peak_memory_kb": 18.19,
+      "result_sample": "list"
+    },
+    "review_stats": {
+      "repetitions": 5,
+      "p50_seconds": 0.083956,
+      "p95_seconds": 0.087642,
+      "mean_seconds": 0.084893,
+      "peak_memory_kb": 5019.38,
+      "result_sample": "dict"
+    },
+    "evidence_context": {
+      "repetitions": 20,
+      "p50_seconds": 3.1e-05,
+      "p95_seconds": 5.7e-05,
+      "mean_seconds": 3.3e-05,
+      "peak_memory_kb": 8.59,
+      "result_sample": "dict"
+    },
+    "duplicate_suggestions": {
+      "repetitions": 3,
+      "p50_seconds": 0.049561,
+      "p95_seconds": 0.056037,
+      "mean_seconds": 0.051701,
+      "peak_memory_kb": 5003.46,
+      "result_sample": "list"
+    },
+    "proposal_impact_10_proposals": {
+      "repetitions": 5,
+      "p50_seconds": 0.124233,
+      "p95_seconds": 0.143045,
+      "mean_seconds": 0.129508,
+      "peak_memory_kb": 10.52,
+      "result_sample": "list"
+    },
+    "vector_ensure_index": {
+      "repetitions": 10,
+      "p50_seconds": 0.000104,
+      "p95_seconds": 0.006747,
+      "mean_seconds": 0.000773,
+      "peak_memory_kb": 332.72,
+      "result_sample": "tuple"
+    }
+  }
+}

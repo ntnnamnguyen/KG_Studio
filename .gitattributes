@@ -1,0 +1,45 @@
+# ==============================================================================
+# KG Studio - Git Attributes Configuration
+# ==============================================================================
+# Đảm bảo chuẩn hóa xuống dòng thống nhất giữa Windows, Linux & macOS,
+# tránh tình trạng xung đột mã nguồn do CRLF vs LF.
+
+# Tự động phát hiện file văn bản và chuẩn hóa thành LF trong kho Git
+* text=auto eol=lf
+
+# File mã nguồn & cấu hình văn bản
+*.py text eol=lf diff=python
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.sh text eol=lf
+
+# Script dành riêng cho Windows - bắt buộc giữ nguyên CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Định dạng nhị phân (Binary files - Không chuyển đổi dòng hay merge dạng text)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.npz binary
+*.npy binary
+*.bin binary
+*.pt binary
+*.onnx binary
+*.safetensors binary
+*.pyc binary
+

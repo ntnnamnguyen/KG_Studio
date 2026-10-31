@@ -1,0 +1,114 @@
+# ==============================================================================
+# KG Studio - Git Ignore Rules
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. BẢO MẬT & KHÓA BÍ MẬT (TUYỆT ĐỐI KHÔNG COMMIT LÊN GITHUB)
+# ------------------------------------------------------------------------------
+config/.secrets.toml
+config/secrets.toml
+.secrets.*
+*.secrets.toml
+!config/.secrets.toml.example
+
+.env
+.env.*
+.env.local
+!.env.example
+
+.streamlit/secrets.toml
+secrets.toml
+
+# ------------------------------------------------------------------------------
+# 2. DỮ LIỆU CỤC BỘ, DATABASE & VECTOR EMBEDDINGS (TRÁNH PHÌNH REPO)
+# ------------------------------------------------------------------------------
+# Cơ sở dữ liệu SQLite cục bộ
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+data/kg_studio.db
+
+# Dữ liệu dự án cá nhân & các snapshot lịch sử
+data/projects/*
+!data/projects/.gitkeep
+
+# Chỉ mục vector & embeddings cục bộ
+data/vector_indices/*
+!data/vector_indices/.gitkeep
+*.npz
+*.npy
+
+# Dữ liệu huấn luyện & xuất khẩu
+data/training_exports/*
+!data/training_exports/.gitkeep
+
+# Model registry & trọng số mô hình lớn
+data/model_registry/*
+!data/model_registry/.gitkeep
+*.pt
+*.bin
+*.onnx
+*.safetensors
+
+# Khóa tiến trình đồng thời (File locks)
+*.lock
+*.catalog.lock
+.catalog.lock
+
+# ------------------------------------------------------------------------------
+# 3. PYTHON BYTECODE & RUNTIME CACHES
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+build/
+dist/
+*.egg-info/
+
+# ------------------------------------------------------------------------------
+# 4. MÔI TRƯỜNG ẢO (VIRTUAL ENVIRONMENTS)
+# ------------------------------------------------------------------------------
+.venv/
+venv/
+ENV/
+env/
+.venv-*/
+venv-*/
+
+# ------------------------------------------------------------------------------
+# 5. STREAMLIT & IDE CACHES
+# ------------------------------------------------------------------------------
+.streamlit/*.json
+.streamlit/*.tmp
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ------------------------------------------------------------------------------
+# 6. HỆ ĐIỀU HÀNH & EDITOR TEMPORARY FILES
+# ------------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+*.tmp
+*.bak
+
+# ------------------------------------------------------------------------------
+# 7. LOGS & PROFILING RUNS
+# ------------------------------------------------------------------------------
+*.log
+logs/
+*.prof
+*.pstats

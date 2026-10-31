@@ -1,0 +1,485 @@
+{
+  "schema_version": 2,
+  "relations": [
+    {
+      "name": "nằm tại",
+      "description": "Vị trí địa lý.",
+      "definition": "Nguồn có vị trí tại địa điểm đích; không suy ra quan hệ quản lý."
+    },
+    {
+      "name": "thuộc",
+      "description": "Quan hệ thuộc về tổng quát.",
+      "definition": "Nguồn thuộc tập hợp, tổ chức hoặc phạm vi đích; ưu tiên quan hệ cụ thể hơn nếu có."
+    },
+    {
+      "name": "tọa lạc tại",
+      "description": "Vị trí của công trình.",
+      "definition": "Công trình hoặc cơ sở nguồn có địa chỉ hay vị trí tại địa điểm đích."
+    },
+    {
+      "name": "nằm trên",
+      "description": "Vị trí trên tuyến hoặc bề mặt.",
+      "definition": "Nguồn nằm trên tuyến đường, địa hình hoặc bề mặt được chỉ định ở đích."
+    },
+    {
+      "name": "nằm gần",
+      "description": "Sự gần nhau về vị trí.",
+      "definition": "Nguồn ở gần địa điểm đích theo văn bản; không suy diễn từ kiến thức địa lý ngoài nguồn."
+    },
+    {
+      "name": "giáp với",
+      "description": "Tiếp giáp ranh giới.",
+      "definition": "Nguồn và đích có ranh giới tiếp giáp được văn bản xác nhận."
+    },
+    {
+      "name": "cách",
+      "description": "Khoảng cách giữa hai nơi.",
+      "definition": "Nguồn cách địa điểm đích một khoảng; giữ số đo và đơn vị trong bằng chứng, không tự ước tính."
+    },
+    {
+      "name": "kết nối với",
+      "description": "Kết nối không gian hoặc giao thông.",
+      "definition": "Nguồn nối với đích qua tuyến, lối hoặc kết cấu được nêu rõ."
+    },
+    {
+      "name": "bao quanh",
+      "description": "Quan hệ không gian bao bọc.",
+      "definition": "Nguồn bao bọc xung quanh đích; không đảo chiều với nằm bên trong."
+    },
+    {
+      "name": "nằm bên trong",
+      "description": "Quan hệ không gian bên trong.",
+      "definition": "Nguồn nằm trong không gian hay ranh giới của đích."
+    },
+    {
+      "name": "thuộc địa bàn",
+      "description": "Phạm vi hành chính theo nguồn.",
+      "definition": "Nguồn nằm trong địa bàn đơn vị hành chính đích tại thời điểm được văn bản mô tả."
+    },
+    {
+      "name": "được xây dựng vào",
+      "description": "Thời gian xây dựng.",
+      "definition": "Công trình nguồn được xây dựng vào mốc hoặc giai đoạn đích; không mặc định là ngày khởi công hay hoàn thành."
+    },
+    {
+      "name": "được thành lập vào",
+      "description": "Thời gian thành lập.",
+      "definition": "Tổ chức, cơ sở hoặc đơn vị nguồn được thành lập vào thời điểm đích."
+    },
+    {
+      "name": "được khởi công vào",
+      "description": "Thời điểm bắt đầu thi công.",
+      "definition": "Công trình hoặc dự án nguồn bắt đầu thi công vào thời điểm đích."
+    },
+    {
+      "name": "được hoàn thành vào",
+      "description": "Thời điểm hoàn tất.",
+      "definition": "Công trình hoặc dự án nguồn được hoàn thành vào thời điểm đích."
+    },
+    {
+      "name": "được trùng tu vào",
+      "description": "Thời gian sửa chữa di sản.",
+      "definition": "Công trình hoặc di tích nguồn được trùng tu vào mốc hay giai đoạn đích."
+    },
+    {
+      "name": "được phục dựng vào",
+      "description": "Thời gian tái tạo.",
+      "definition": "Nguồn được tái tạo lại hình thức hoặc cấu trúc đã mất vào thời điểm đích."
+    },
+    {
+      "name": "có nguồn gốc từ",
+      "description": "Nguồn gốc hình thành.",
+      "definition": "Nguồn bắt nguồn từ địa điểm, truyền thống, sự kiện hoặc đối tượng đích theo văn bản."
+    },
+    {
+      "name": "gắn liền với",
+      "description": "Liên hệ được nhấn mạnh.",
+      "definition": "Nguồn có mối gắn bó với đích được văn bản nêu rõ; không mặc định quan hệ nhân quả."
+    },
+    {
+      "name": "diễn ra tại",
+      "description": "Địa điểm của sự kiện.",
+      "definition": "Sự kiện hoặc hoạt động nguồn xảy ra tại địa điểm đích."
+    },
+    {
+      "name": "chứng kiến",
+      "description": "Địa điểm gắn với sự kiện xảy ra.",
+      "definition": "Địa điểm hoặc công trình nguồn là nơi sự kiện đích đã xảy ra; không dùng cho người chứng kiến."
+    },
+    {
+      "name": "được đổi tên thành",
+      "description": "Thay đổi tên gọi.",
+      "definition": "Đối tượng mang tên nguồn được đổi sang tên đích; hai tên có thể chỉ cùng một đối tượng."
+    },
+    {
+      "name": "thờ",
+      "description": "Đối tượng được thờ tại cơ sở.",
+      "definition": "Cơ sở thờ tự nguồn thờ nhân vật hoặc thần linh đích."
+    },
+    {
+      "name": "tưởng niệm",
+      "description": "Đối tượng được tưởng nhớ.",
+      "definition": "Công trình, hoạt động hoặc cộng đồng nguồn tưởng nhớ nhân vật hay sự kiện đích."
+    },
+    {
+      "name": "tôn vinh",
+      "description": "Ghi nhận và đề cao.",
+      "definition": "Nguồn được lập hoặc thực hiện nhằm đề cao nhân vật, thành tựu hay giá trị đích."
+    },
+    {
+      "name": "do xây dựng",
+      "description": "Chủ thể xây dựng công trình.",
+      "definition": "Công trình nguồn do cá nhân hoặc tổ chức đích xây dựng; không tự đồng nhất với người thiết kế."
+    },
+    {
+      "name": "do thiết kế",
+      "description": "Tác giả thiết kế.",
+      "definition": "Công trình hoặc sản phẩm nguồn do cá nhân hay tổ chức đích thiết kế."
+    },
+    {
+      "name": "do sáng lập",
+      "description": "Chủ thể sáng lập.",
+      "definition": "Tổ chức, cơ sở hoặc hoạt động nguồn do cá nhân hay tổ chức đích sáng lập."
+    },
+    {
+      "name": "gắn với nhân vật",
+      "description": "Liên hệ với một người.",
+      "definition": "Địa điểm, công trình hoặc sự kiện nguồn có liên hệ được nêu rõ với nhân vật đích."
+    },
+    {
+      "name": "là nơi sinh của",
+      "description": "Địa điểm sinh.",
+      "definition": "Địa điểm nguồn là nơi sinh của nhân vật đích; không đồng nhất với quê quán."
+    },
+    {
+      "name": "là nơi mất của",
+      "description": "Địa điểm qua đời.",
+      "definition": "Địa điểm nguồn là nơi nhân vật đích qua đời; không đồng nhất với nơi an táng."
+    },
+    {
+      "name": "được đặt tên theo",
+      "description": "Nguồn của tên gọi.",
+      "definition": "Đối tượng nguồn được đặt tên theo nhân vật, địa điểm hoặc sự kiện đích."
+    },
+    {
+      "name": "có kiến trúc",
+      "description": "Đặc điểm kiến trúc tổng thể.",
+      "definition": "Công trình nguồn có kiểu tổ chức kiến trúc đích được mô tả trong văn bản."
+    },
+    {
+      "name": "mang phong cách",
+      "description": "Phong cách biểu hiện.",
+      "definition": "Công trình hoặc tác phẩm nguồn thể hiện phong cách kiến trúc hay nghệ thuật đích."
+    },
+    {
+      "name": "được xây bằng",
+      "description": "Vật liệu cấu tạo.",
+      "definition": "Công trình hoặc bộ phận nguồn được xây bằng vật liệu đích; không suy ra vật liệu duy nhất."
+    },
+    {
+      "name": "gồm có",
+      "description": "Thành phần của tổng thể.",
+      "definition": "Nguồn chứa đích như một thành phần được liệt kê; không hàm ý danh sách đầy đủ."
+    },
+    {
+      "name": "có bộ phận",
+      "description": "Cấu phần vật lý.",
+      "definition": "Công trình hoặc hiện vật nguồn có bộ phận cấu tạo đích."
+    },
+    {
+      "name": "được trang trí bằng",
+      "description": "Vật hoặc họa tiết trang trí.",
+      "definition": "Nguồn được trang trí bằng hiện vật, chất liệu hay họa tiết đích."
+    },
+    {
+      "name": "có hình dạng",
+      "description": "Hình thể được mô tả.",
+      "definition": "Nguồn có hình dạng đích theo văn bản, không tự suy ra từ hình ảnh chưa xử lý."
+    },
+    {
+      "name": "có chiều cao",
+      "description": "Số đo theo chiều đứng.",
+      "definition": "Nguồn có chiều cao bằng giá trị đích; giữ đơn vị và điều kiện đo nếu có."
+    },
+    {
+      "name": "có diện tích",
+      "description": "Số đo diện tích.",
+      "definition": "Nguồn có diện tích bằng giá trị đích; giữ đơn vị và phạm vi diện tích được đo."
+    },
+    {
+      "name": "có hướng",
+      "description": "Hướng của đối tượng.",
+      "definition": "Nguồn quay hoặc định hướng về phương hướng đích theo văn bản."
+    },
+    {
+      "name": "được công nhận là",
+      "description": "Kết quả công nhận.",
+      "definition": "Nguồn được cơ quan hoặc văn bản có thẩm quyền công nhận mang danh hiệu hay tư cách đích theo nguồn tư liệu."
+    },
+    {
+      "name": "được xếp hạng là",
+      "description": "Hạng được xác lập.",
+      "definition": "Nguồn được xếp vào hạng hoặc cấp đích; không suy ra hạng từ lời ca ngợi."
+    },
+    {
+      "name": "có giá trị",
+      "description": "Giá trị được nhận định.",
+      "definition": "Nguồn được văn bản nhận định có giá trị lịch sử, văn hóa, khoa học hoặc giá trị khác ở đích."
+    },
+    {
+      "name": "mang ý nghĩa",
+      "description": "Nội dung ý nghĩa.",
+      "definition": "Nguồn mang ý nghĩa đích được giải thích trực tiếp trong văn bản."
+    },
+    {
+      "name": "biểu trưng cho",
+      "description": "Quan hệ biểu tượng.",
+      "definition": "Nguồn được dùng làm biểu tượng cho đối tượng, cộng đồng hoặc khái niệm đích."
+    },
+    {
+      "name": "lưu giữ",
+      "description": "Nơi hoặc chủ thể giữ tư liệu.",
+      "definition": "Nguồn giữ hiện vật, tài liệu hoặc ký ức đích; không mặc định đang trưng bày."
+    },
+    {
+      "name": "bảo tồn",
+      "description": "Hoạt động gìn giữ.",
+      "definition": "Chủ thể hoặc cơ sở nguồn thực hiện gìn giữ đối tượng hay giá trị đích."
+    },
+    {
+      "name": "trưng bày",
+      "description": "Đối tượng được giới thiệu trực quan.",
+      "definition": "Cơ sở hoặc triển lãm nguồn trưng bày hiện vật hay tư liệu đích."
+    },
+    {
+      "name": "thuộc loại hình",
+      "description": "Phân loại theo loại hình.",
+      "definition": "Nguồn được phân vào loại hình di sản, kiến trúc hoặc hoạt động đích theo văn bản."
+    },
+    {
+      "name": "đại diện cho",
+      "description": "Quan hệ đại diện.",
+      "definition": "Nguồn được văn bản xác định là đại diện cho tổ chức, nhóm hoặc giá trị đích."
+    },
+    {
+      "name": "thờ phụng",
+      "description": "Thực hành thờ cúng.",
+      "definition": "Cá nhân, cộng đồng hoặc cơ sở nguồn thực hành thờ cúng đối tượng đích."
+    },
+    {
+      "name": "tôn thờ",
+      "description": "Sự sùng kính đối tượng.",
+      "definition": "Cá nhân hoặc cộng đồng nguồn coi đối tượng đích là đối tượng sùng kính theo văn bản."
+    },
+    {
+      "name": "gắn với tín ngưỡng",
+      "description": "Liên hệ tín ngưỡng.",
+      "definition": "Công trình, nghi lễ hoặc cộng đồng nguồn có liên hệ với tín ngưỡng đích."
+    },
+    {
+      "name": "thuộc tôn giáo",
+      "description": "Sự thuộc về tôn giáo.",
+      "definition": "Cơ sở, cộng đồng hoặc nhân vật nguồn thuộc tôn giáo đích theo thông tin được nêu."
+    },
+    {
+      "name": "tổ chức lễ hội",
+      "description": "Chủ thể tổ chức lễ hội.",
+      "definition": "Cơ quan hoặc cộng đồng nguồn đứng ra tổ chức lễ hội đích."
+    },
+    {
+      "name": "diễn ra lễ hội",
+      "description": "Địa điểm có lễ hội.",
+      "definition": "Địa điểm nguồn là nơi lễ hội đích diễn ra; chiều ngược với lễ hội diễn ra tại địa điểm."
+    },
+    {
+      "name": "thực hành nghi lễ",
+      "description": "Chủ thể thực hiện nghi lễ.",
+      "definition": "Cá nhân hoặc cộng đồng nguồn thực hiện nghi lễ đích."
+    },
+    {
+      "name": "là điểm tham quan của",
+      "description": "Điểm đến trong phạm vi du lịch.",
+      "definition": "Địa điểm nguồn là điểm tham quan của địa phương hoặc tuyến du lịch đích được nêu rõ."
+    },
+    {
+      "name": "có hoạt động",
+      "description": "Hoạt động tại một nơi.",
+      "definition": "Địa điểm, cơ sở hoặc sự kiện nguồn có hoạt động đích; không mặc định là đơn vị tổ chức."
+    },
+    {
+      "name": "cung cấp dịch vụ",
+      "description": "Dịch vụ được cung ứng.",
+      "definition": "Đơn vị hoặc cơ sở nguồn cung cấp dịch vụ đích."
+    },
+    {
+      "name": "mở cửa vào",
+      "description": "Lịch mở cửa.",
+      "definition": "Cơ sở hoặc điểm tham quan nguồn mở cửa vào ngày hay khung giờ đích theo nguồn tư liệu."
+    },
+    {
+      "name": "có giá vé",
+      "description": "Giá vé được công bố.",
+      "definition": "Điểm tham quan hoặc dịch vụ nguồn có mức vé đích; giữ loại khách và thời điểm áp dụng nếu có."
+    },
+    {
+      "name": "có thời gian tham quan",
+      "description": "Thời lượng tham quan.",
+      "definition": "Địa điểm hoặc tuyến nguồn có thời lượng tham quan đích; không dùng thay lịch mở cửa."
+    },
+    {
+      "name": "phù hợp với",
+      "description": "Đối tượng hoặc mục đích phù hợp.",
+      "definition": "Nguồn được văn bản nhận định phù hợp với nhóm khách, nhu cầu hoặc hoạt động đích."
+    },
+    {
+      "name": "thu hút",
+      "description": "Đối tượng được thu hút.",
+      "definition": "Địa điểm, sự kiện hoặc hoạt động nguồn thu hút nhóm người hay sự quan tâm ở đích."
+    },
+    {
+      "name": "nổi tiếng về",
+      "description": "Đặc điểm tạo danh tiếng.",
+      "definition": "Nguồn được văn bản mô tả nổi tiếng nhờ đặc điểm, sản phẩm hoặc hoạt động đích."
+    },
+    {
+      "name": "tổ chức tại",
+      "description": "Địa điểm tổ chức.",
+      "definition": "Sự kiện hoặc hoạt động nguồn được tổ chức tại địa điểm đích."
+    },
+    {
+      "name": "diễn ra vào",
+      "description": "Thời gian của sự kiện.",
+      "definition": "Sự kiện hoặc hoạt động nguồn diễn ra vào mốc, giai đoạn hay lịch định kỳ đích."
+    },
+    {
+      "name": "liên quan đến",
+      "description": "Liên hệ tổng quát.",
+      "definition": "Nguồn có liên hệ với đích được văn bản xác nhận; chỉ dùng khi chưa xác định được quan hệ cụ thể hơn."
+    },
+    {
+      "name": "kỷ niệm",
+      "description": "Đối tượng của hoạt động kỷ niệm.",
+      "definition": "Hoạt động hoặc sự kiện nguồn kỷ niệm nhân vật, sự kiện hay dấu mốc đích."
+    },
+    {
+      "name": "đánh dấu",
+      "description": "Dấu mốc của một chuyển biến.",
+      "definition": "Sự kiện hoặc công trình nguồn đánh dấu mốc hay chuyển biến đích được văn bản nhận định."
+    },
+    {
+      "name": "do tổ chức",
+      "description": "Đơn vị tổ chức sự kiện.",
+      "definition": "Sự kiện hoặc hoạt động nguồn do cá nhân hay tổ chức đích tổ chức."
+    },
+    {
+      "name": "có sự tham gia của",
+      "description": "Thành phần tham gia.",
+      "definition": "Sự kiện hoặc hoạt động nguồn có cá nhân, tổ chức hay cộng đồng đích tham gia."
+    },
+    {
+      "name": "dẫn đến",
+      "description": "Quan hệ nhân quả được nêu.",
+      "definition": "Sự kiện hoặc điều kiện nguồn gây ra kết quả đích theo văn bản; không suy ra chỉ từ thứ tự thời gian."
+    },
+    {
+      "name": "được quản lý bởi",
+      "description": "Chủ thể quản lý.",
+      "definition": "Địa điểm, công trình hoặc đơn vị nguồn được tổ chức hay cá nhân đích quản lý."
+    },
+    {
+      "name": "thuộc quyền quản lý của",
+      "description": "Thẩm quyền quản lý.",
+      "definition": "Nguồn thuộc phạm vi thẩm quyền quản lý của tổ chức đích tại thời điểm văn bản mô tả."
+    },
+    {
+      "name": "được bảo tồn bởi",
+      "description": "Chủ thể bảo tồn.",
+      "definition": "Di sản hoặc đối tượng nguồn được tổ chức, cá nhân hay cộng đồng đích bảo tồn."
+    },
+    {
+      "name": "được tài trợ bởi",
+      "description": "Chủ thể tài trợ.",
+      "definition": "Dự án, hoạt động hoặc công trình nguồn nhận tài trợ từ cá nhân hay tổ chức đích."
+    },
+    {
+      "name": "được vận hành bởi",
+      "description": "Chủ thể vận hành.",
+      "definition": "Cơ sở hoặc dịch vụ nguồn do cá nhân hay tổ chức đích vận hành."
+    },
+    {
+      "name": "được đề cập trong",
+      "description": "Tư liệu có nhắc tới.",
+      "definition": "Đối tượng nguồn được nhắc tới trong tài liệu hoặc nguồn tư liệu đích."
+    },
+    {
+      "name": "được ghi chép trong",
+      "description": "Tư liệu ghi nhận thông tin.",
+      "definition": "Thông tin hoặc đối tượng nguồn được ghi chép trong tư liệu đích; không mặc định tư liệu chứng minh tính đúng."
+    },
+    {
+      "name": "được mô tả bởi",
+      "description": "Chủ thể mô tả.",
+      "definition": "Đối tượng nguồn được tác giả hoặc nguồn tư liệu đích mô tả."
+    },
+    {
+      "name": "có nguồn từ",
+      "description": "Xuất xứ thông tin hoặc hiện vật.",
+      "definition": "Thông tin hay hiện vật nguồn được lấy từ nguồn cung cấp hoặc xuất xứ đích được nêu rõ."
+    },
+    {
+      "name": "được xác nhận bởi",
+      "description": "Chủ thể xác nhận thông tin.",
+      "definition": "Thông tin nguồn được cá nhân, tổ chức hoặc tài liệu đích xác nhận theo văn bản."
+    },
+    {
+      "name": "trích dẫn từ",
+      "description": "Nguồn của đoạn trích.",
+      "definition": "Nội dung nguồn được trích từ tài liệu hoặc phát ngôn đích; giữ nguyên xuất xứ được cung cấp."
+    },
+    {
+      "name": "là",
+      "description": "Quan hệ định danh tổng quát.",
+      "definition": "Nguồn được văn bản đồng nhất hoặc mô tả là đích; ưu tiên quan hệ phân loại cụ thể khi có."
+    },
+    {
+      "name": "có",
+      "description": "Thuộc tính hoặc sở hữu tổng quát.",
+      "definition": "Nguồn có thuộc tính hoặc đối tượng đích được nêu rõ; chỉ dùng khi thiếu quan hệ cụ thể thích hợp."
+    },
+    {
+      "name": "bao gồm",
+      "description": "Bao hàm thành phần.",
+      "definition": "Tổng thể hoặc tập hợp nguồn bao gồm thành phần đích; không mặc định liệt kê đầy đủ."
+    },
+    {
+      "name": "thuộc loại",
+      "description": "Phân loại đối tượng.",
+      "definition": "Đối tượng nguồn là một trường hợp thuộc lớp hoặc loại đích."
+    },
+    {
+      "name": "là một phần của",
+      "description": "Thành phần hướng tới tổng thể.",
+      "definition": "Nguồn là bộ phận hoặc thành phần của tổng thể đích; ngược chiều với bao gồm."
+    },
+    {
+      "name": "tương tự",
+      "description": "Sự giống nhau có căn cứ.",
+      "definition": "Nguồn tương tự đích về khía cạnh được văn bản nêu; không coi hai đối tượng là một."
+    },
+    {
+      "name": "khác với",
+      "description": "Sự khác biệt có căn cứ.",
+      "definition": "Nguồn khác đích về khía cạnh được văn bản nêu rõ."
+    },
+    {
+      "name": "kế thừa từ",
+      "description": "Sự tiếp nhận từ tiền thân.",
+      "definition": "Nguồn tiếp nhận truyền thống, đặc điểm hoặc vai trò từ đích theo văn bản."
+    },
+    {
+      "name": "thay thế cho",
+      "description": "Sự thay thế đối tượng.",
+      "definition": "Nguồn đảm nhiệm vị trí hoặc chức năng trước đó của đích; giữ thời điểm thay thế nếu có."
+    }
+  ]
+}

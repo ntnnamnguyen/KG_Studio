@@ -1,0 +1,625 @@
+{
+  "schema_version": 2,
+  "entity_types": [
+    {
+      "name": "tháp",
+      "description": "Công trình phát triển theo chiều cao.",
+      "definition": "Công trình có dạng tháp, thân cao nổi bật so với mặt bằng; phân biệt với cột cấu kiện."
+    },
+    {
+      "name": "tượng đài",
+      "description": "Công trình điêu khắc tưởng niệm.",
+      "definition": "Công trình có hình tượng điêu khắc nhằm tưởng niệm hoặc tôn vinh đối tượng."
+    },
+    {
+      "name": "đài tưởng niệm",
+      "description": "Công trình ghi nhớ nhân vật hoặc sự kiện.",
+      "definition": "Công trình được lập để tưởng nhớ, không bắt buộc có tượng người."
+    },
+    {
+      "name": "bảo tàng",
+      "description": "Cơ sở sưu tầm và giới thiệu di sản.",
+      "definition": "Cơ sở lưu giữ, nghiên cứu hoặc trưng bày hiện vật và tư liệu theo chủ đề."
+    },
+    {
+      "name": "nhà lưu niệm",
+      "description": "Không gian lưu dấu một nhân vật.",
+      "definition": "Ngôi nhà hoặc cơ sở lưu giữ tư liệu gắn với đời sống của nhân vật được tưởng nhớ."
+    },
+    {
+      "name": "nhà truyền thống",
+      "description": "Không gian giới thiệu lịch sử cộng đồng.",
+      "definition": "Cơ sở lưu giữ và giới thiệu lịch sử, thành tích của tổ chức hoặc cộng đồng."
+    },
+    {
+      "name": "di chỉ khảo cổ",
+      "description": "Địa điểm có dấu tích khảo cổ.",
+      "definition": "Địa điểm chứa dấu vết vật chất của hoạt động con người trong quá khứ."
+    },
+    {
+      "name": "khu khảo cổ",
+      "description": "Phạm vi khảo cổ gồm nhiều dấu tích.",
+      "definition": "Khu vực được xác định để khảo sát, khai quật hoặc bảo tồn các di chỉ và dấu tích khảo cổ."
+    },
+    {
+      "name": "phố cổ",
+      "description": "Không gian đô thị lịch sử.",
+      "definition": "Phố hoặc khu phố được văn bản xác định có lịch sử lâu đời và lưu giữ đặc trưng đô thị cũ."
+    },
+    {
+      "name": "làng cổ",
+      "description": "Không gian làng lịch sử.",
+      "definition": "Làng được văn bản xác định có lịch sử lâu đời hoặc còn dấu tích cư trú truyền thống."
+    },
+    {
+      "name": "làng nghề",
+      "description": "Cộng đồng gắn với nghề sản xuất.",
+      "definition": "Làng có nghề thủ công hoặc ngành nghề đặc trưng được cộng đồng duy trì."
+    },
+    {
+      "name": "chợ",
+      "description": "Không gian giao dịch hàng hóa.",
+      "definition": "Địa điểm tập trung hoạt động mua bán của nhiều người hoặc hộ kinh doanh."
+    },
+    {
+      "name": "phố đi bộ",
+      "description": "Không gian đường phố dành cho đi bộ.",
+      "definition": "Đường phố hoặc khu phố dành cho người đi bộ trong phạm vi và thời gian được quy định theo nguồn."
+    },
+    {
+      "name": "công viên",
+      "description": "Không gian công cộng có cảnh quan.",
+      "definition": "Khu đất tổ chức cây xanh và không gian phục vụ nghỉ ngơi, giải trí hoặc sinh hoạt công cộng."
+    },
+    {
+      "name": "vườn hoa",
+      "description": "Không gian trồng hoa và cây cảnh.",
+      "definition": "Khu đất có hoa hoặc cây cảnh làm thành không gian cảnh quan."
+    },
+    {
+      "name": "quảng trường",
+      "description": "Khoảng không gian công cộng rộng.",
+      "definition": "Không gian mở trong khu dân cư hoặc quần thể công trình, phục vụ tập trung và sinh hoạt chung."
+    },
+    {
+      "name": "hồ",
+      "description": "Vùng nước nội địa.",
+      "definition": "Vùng nước có ranh giới tương đối khép kín trên đất liền, được nguồn gọi là hồ."
+    },
+    {
+      "name": "sông",
+      "description": "Dòng chảy tự nhiên lớn.",
+      "definition": "Dòng nước tự nhiên chảy theo lòng dẫn, được văn bản gọi là sông."
+    },
+    {
+      "name": "suối",
+      "description": "Dòng chảy tự nhiên nhỏ.",
+      "definition": "Dòng nước tự nhiên được văn bản gọi là suối, thường gắn với địa hình dốc."
+    },
+    {
+      "name": "ao",
+      "description": "Vùng nước nhỏ khép kín.",
+      "definition": "Vùng nước trên đất liền được nguồn gọi là ao; không suy ra kích thước khi không có số đo."
+    },
+    {
+      "name": "núi",
+      "description": "Địa hình nhô cao.",
+      "definition": "Khối địa hình cao nổi bật được văn bản xác định là núi."
+    },
+    {
+      "name": "đồi",
+      "description": "Địa hình gò cao.",
+      "definition": "Khối địa hình nhô cao được văn bản xác định là đồi."
+    },
+    {
+      "name": "đảo",
+      "description": "Vùng đất được nước bao quanh.",
+      "definition": "Phần đất được nước bao quanh và được văn bản gọi là đảo."
+    },
+    {
+      "name": "rừng",
+      "description": "Không gian sinh thái có cây gỗ.",
+      "definition": "Khu vực có quần thể cây và hệ sinh thái được nguồn xác định là rừng."
+    },
+    {
+      "name": "vườn quốc gia",
+      "description": "Khu bảo tồn mang tên gọi vườn quốc gia.",
+      "definition": "Khu vực được nguồn xác định là vườn quốc gia; không tự suy ra tình trạng pháp lý từ cảnh quan."
+    },
+    {
+      "name": "cầu",
+      "description": "Công trình vượt chướng ngại.",
+      "definition": "Công trình cho người hoặc phương tiện đi qua sông, đường hay chướng ngại khác."
+    },
+    {
+      "name": "đường",
+      "description": "Tuyến giao thông tổng quát.",
+      "definition": "Tuyến hoặc lối phục vụ di chuyển giữa các địa điểm."
+    },
+    {
+      "name": "phố",
+      "description": "Tuyến đường trong khu dân cư.",
+      "definition": "Tuyến đường gắn với không gian đô thị và được văn bản gọi là phố."
+    },
+    {
+      "name": "ngõ",
+      "description": "Lối đi nhánh trong khu dân cư.",
+      "definition": "Lối đi được nguồn gọi là ngõ, thường nối từ đường hoặc phố vào khu cư trú."
+    },
+    {
+      "name": "bến tàu",
+      "description": "Điểm đón trả trên đường thủy.",
+      "definition": "Cơ sở hoặc địa điểm để tàu thuyền cập bến, đón trả người hoặc hàng hóa."
+    },
+    {
+      "name": "nhà ga",
+      "description": "Cơ sở phục vụ giao thông theo tuyến.",
+      "definition": "Công trình hoặc đầu mối phục vụ đón trả hành khách và hàng hóa trên hệ thống vận tải."
+    },
+    {
+      "name": "đơn vị hành chính",
+      "description": "Đơn vị tổ chức lãnh thổ.",
+      "definition": "Phạm vi lãnh thổ được nguồn xác định là đơn vị hành chính tại thời điểm đang mô tả."
+    },
+    {
+      "name": "thôn",
+      "description": "Cộng đồng cư trú mang tên thôn.",
+      "definition": "Đơn vị hoặc điểm cư trú được văn bản gọi là thôn; không tự gán cấp hành chính hiện hành."
+    },
+    {
+      "name": "làng",
+      "description": "Cộng đồng cư trú truyền thống.",
+      "definition": "Điểm cư trú hoặc cộng đồng được nguồn gọi là làng, có thể mang tính lịch sử hay văn hóa."
+    },
+    {
+      "name": "xã",
+      "description": "Địa danh hành chính mang tên xã.",
+      "definition": "Đơn vị được văn bản gọi là xã tại thời điểm được đề cập."
+    },
+    {
+      "name": "phường",
+      "description": "Địa danh hành chính mang tên phường.",
+      "definition": "Đơn vị được văn bản gọi là phường tại thời điểm được đề cập."
+    },
+    {
+      "name": "quận",
+      "description": "Địa danh hành chính mang tên quận.",
+      "definition": "Đơn vị được văn bản gọi là quận tại thời điểm được đề cập, kể cả trong tư liệu lịch sử."
+    },
+    {
+      "name": "huyện",
+      "description": "Địa danh hành chính mang tên huyện.",
+      "definition": "Đơn vị được văn bản gọi là huyện tại thời điểm được đề cập, kể cả trong tư liệu lịch sử."
+    },
+    {
+      "name": "thị xã",
+      "description": "Địa danh hành chính mang tên thị xã.",
+      "definition": "Đơn vị được văn bản gọi là thị xã tại thời điểm được đề cập."
+    },
+    {
+      "name": "thành phố",
+      "description": "Đô thị hoặc đơn vị mang tên thành phố.",
+      "definition": "Địa điểm được nguồn xác định là thành phố; không tự suy ra cấp quản lý."
+    },
+    {
+      "name": "tỉnh",
+      "description": "Địa danh hành chính mang tên tỉnh.",
+      "definition": "Đơn vị lãnh thổ được văn bản gọi là tỉnh tại thời điểm được đề cập."
+    },
+    {
+      "name": "quốc gia",
+      "description": "Thực thể lãnh thổ và chính trị.",
+      "definition": "Đối tượng được văn bản xác định là một quốc gia hoặc nước."
+    },
+    {
+      "name": "khu vực địa lý",
+      "description": "Phạm vi không gian tổng quát.",
+      "definition": "Vùng lãnh thổ hoặc không gian địa lý không nhất thiết trùng đơn vị hành chính."
+    },
+    {
+      "name": "nhân vật",
+      "description": "Một người được nhắc đến.",
+      "definition": "Cá nhân được xác định trong văn bản; dùng loại cụ thể hơn khi nguồn cung cấp đủ căn cứ."
+    },
+    {
+      "name": "nhân vật lịch sử",
+      "description": "Người gắn với lịch sử.",
+      "definition": "Cá nhân được văn bản đề cập với vai trò trong sự kiện hoặc giai đoạn lịch sử."
+    },
+    {
+      "name": "danh nhân",
+      "description": "Nhân vật được ghi nhận có đóng góp.",
+      "definition": "Cá nhân được văn bản gọi là danh nhân hoặc xác định có đóng góp nổi bật được tôn vinh."
+    },
+    {
+      "name": "vua",
+      "description": "Người đứng đầu chế độ quân chủ.",
+      "definition": "Nhân vật được văn bản xác định giữ ngôi vua hoặc hoàng đế."
+    },
+    {
+      "name": "hoàng hậu",
+      "description": "Nhân vật mang tước vị hoàng hậu.",
+      "definition": "Cá nhân được văn bản xác định mang tước vị hoàng hậu, không suy ra chỉ từ quan hệ hôn nhân."
+    },
+    {
+      "name": "tướng lĩnh",
+      "description": "Nhân vật chỉ huy quân sự.",
+      "definition": "Cá nhân được nguồn xác định là tướng hoặc người chỉ huy quân sự ở vị trí tương ứng."
+    },
+    {
+      "name": "anh hùng dân tộc",
+      "description": "Nhân vật được tôn vinh vì dân tộc.",
+      "definition": "Cá nhân được văn bản xác định là anh hùng dân tộc; không tự suy ra từ việc tham gia chiến đấu."
+    },
+    {
+      "name": "nhà khoa học",
+      "description": "Người hoạt động nghiên cứu khoa học.",
+      "definition": "Cá nhân được văn bản xác định làm nghiên cứu hoặc có đóng góp khoa học."
+    },
+    {
+      "name": "nhà giáo",
+      "description": "Người hoạt động giáo dục.",
+      "definition": "Cá nhân được nguồn xác định có nghề nghiệp hoặc vai trò giảng dạy, giáo dục."
+    },
+    {
+      "name": "nghệ nhân",
+      "description": "Người có kỹ năng nghề truyền thống.",
+      "definition": "Cá nhân được văn bản xác định là nghệ nhân trong thủ công hoặc thực hành văn hóa."
+    },
+    {
+      "name": "kiến trúc sư",
+      "description": "Người thiết kế kiến trúc.",
+      "definition": "Cá nhân được nguồn xác định có nghề nghiệp hoặc vai trò kiến trúc sư."
+    },
+    {
+      "name": "người sáng lập",
+      "description": "Cá nhân khởi lập một tổ chức.",
+      "definition": "Người được văn bản xác định đã sáng lập cơ sở, tổ chức hoặc hoạt động."
+    },
+    {
+      "name": "nhân vật truyền thuyết",
+      "description": "Nhân vật thuộc truyện truyền thuyết.",
+      "definition": "Nhân vật xuất hiện trong truyền thuyết; không mặc định là nhân vật lịch sử có thật."
+    },
+    {
+      "name": "thần linh",
+      "description": "Đối tượng siêu nhiên trong tín ngưỡng.",
+      "definition": "Thực thể được nguồn mô tả là thần hoặc đối tượng siêu nhiên được tin tưởng, thờ cúng."
+    },
+    {
+      "name": "thành hoàng",
+      "description": "Đối tượng bảo trợ được cộng đồng thờ.",
+      "definition": "Nhân vật hoặc thần được văn bản xác định là thành hoàng của một cộng đồng."
+    },
+    {
+      "name": "nhân vật được thờ",
+      "description": "Nhân vật là đối tượng thờ cúng.",
+      "definition": "Người hoặc nhân vật được cơ sở hay cộng đồng thờ cúng theo văn bản."
+    },
+    {
+      "name": "sự kiện lịch sử",
+      "description": "Biến cố thuộc lịch sử.",
+      "definition": "Sự việc được xác định diễn ra trong quá khứ và được văn bản trình bày với ý nghĩa lịch sử."
+    },
+    {
+      "name": "trận đánh",
+      "description": "Sự kiện giao chiến cụ thể.",
+      "definition": "Cuộc giao chiến được xác định về các bên hoặc bối cảnh trong văn bản."
+    },
+    {
+      "name": "cuộc khởi nghĩa",
+      "description": "Sự kiện nổi dậy có tổ chức.",
+      "definition": "Phong trào hoặc cuộc nổi dậy được văn bản xác định là khởi nghĩa."
+    },
+    {
+      "name": "triều đại",
+      "description": "Dòng hoặc chế độ cai trị quân chủ.",
+      "definition": "Triều hoặc dòng vua được nguồn xác định trong lịch sử; phân biệt với cá nhân một vị vua."
+    },
+    {
+      "name": "thời kỳ lịch sử",
+      "description": "Giai đoạn có phạm vi thời gian.",
+      "definition": "Khoảng thời gian được văn bản xác định bằng đặc điểm hoặc bối cảnh lịch sử chung."
+    },
+    {
+      "name": "niên đại",
+      "description": "Thông tin định tuổi hoặc thời gian.",
+      "definition": "Năm hoặc khoảng năm dùng xác định thời gian hình thành hay tồn tại của đối tượng."
+    },
+    {
+      "name": "mốc thời gian",
+      "description": "Điểm hoặc biểu thức thời gian.",
+      "definition": "Ngày, tháng, năm hoặc thời điểm được nêu để định vị một sự việc theo thời gian."
+    },
+    {
+      "name": "lễ hội",
+      "description": "Sự kiện cộng đồng có phần lễ hoặc hội.",
+      "definition": "Hoạt động tập thể được văn bản xác định là lễ hội, có thể diễn ra định kỳ."
+    },
+    {
+      "name": "nghi lễ",
+      "description": "Thực hành theo trình tự biểu tượng.",
+      "definition": "Chuỗi hành vi có quy thức và ý nghĩa tín ngưỡng, tôn giáo hoặc xã hội."
+    },
+    {
+      "name": "phong tục",
+      "description": "Tập quán được cộng đồng duy trì.",
+      "definition": "Cách ứng xử hoặc thực hành được lặp lại thành tập quán trong cộng đồng."
+    },
+    {
+      "name": "tín ngưỡng",
+      "description": "Hệ thống niềm tin và thực hành.",
+      "definition": "Niềm tin và thực hành liên quan đối tượng thiêng hoặc sức mạnh siêu nhiên của cộng đồng."
+    },
+    {
+      "name": "tôn giáo",
+      "description": "Truyền thống tôn giáo được định danh.",
+      "definition": "Hệ thống niềm tin và thực hành được văn bản xác định là một tôn giáo."
+    },
+    {
+      "name": "truyền thuyết",
+      "description": "Truyện kể dân gian có yếu tố huyền thoại.",
+      "definition": "Câu chuyện được nguồn gọi là truyền thuyết; nội dung không mặc nhiên là sự kiện đã kiểm chứng."
+    },
+    {
+      "name": "sự kiện văn hóa",
+      "description": "Sự kiện giới thiệu hoặc thực hành văn hóa.",
+      "definition": "Sự kiện có chủ đề hoặc hoạt động văn hóa được xác định trong văn bản."
+    },
+    {
+      "name": "hoạt động du lịch",
+      "description": "Hoạt động phục vụ trải nghiệm du khách.",
+      "definition": "Hoạt động tham quan, trải nghiệm hoặc dịch vụ được thực hiện trong bối cảnh du lịch."
+    },
+    {
+      "name": "hoạt động văn hóa",
+      "description": "Thực hành hoặc sinh hoạt văn hóa.",
+      "definition": "Hoạt động sáng tạo, trình diễn, giao lưu hay duy trì đời sống văn hóa."
+    },
+    {
+      "name": "trò chơi dân gian",
+      "description": "Trò chơi lưu truyền trong cộng đồng.",
+      "definition": "Trò chơi được nguồn xác định có tính dân gian hoặc truyền thống."
+    },
+    {
+      "name": "nghệ thuật biểu diễn",
+      "description": "Loại hình nghệ thuật trình diễn.",
+      "definition": "Hình thức nghệ thuật được thể hiện qua biểu diễn trước người xem hoặc người nghe."
+    },
+    {
+      "name": "món ăn",
+      "description": "Sản phẩm ẩm thực cụ thể.",
+      "definition": "Thức ăn được chế biến hoặc kết hợp thành một món có tên hay đặc điểm xác định."
+    },
+    {
+      "name": "đặc sản",
+      "description": "Sản phẩm đặc trưng của địa phương.",
+      "definition": "Sản phẩm được văn bản xác định là đặc sản gắn với một vùng hoặc cộng đồng."
+    },
+    {
+      "name": "sản phẩm thủ công",
+      "description": "Sản phẩm của nghề thủ công.",
+      "definition": "Vật phẩm được tạo ra bằng kỹ thuật thủ công hoặc nghề truyền thống."
+    },
+    {
+      "name": "hạng mục kiến trúc",
+      "description": "Thành phần trong quần thể xây dựng.",
+      "definition": "Công trình hoặc cấu phần được xác định là một hạng mục của tổng thể kiến trúc."
+    },
+    {
+      "name": "phong cách kiến trúc",
+      "description": "Hệ đặc trưng biểu hiện kiến trúc.",
+      "definition": "Kiểu hoặc trường phái thể hiện qua hình thức, tổ chức và trang trí kiến trúc."
+    },
+    {
+      "name": "vật liệu xây dựng",
+      "description": "Chất liệu dùng xây công trình.",
+      "definition": "Vật chất hoặc sản phẩm được dùng để xây dựng hay cấu tạo công trình."
+    },
+    {
+      "name": "tam quan",
+      "description": "Cổng có ba lối qua.",
+      "definition": "Cổng kiến trúc có ba lối đi và được văn bản xác định là tam quan."
+    },
+    {
+      "name": "nghi môn",
+      "description": "Cổng nghi lễ của công trình.",
+      "definition": "Hạng mục cổng mang chức năng nghi lễ trong quần thể thờ tự hoặc kiến trúc truyền thống."
+    },
+    {
+      "name": "tiền đường",
+      "description": "Nhà phía trước trong quần thể thờ tự.",
+      "definition": "Hạng mục nhà phía trước được nguồn gọi là tiền đường; không đồng nhất với mọi gian phía trước."
+    },
+    {
+      "name": "hậu cung",
+      "description": "Không gian phía trong của nơi thờ tự.",
+      "definition": "Hạng mục thờ tự phía trong được nguồn gọi là hậu cung; không dùng cho cung phi trong ngữ cảnh này."
+    },
+    {
+      "name": "chính điện",
+      "description": "Không gian thờ chính.",
+      "definition": "Hạng mục điện giữ vai trò thờ tự chính trong quần thể được mô tả."
+    },
+    {
+      "name": "gác chuông",
+      "description": "Kiến trúc đặt chuông.",
+      "definition": "Hạng mục dạng gác hoặc lầu dùng đặt hay treo chuông."
+    },
+    {
+      "name": "gác trống",
+      "description": "Kiến trúc đặt trống.",
+      "definition": "Hạng mục dạng gác hoặc lầu dùng đặt trống."
+    },
+    {
+      "name": "cổng",
+      "description": "Lối ra vào có cấu trúc.",
+      "definition": "Hạng mục kiến trúc đánh dấu hoặc kiểm soát lối ra vào một không gian."
+    },
+    {
+      "name": "sân",
+      "description": "Khoảng đất mở thuộc công trình.",
+      "definition": "Không gian mặt đất mở trong hoặc cạnh một công trình hay quần thể."
+    },
+    {
+      "name": "giếng",
+      "description": "Công trình khai thác hoặc chứa nước.",
+      "definition": "Hố hoặc cấu trúc được nguồn gọi là giếng, thường dùng tiếp cận nguồn nước."
+    },
+    {
+      "name": "mái",
+      "description": "Bộ phận che phủ phía trên.",
+      "definition": "Cấu phần phía trên công trình có chức năng che phủ và bảo vệ không gian bên dưới."
+    },
+    {
+      "name": "cột",
+      "description": "Cấu kiện dạng đứng.",
+      "definition": "Bộ phận dạng trụ đứng trong công trình, dùng đỡ kết cấu hoặc trang trí."
+    },
+    {
+      "name": "hiện vật",
+      "description": "Vật thể được lưu giữ hoặc nghiên cứu.",
+      "definition": "Đồ vật cụ thể được sưu tầm, lưu giữ, trưng bày hoặc dùng làm chứng tích."
+    },
+    {
+      "name": "cổ vật",
+      "description": "Hiện vật được nguồn xác định là cổ.",
+      "definition": "Đồ vật được văn bản gọi là cổ vật; không tự gán tuổi hay kết luận pháp lý."
+    },
+    {
+      "name": "bảo vật quốc gia",
+      "description": "Hiện vật mang danh hiệu bảo vật quốc gia.",
+      "definition": "Hiện vật được nguồn xác định đã được công nhận là bảo vật quốc gia."
+    },
+    {
+      "name": "tượng thờ",
+      "description": "Tượng dùng làm đối tượng thờ.",
+      "definition": "Tác phẩm tượng được đặt hoặc sử dụng trong hoạt động thờ cúng."
+    },
+    {
+      "name": "chuông",
+      "description": "Hiện vật phát âm khi gõ.",
+      "definition": "Vật thể dạng chuông dùng tạo âm thanh, nghi lễ hoặc báo hiệu."
+    },
+    {
+      "name": "trống",
+      "description": "Nhạc cụ hoặc hiện vật dạng trống.",
+      "definition": "Vật thể phát âm bằng cách tác động vào mặt trống, có thể phục vụ biểu diễn hoặc nghi lễ."
+    },
+    {
+      "name": "bia đá",
+      "description": "Vật mang văn khắc bằng đá.",
+      "definition": "Tấm hoặc khối đá được dựng, đặt để khắc văn bản, ghi dấu hay tưởng niệm."
+    },
+    {
+      "name": "văn bia",
+      "description": "Nội dung văn bản trên bia.",
+      "definition": "Bài văn hoặc nội dung được khắc trên bia; phân biệt với vật thể bia đá."
+    },
+    {
+      "name": "sắc phong",
+      "description": "Văn bản ban phong tước hoặc thần hiệu.",
+      "definition": "Văn bản được nguồn gọi là sắc phong do người đứng đầu triều đình ban."
+    },
+    {
+      "name": "hoành phi",
+      "description": "Bảng chữ treo ngang.",
+      "definition": "Bảng mang chữ hoặc câu ngắn được treo theo chiều ngang trong kiến trúc truyền thống."
+    },
+    {
+      "name": "câu đối",
+      "description": "Cặp câu có quan hệ đối ứng.",
+      "definition": "Hai vế câu được tổ chức theo phép đối, có thể được viết hoặc khắc để trưng bày."
+    },
+    {
+      "name": "tranh",
+      "description": "Tác phẩm tạo hình trên mặt phẳng.",
+      "definition": "Tác phẩm hình ảnh được vẽ, in hoặc tạo trên bề mặt tương đối phẳng."
+    },
+    {
+      "name": "phù điêu",
+      "description": "Tác phẩm chạm nổi hoặc chìm.",
+      "definition": "Hình tượng điêu khắc gắn với một mặt nền, không phải tượng độc lập hoàn toàn."
+    },
+    {
+      "name": "tài liệu lịch sử",
+      "description": "Tư liệu phục vụ tìm hiểu quá khứ.",
+      "definition": "Tài liệu chứa hoặc ghi nhận thông tin về sự kiện, nhân vật hay đời sống trong quá khứ."
+    },
+    {
+      "name": "sách",
+      "description": "Tác phẩm hoặc ấn phẩm dạng sách.",
+      "definition": "Tài liệu được tổ chức thành sách, có thể tồn tại ở dạng in, chép tay hoặc điện tử."
+    },
+    {
+      "name": "bản đồ",
+      "description": "Tư liệu biểu diễn không gian.",
+      "definition": "Hình thức thể hiện vị trí và quan hệ không gian của đối tượng theo quy ước bản đồ."
+    },
+    {
+      "name": "nguồn tư liệu",
+      "description": "Nguồn cung cấp thông tin.",
+      "definition": "Tài liệu, cơ sở dữ liệu hoặc nguồn được dẫn làm xuất xứ thông tin trong văn bản."
+    },
+    {
+      "name": "tổ chức",
+      "description": "Tập thể có cấu trúc hoạt động.",
+      "definition": "Nhóm người hoặc đơn vị có tên, mục đích và sự tổ chức hoạt động chung."
+    },
+    {
+      "name": "cơ quan quản lý",
+      "description": "Tổ chức có chức năng quản lý.",
+      "definition": "Đơn vị được nguồn giao hoặc xác định có trách nhiệm quản lý đối tượng hay lĩnh vực."
+    },
+    {
+      "name": "ban quản lý di tích",
+      "description": "Đơn vị quản lý di tích.",
+      "definition": "Tổ chức được nguồn xác định là ban quản lý một hoặc nhiều di tích."
+    },
+    {
+      "name": "cơ quan nhà nước",
+      "description": "Đơn vị thuộc bộ máy nhà nước.",
+      "definition": "Tổ chức được văn bản xác định là cơ quan nhà nước tại thời điểm được đề cập."
+    },
+    {
+      "name": "đơn vị bảo tồn",
+      "description": "Tổ chức thực hiện bảo tồn.",
+      "definition": "Đơn vị có chức năng hoặc hoạt động gìn giữ di sản, hiện vật hay hệ sinh thái."
+    },
+    {
+      "name": "tổ chức quốc tế",
+      "description": "Tổ chức hoạt động ở phạm vi quốc tế.",
+      "definition": "Tổ chức được nguồn xác định có phạm vi hoặc thành viên mang tính quốc tế."
+    },
+    {
+      "name": "cộng đồng dân cư",
+      "description": "Tập thể người gắn với nơi cư trú.",
+      "definition": "Nhóm cư dân cùng sinh sống hoặc có liên hệ cộng đồng tại một địa bàn."
+    },
+    {
+      "name": "cơ sở giáo dục",
+      "description": "Đơn vị tổ chức hoạt động giáo dục.",
+      "definition": "Cơ sở được nguồn xác định thực hiện giảng dạy, đào tạo hoặc giáo dục."
+    },
+    {
+      "name": "danh hiệu di sản",
+      "description": "Tên gọi công nhận giá trị di sản.",
+      "definition": "Danh hiệu hoặc tư cách được trao cho di sản; phân biệt với chính đối tượng được công nhận."
+    },
+    {
+      "name": "quyết định xếp hạng",
+      "description": "Văn bản xác lập hạng của di tích.",
+      "definition": "Văn bản được nguồn xác định là quyết định xếp hạng cho một hoặc nhiều đối tượng."
+    },
+    {
+      "name": "dự án trùng tu",
+      "description": "Kế hoạch sửa chữa công trình di sản.",
+      "definition": "Dự án tổ chức sửa chữa hoặc phục hồi công trình, di tích được văn bản gọi là trùng tu."
+    },
+    {
+      "name": "dự án bảo tồn",
+      "description": "Kế hoạch gìn giữ đối tượng và giá trị.",
+      "definition": "Dự án nhằm bảo vệ hoặc duy trì di sản, cảnh quan hay đối tượng cần bảo tồn."
+    }
+  ]
+}
