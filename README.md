@@ -66,34 +66,12 @@ D:\DATN\CrawData\KG_Studio\
 
 Trước khi chạy, sao chép file mẫu và cấu hình API key cá nhân của bạn:
 
-```powershell
-# Cách 1: Sử dụng config/.secrets.toml (Khuyến nghị cho KG Studio)
-cp config/.secrets.toml.example config/.secrets.toml
-# Sau đó mở config/.secrets.toml và điền key của DeepSeek / OpenAI / Claude / Qwen
-
-# Cách 2: Sử dụng biến môi trường qua file .env
-cp .env.example .env
-```
 *(Lưu ý: File `.secrets.toml` và `.env` đã được cấu hình trong `.gitignore`, tuyệt đối không commit các file chứa key thực tế lên GitHub).*
 
 ## 3. Cách chạy độc lập
 
 ### Chạy giao diện KG Studio Pro (mặc định cổng `8502` để có thể chạy song song với MVP cũ nếu muốn):
 ```powershell
-cd D:\DATN\CrawData\KG_Studio
 .\run_windows.cmd
 ```
 Mở trình duyệt tại: **http://127.0.0.1:8502**
-
-### Chạy máy chủ REST API độc lập (cổng `8000`):
-```powershell
-cd D:\DATN\CrawData\KG_Studio
-python -m backend.main --host 127.0.0.1 --port 8000
-```
-
-### Chạy bộ kiểm thử độc lập:
-```powershell
-cd D:\DATN\CrawData\KG_Studio
-python -m unittest discover -s tests -t . -v
-```
-
