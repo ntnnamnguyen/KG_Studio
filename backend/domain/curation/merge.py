@@ -27,6 +27,15 @@ from shared.text_utils import normal, now_iso, sha, uid
 
 from .common import clean_aliases, clean_display_text
 from .entities import clear_duplicate_suggestions_cache, compute_apparent_duplicate_edge_groups
+from .merge_core import (
+    DisjointSetUnion,
+    consolidate_edge_evidences,
+    flatten_redirects,
+    group_edges_by_triplet,
+    normalize_pair_key,
+    rank_representative_edge,
+    sort_edges_by_priority,
+)
 
 
 def compute_entity_merge_hash(req: EntityMergeRequestDTO | dict) -> str:
@@ -642,28 +651,15 @@ def apply_bulk_entity_merges(
             "(các cặp được chọn có thể bị trùng ID với chính nó hoặc các thực thể này đã được gộp trong phiên trước)."
         )
 
-    # Gom cụm Disjoint Set Union (DSU)
-    parent: dict[str, str] = {}
-
-    def find(i: str) -> str:
-        if parent.setdefault(i, i) == i:
-            return i
-        parent[i] = find(parent[i])
-        return parent[i]
-
-    def union(i: str, j: str) -> None:
-        root_i = find(i)
-        root_j = find(j)
-        if root_i != root_j:
-            parent[root_i] = root_j
-
+    # Gom cụm sử dụng DisjointSetUnion dùng chung
+    dsu = DisjointSetUnion()
     for a, b in normalized_pairs:
-        union(a, b)
+        dsu.union(a, b)
 
     clusters_by_root: dict[str, set[str]] = {}
     for a, b in normalized_pairs:
-        clusters_by_root.setdefault(find(a), set()).add(a)
-        clusters_by_root.setdefault(find(b), set()).add(b)
+        clusters_by_root.setdefault(dsu.find(a), set()).add(a)
+        clusters_by_root.setdefault(dsu.find(b), set()).add(b)
 
     total_applied_clusters = 0
     all_dropped_ids: list[str] = []
@@ -1027,7 +1023,7 @@ def relation_duplicate_suggestions(
 
     all_pairs = [dict(p) for p in _RELATION_DUPLICATE_SUGGESTIONS_CACHE[cache_key]]
     dismissed_map = {
-        tuple(sorted([normal(str(rec.get("relation_a", ""))), normal(str(rec.get("relation_b", "")))]))
+        normalize_pair_key(rec.get("relation_a", ""), rec.get("relation_b", ""))
         for rec in project.get("not_duplicate_relation_pairs", [])
     }
 
@@ -1035,7 +1031,7 @@ def relation_duplicate_suggestions(
         return all_pairs
     return [
         p for p in all_pairs
-        if tuple(sorted([normal(p["relation_a"]), normal(p["relation_b"])])) not in dismissed_map
+        if normalize_pair_key(p["relation_a"], p["relation_b"]) not in dismissed_map
     ]
 
 
@@ -1057,21 +1053,7 @@ def collapse_duplicate_edges(
         return candidate, 0, []
     edge_idx_by_id = {str(e.get("id", "")): idx for idx, e in enumerate(edges)}
 
-    groups: dict[tuple[str, str, str], list[dict]] = {}
-    for e in edges:
-        if e.get("status") == STATUS_REJECTED:
-            continue
-        s = str(e.get("source", "")).strip()
-        r = normal(str(e.get("relation", "")).strip())
-        t = str(e.get("target", "")).strip()
-        if s and r and t:
-            groups.setdefault((s, r, t), []).append(e)
-
-    status_rank = {
-        STATUS_APPROVED: 3,
-        STATUS_CHECK: 2,
-        STATUS_PENDING: 1,
-    }
+    groups = group_edges_by_triplet(edges, exclude_rejected=True)
 
     dropped_ids: set[str] = set()
     collapsed_records: list[dict[str, Any]] = []
@@ -1082,32 +1064,11 @@ def collapse_duplicate_edges(
         if len(grp) <= 1:
             continue
 
-        def _rank(item: dict) -> tuple[int, int]:
-            st_rank = status_rank.get(item.get("status"), 0)
-            ev_len = len(str(item.get("evidence", "")))
-            return (st_rank, ev_len)
-
-        sorted_grp = sorted(grp, key=_rank, reverse=True)
+        sorted_grp = sort_edges_by_priority(grp)
         kept = copy.deepcopy(sorted_grp[0])
         if str(kept.get("id", "")) in edge_idx_by_id:
             edges[edge_idx_by_id[str(kept["id"])]] = kept
         duplicates = sorted_grp[1:]
-
-        kept_evs: list[dict] = []
-        if isinstance(kept.get("evidences"), list) and kept["evidences"]:
-            kept_evs.extend(kept["evidences"])
-        else:
-            kept_evs.append({
-                "edge_id": str(kept["id"]),
-                "doc_id": kept.get("doc_id", ""),
-                "doc_name": kept.get("doc_name", ""),
-                "chunk_number": kept.get("chunk_number", 0),
-                "start_char": kept.get("start_char"),
-                "end_char": kept.get("end_char"),
-                "evidence": kept.get("evidence", ""),
-                "status": kept.get("status", ""),
-                "original_relation": kept.get("original_relation") or kept.get("relation", ""),
-            })
 
         orig_rels = list(kept.get("original_relations") or [])
         if not orig_rels:
@@ -1120,25 +1081,6 @@ def collapse_duplicate_edges(
             dup_id = str(dup["id"])
             dropped_ids.add(dup_id)
             edge_redirects[dup_id] = str(kept["id"])
-
-            if isinstance(dup.get("evidences"), list) and dup["evidences"]:
-                for dev in dup["evidences"]:
-                    if not any(x.get("edge_id") == dev.get("edge_id") for x in kept_evs):
-                        kept_evs.append(dev)
-            else:
-                dev = {
-                    "edge_id": dup_id,
-                    "doc_id": dup.get("doc_id", ""),
-                    "doc_name": dup.get("doc_name", ""),
-                    "chunk_number": dup.get("chunk_number", 0),
-                    "start_char": dup.get("start_char"),
-                    "end_char": dup.get("end_char"),
-                    "evidence": dup.get("evidence", ""),
-                    "status": dup.get("status", ""),
-                    "original_relation": dup.get("original_relation") or dup.get("relation", ""),
-                }
-                if not any(x.get("edge_id") == dev.get("edge_id") for x in kept_evs):
-                    kept_evs.append(dev)
 
             d_origs = list(dup.get("original_relations") or [])
             if not d_origs:
@@ -1156,6 +1098,7 @@ def collapse_duplicate_edges(
                 if ovr_note and ovr_note not in str(kept.get("override_reason", "")):
                     kept["override_reason"] = (str(kept.get("override_reason") or "") + "; " + ovr_note).strip("; ")
 
+        kept_evs = consolidate_edge_evidences(kept, duplicates)
         kept["evidences"] = kept_evs
         kept["original_relations"] = orig_rels
 
@@ -1368,18 +1311,7 @@ def bulk_apply_relation_merges(
     if not resolved_pairs:
         raise ValueError("Không có cặp quan hệ hợp lệ để gộp.")
 
-    parent: dict[str, str] = {}
-    for s, t in resolved_pairs:
-        parent[s] = t
-
-    flat_map: dict[str, str] = {}
-    for s in parent:
-        curr = s
-        visited = set()
-        while curr in parent and curr not in visited:
-            visited.add(curr)
-            curr = parent[curr]
-        flat_map[s] = curr
+    flat_map = flatten_redirects(resolved_pairs)
 
     affected_edges: list[str] = []
     edges_list = candidate["edges"]
@@ -1520,10 +1452,14 @@ def mark_relation_pair_not_duplicate(project: dict, rel_a: str, rel_b: str, note
         "at": now_iso(),
         "note": note.strip(),
     }
-    key = tuple(sorted([normal(a), normal(b)]))
-    existing = [p for p in pairs if tuple(sorted([normal(p.get("relation_a", "")), normal(p.get("relation_b", ""))])) == key]
+    key = normalize_pair_key(a, b)
+    existing = [p for p in pairs if normalize_pair_key(p.get("relation_a", ""), p.get("relation_b", "")) == key]
     if not existing:
         pairs.append(entry)
+    clear_relation_duplicate_suggestions_cache()
+    return {"ok": True, "entry": entry}
+
+
 def mark_relation_pairs_not_duplicate_bulk(
     project: dict,
     pairs: list[tuple[str, str] | list[str] | dict[str, Any]],
@@ -1532,7 +1468,7 @@ def mark_relation_pairs_not_duplicate_bulk(
     """Đánh dấu hàng loạt cặp quan hệ là khác nhau trong một lần quét O(R + K)."""
     existing_list = project.setdefault("not_duplicate_relation_pairs", [])
     seen_keys = {
-        tuple(sorted([normal(str(p.get("relation_a", ""))), normal(str(p.get("relation_b", "")))]))
+        normalize_pair_key(str(p.get("relation_a", "")), str(p.get("relation_b", "")))
         for p in existing_list
     }
     ts = now_iso()
@@ -1548,7 +1484,7 @@ def mark_relation_pairs_not_duplicate_bulk(
             continue
         if not a or not b or a == b:
             continue
-        key = tuple(sorted([normal(a), normal(b)]))
+        key = normalize_pair_key(a, b)
         if key not in seen_keys:
             seen_keys.add(key)
             existing_list.append(

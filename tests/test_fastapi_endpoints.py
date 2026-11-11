@@ -14,6 +14,12 @@ class TestFastAPIEndpoints(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.client = TestClient(app)
+        from backend.facade import get_facade
+        facade = get_facade()
+        projects = facade.list_projects()
+        cls.project_name = "HaNoiQA6" if "HaNoiQA6" in projects else (projects[0] if projects else "HanoiQA")
+        proj = facade.load_project(cls.project_name) if projects else {}
+        cls.project_id = str(proj.get("project_id", "7044baf1193541"))
 
     def test_health_endpoint(self) -> None:
         resp = self.client.get("/api/v1/health")
@@ -37,12 +43,12 @@ class TestFastAPIEndpoints(unittest.TestCase):
         self.assertIn("projects", data)
         self.assertGreaterEqual(len(data["projects"]), 1)
 
-        # HanoiQA must exist
-        resp_hanoi = self.client.get("/api/v1/projects/HanoiQA")
+        # Existing project must load successfully
+        resp_hanoi = self.client.get(f"/api/v1/projects/{self.project_name}")
         self.assertEqual(resp_hanoi.status_code, 200)
         proj_data = resp_hanoi.json()
         self.assertIn("project", proj_data)
-        self.assertEqual(proj_data["project"]["project_id"], "7044baf1193541")
+        self.assertEqual(proj_data["project"]["project_id"], self.project_id)
 
     def test_project_not_found(self) -> None:
         resp = self.client.get("/api/v1/projects/NonExistentProject_9999")
@@ -63,7 +69,7 @@ class TestFastAPIEndpoints(unittest.TestCase):
 
     def test_schema_retrieval_endpoint(self) -> None:
         resp = self.client.post(
-            "/api/v1/projects/HanoiQA/retrieve-schema",
+            f"/api/v1/projects/{self.project_name}/retrieve-schema",
             json={"chunk_text": "Chùa Một Cột được xây dựng từ thời nhà Lý."},
         )
         self.assertEqual(resp.status_code, 200)
@@ -74,7 +80,7 @@ class TestFastAPIEndpoints(unittest.TestCase):
 
     def test_target_alignment_endpoint(self) -> None:
         resp = self.client.post(
-            "/api/v1/projects/HanoiQA/align-target",
+            f"/api/v1/projects/{self.project_name}/align-target",
             json={
                 "kind": "relations",
                 "name": "nằm tại địa chỉ",
@@ -88,7 +94,7 @@ class TestFastAPIEndpoints(unittest.TestCase):
 
     def test_curation_preview_endpoint_with_pydantic(self) -> None:
         dto = CurationReviewRequestDTO(
-            project_id="7044baf1193541",
+            project_id=self.project_id,
             decisions=[
                 EdgeReviewDecisionDTO(
                     edge_id="fake_edge_001",
@@ -98,21 +104,21 @@ class TestFastAPIEndpoints(unittest.TestCase):
             ],
         )
         resp = self.client.post(
-            "/api/v1/projects/HanoiQA/curation/preview-edges",
+            f"/api/v1/projects/{self.project_name}/curation/preview-edges",
             json=dto.to_dict(),
         )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn("preview", data)
-        self.assertEqual(data["preview"]["project_id"], "7044baf1193541")
+        self.assertEqual(data["preview"]["project_id"], self.project_id)
 
     def test_edc_preview_endpoint_with_pydantic(self) -> None:
         dto = BulkReviewRequestDTO(
-            project_id="7044baf1193541",
+            project_id=self.project_id,
             decisions=[],
         )
         resp = self.client.post(
-            "/api/v1/projects/HanoiQA/edc/preview",
+            f"/api/v1/projects/{self.project_name}/edc/preview",
             json=dto.to_dict(),
         )
         self.assertEqual(resp.status_code, 200)

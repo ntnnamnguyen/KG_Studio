@@ -19,6 +19,7 @@ from shared.constants import (
 )
 from shared.text_utils import normal, now_iso, sha, uid
 
+from .merge_core import group_edges_by_triplet, normalize_pair_key
 from .common import clean_aliases, clean_display_text, find_node
 from .validation import build_schema_precomputed, inspect_edge_schema_status
 
@@ -142,14 +143,14 @@ def mark_pair_not_duplicate(
     if not node_a or not node_b:
         raise ValueError("Không tìm thấy thực thể trong cặp được chọn")
 
-    pair_key = sorted([str(node_a_id), str(node_b_id)])
+    pk = normalize_pair_key(node_a_id, node_b_id, use_normal=False)
     fp = _node_pair_fingerprint(node_a, node_b)
     records = project.setdefault("not_duplicate_pairs", [])
-    records = [r for r in records if sorted([str(r.get("node_a_id", "")), str(r.get("node_b_id", ""))]) != pair_key]
+    records = [r for r in records if normalize_pair_key(r.get("node_a_id", ""), r.get("node_b_id", ""), use_normal=False) != pk]
     entry = {
         "id": uid(),
-        "node_a_id": pair_key[0],
-        "node_b_id": pair_key[1],
+        "node_a_id": pk[0],
+        "node_b_id": pk[1],
         "pair_fingerprint": fp,
         "note": str(note or "").strip(),
         "actor": actor,
@@ -164,7 +165,7 @@ def mark_pair_not_duplicate(
             "actor": actor,
             "decision_origin": "human",
             "action": "mark_not_duplicate",
-            "target_id": f"{pair_key[0]}:{pair_key[1]}",
+            "target_id": f"{pk[0]}:{pk[1]}",
             "note": entry["note"],
             "before": None,
             "after": entry,
@@ -188,7 +189,7 @@ def mark_pairs_not_duplicate_bulk(
     by_key: dict[tuple[str, str], dict[str, Any]] = {}
     ordered_keys: list[tuple[str, str]] = []
     for r in existing_records:
-        rk = tuple(sorted([str(r.get("node_a_id", "")), str(r.get("node_b_id", ""))]))
+        rk = normalize_pair_key(str(r.get("node_a_id", "")), str(r.get("node_b_id", "")), use_normal=False)
         if rk not in by_key:
             ordered_keys.append(rk)  # type: ignore[arg-type]
         by_key[rk] = r  # type: ignore[index]
@@ -213,7 +214,7 @@ def mark_pairs_not_duplicate_bulk(
         if not node_a or not node_b:
             continue
 
-        pk = tuple(sorted([a_id, b_id]))
+        pk = normalize_pair_key(a_id, b_id, use_normal=False)
         fp = _node_pair_fingerprint(node_a, node_b)
         entry = {
             "id": uid(),
@@ -414,7 +415,7 @@ def duplicate_suggestions(
     all_pairs = [dict(p) for p in _DUPLICATE_SUGGESTIONS_CACHE[cache_key]]
     dismissed_map: dict[tuple[str, str], dict[str, Any]] = {}
     for rec in project.get("not_duplicate_pairs", []):
-        k = tuple(sorted([str(rec.get("node_a_id", "")), str(rec.get("node_b_id", ""))]))
+        k = normalize_pair_key(str(rec.get("node_a_id", "")), str(rec.get("node_b_id", "")), use_normal=False)
         dismissed_map[k] = rec  # type: ignore[index]
 
     filtered: list[dict[str, Any]] = []
@@ -425,7 +426,7 @@ def duplicate_suggestions(
         nb_id = str((p.get("node_b") or {}).get("id", "")).strip()
         if not kid or not did or kid == did or (na_id and nb_id and na_id == nb_id):
             continue
-        k = tuple(sorted([kid, did]))
+        k = normalize_pair_key(kid, did, use_normal=False)
         dis = dismissed_map.get(k)  # type: ignore[arg-type]
         is_dismissed = bool(dis and dis.get("pair_fingerprint") == p["pair_fingerprint"])
         p["dismissed"] = is_dismissed
@@ -442,18 +443,8 @@ def clear_duplicate_suggestions_cache() -> None:
 
 
 def compute_apparent_duplicate_edge_groups(edges: list[dict]) -> list[dict[str, Any]]:
-    """Nhóm các cạnh có cùng (source, normal(relation), target) để hiển thị đối chiếu, KHÔNG tự xóa cạnh."""
-    groups_map: dict[tuple[str, str, str], list[dict]] = {}
-    for edge in edges:
-        if edge.get("status") == STATUS_REJECTED:
-            continue
-        key = (
-            str(edge.get("source", "")),
-            normal(str(edge.get("relation", ""))),
-            str(edge.get("target", "")),
-        )
-        groups_map.setdefault(key, []).append(edge)
-
+    """Nhóm các cạnh có cùng bộ ba (source, normal(relation), target) sử dụng group_edges_by_triplet."""
+    groups_map = group_edges_by_triplet(edges, exclude_rejected=True)
     groups: list[dict[str, Any]] = []
     for (src, _, tgt), items in groups_map.items():
         if len(items) > 1:
@@ -478,6 +469,7 @@ def compute_apparent_duplicate_edge_groups(edges: list[dict]) -> list[dict[str, 
                     ],
                 }
             )
+    return groups
     return groups
 
 
