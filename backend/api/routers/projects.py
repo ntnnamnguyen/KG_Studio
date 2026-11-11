@@ -34,7 +34,12 @@ def list_models(facade: FacadeDep) -> dict[str, Any]:
 @router.get("/projects", summary="Danh sách tất cả dự án trong hệ thống")
 def list_projects(facade: FacadeDep) -> dict[str, list[dict[str, Any]]]:
     names = facade.list_projects()
-    summaries = [facade.sqlite_repo.get_project_summary(facade.load_project(n)).to_dict() for n in names]
+    summaries = []
+    for n in names:
+        summ = facade.sqlite_repo.get_project_summary(n)
+        if not summ.project_id:
+            summ = facade.sqlite_repo.get_project_summary(facade.load_project(n))
+        summaries.append(summ.to_dict())
     return {"projects": summaries}
 
 

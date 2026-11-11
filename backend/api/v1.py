@@ -45,7 +45,12 @@ def handle_api_request(
 
     if method == "GET" and clean_path == "/api/v1/projects":
         names = svc.list_projects()
-        summaries = [svc.sqlite_repo.get_project_summary(svc.load_project(n)).to_dict() for n in names]
+        summaries = []
+        for n in names:
+            summ = svc.sqlite_repo.get_project_summary(n)
+            if not summ.project_id:
+                summ = svc.sqlite_repo.get_project_summary(svc.load_project(n))
+            summaries.append(summ.to_dict())
         return 200, {"projects": summaries}
 
     if clean_path.startswith("/api/v1/projects/"):

@@ -458,6 +458,71 @@ class PerformanceOptimizationsTests(unittest.TestCase):
         self.assertFalse(bak_json.exists())
         self.assertEqual(len(reloaded["not_duplicate_pairs"]), 2)
 
+    def test_incremental_sqlite_sync_and_ssot_queries(self) -> None:
+        """Kiểm tra đồng bộ gia tăng (Incremental Upsert) và các truy vấn SSOT trên SQLite."""
+        sql_repo = SQLiteProjectRepository(self.root / "test_ssot.db")
+        proj = empty_project("Test SSOT Project")
+        pid = proj["project_id"]
+
+        proj["nodes"] = [
+            {"id": "n1", "name": "Hà Nội", "kind": "Địa danh", "description": "Thủ đô", "aliases": ["Thăng Long"]},
+            {"id": "n2", "name": "Việt Nam", "kind": "Quốc gia", "description": "Đất nước", "aliases": []},
+            {"id": "n3", "name": "Chùa Một Cột", "kind": "Công trình", "description": "Di tích", "aliases": []},
+        ]
+        proj["edges"] = [
+            {"id": "e1", "source": "n1", "target": "n2", "relation": "thủ đô của", "status": "Chờ duyệt", "evidence": "HN là thủ đô VN", "chunk_number": 0},
+            {"id": "e2", "source": "n3", "target": "n1", "relation": "nằm tại", "status": "Chờ duyệt", "evidence": "Chùa ở HN", "chunk_number": 1},
+        ]
+        proj["schema_proposals"] = [
+            {"id": "p1", "kind": "relations", "name": "thủ đô của", "definition": "Quan hệ thủ đô", "status": "pending"},
+        ]
+
+        # 1. Đồng bộ lần đầu
+        sql_repo.sync_from_project_dict(proj)
+        self.assertEqual(sql_repo.get_project_summary(pid).nodes_count, 3)
+        self.assertEqual(sql_repo.get_project_summary(pid).edges_count, 2)
+        self.assertEqual(sql_repo.get_project_summary(pid).approved_edges_count, 0)
+
+        # 2. Cập nhật trạng thái cục bộ
+        sql_repo.update_edge_status(pid, "e1", "Đã duyệt")
+        self.assertEqual(sql_repo.get_project_summary(pid).approved_edges_count, 1)
+
+        # 3. Tra cứu nhanh get_node_by_id và get_edge_by_id
+        node_1 = sql_repo.get_node_by_id(pid, "n1")
+        self.assertIsNotNone(node_1)
+        self.assertEqual(node_1["name"], "Hà Nội")
+        self.assertIn("Thăng Long", node_1["aliases"])
+
+        edge_1 = sql_repo.get_edge_by_id(pid, "e1")
+        self.assertIsNotNone(edge_1)
+        self.assertEqual(edge_1["status"], "Đã duyệt")
+
+        # 4. Phân trang nodes và proposals
+        nodes_page = sql_repo.query_nodes_page(pid, page=1, page_size=2)
+        self.assertEqual(nodes_page["total_count"], 3)
+        self.assertEqual(len(nodes_page["items"]), 2)
+
+        props_page = sql_repo.query_proposals_page(pid, status="pending")
+        self.assertEqual(props_page["total_count"], 1)
+        self.assertEqual(len(props_page["items"]), 1)
+
+        # 5. Smart incremental sync: Thay đổi n1, xóa n3, thêm n4 -> chỉ cập nhật đúng phần thay đổi
+        proj["nodes"] = [
+            {"id": "n1", "name": "Thủ đô Hà Nội", "kind": "Địa danh", "description": "Thủ đô ngàn năm", "aliases": ["Hà Nội"]},
+            {"id": "n2", "name": "Việt Nam", "kind": "Quốc gia", "description": "Đất nước", "aliases": []},
+            {"id": "n4", "name": "Sông Hồng", "kind": "Địa danh", "description": "Con sông", "aliases": []},
+        ]
+        sql_repo.sync_from_project_dict(proj)
+
+        # n1 cập nhật tên mới
+        n1_updated = sql_repo.get_node_by_id(pid, "n1")
+        self.assertEqual(n1_updated["name"], "Thủ đô Hà Nội")
+        # n3 bị xóa
+        self.assertIsNone(sql_repo.get_node_by_id(pid, "n3"))
+        # n4 mới được thêm
+        self.assertIsNotNone(sql_repo.get_node_by_id(pid, "n4"))
+        self.assertEqual(sql_repo.get_project_summary(pid).nodes_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

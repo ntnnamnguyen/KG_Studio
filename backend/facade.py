@@ -292,6 +292,75 @@ class KGStudioFacade:
             project["sync_error"] = ""
             return {"status": "synced", "sync_pending": False, "project_id": proj_id}
 
+    def query_edges_page(
+        self,
+        project_or_id: dict | str,
+        *,
+        status: str | None = None,
+        doc_id: str | None = None,
+        relation: str | None = None,
+        search: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        """Truy vấn trang cạnh quan hệ sử dụng chỉ mục SQLite tối ưu."""
+        pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
+        return self.sqlite_repo.query_edges_page(
+            pid,
+            status=status,
+            doc_id=doc_id,
+            relation=relation,
+            search=search,
+            page=page,
+            page_size=page_size,
+        )
+
+    def query_nodes_page(
+        self,
+        project_or_id: dict | str,
+        *,
+        kind: str | None = None,
+        search: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        """Truy vấn trang danh sách thực thể có phân trang trên SQLite."""
+        pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
+        return self.sqlite_repo.query_nodes_page(
+            pid,
+            kind=kind,
+            search=search,
+            page=page,
+            page_size=page_size,
+        )
+
+    def query_proposals_page(
+        self,
+        project_or_id: dict | str,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        """Truy vấn trang danh sách đề xuất schema (EDC proposals)."""
+        pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
+        return self.sqlite_repo.query_proposals_page(
+            pid,
+            kind=kind,
+            status=status,
+            page=page,
+            page_size=page_size,
+        )
+
+    def get_node_by_id(self, project_or_id: dict | str, node_id: str) -> dict | None:
+        pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
+        return self.sqlite_repo.get_node_by_id(pid, node_id)
+
+    def get_edge_by_id(self, project_or_id: dict | str, edge_id: str) -> dict | None:
+        pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
+        return self.sqlite_repo.get_edge_by_id(pid, edge_id)
+
     def create_snapshot(self, project: dict) -> Path:
         proj_id = str(project.get("project_id") or project.get("name") or "default")
         proj_name = str(project.get("name") or "")
