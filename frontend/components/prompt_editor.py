@@ -10,7 +10,6 @@ from __future__ import annotations
 import streamlit as st
 
 from backend.facade import get_facade
-from frontend.client import get_client
 from shared.catalog_utils import edc_prompt
 from shared.constants import (
     DEFAULT_EDC_PLUS_R_SETTINGS,
@@ -30,7 +29,6 @@ MODE_LABELS = {
 
 def render_prompt_management_panel(project: dict) -> None:
     facade = get_facade()
-    client = get_client()
 
     proj_id = str(project.get("project_id") or project.get("name") or "default")
     current_applied_mode = project.get("extraction_mode", MODE_FIXED)
@@ -289,7 +287,7 @@ def render_prompt_management_panel(project: dict) -> None:
     # 5. CẤU HÌNH BỔ SUNG CHO CHẾ ĐỘ EDC+R
     if selected_mode == MODE_EDC_PLUS_R:
         cfg = EDCPlusRSettingsDTO.from_dict(project.get("edc_plus_r_settings"))
-        models = client.get_embedding_models()
+        models = facade.list_embedding_models()
         model_ids = [m["model_id"] for m in models]
         model_names = {m["model_id"]: f"{m['name']} [{m['model_id']}]" for m in models}
         if cfg.embedder_model not in model_ids:

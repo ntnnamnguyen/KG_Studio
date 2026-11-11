@@ -21,7 +21,7 @@ from frontend.pages.p01_projects_docs import render_projects_docs_page
 from frontend.pages.p02_catalogs_prompts import render_catalogs_prompts_page
 from frontend.pages.p03_extraction import render_extraction_page
 from frontend.pages.p04_curation_hub import render_curation_hub_page
-from frontend.pages.p06_graph_export import render_graph_export_page
+from frontend.pages.p05_graph_export import render_graph_export_page
 from frontend.state.session import (
     LEGACY_PAGE_LABEL_MAP,
     PAGE_LABELS,
@@ -201,6 +201,40 @@ class TestLayoutPipeline(unittest.TestCase):
             render_graph_export_page(self.sample_project)
         except Exception as exc:
             self.fail(f"render_graph_export_page failed: {exc}")
+
+    def test_graph_export_page_slider_with_many_edges(self) -> None:
+        proj = dict(self.sample_project)
+        proj["project_id"] = "test_pipe_many_edges"
+        proj["entity_types"] = [
+            {"name": "Nhân vật", "description": "Con người", "definition": "Con người"},
+            {"name": "Địa danh", "description": "Nơi chốn", "definition": "Nơi chốn"},
+        ]
+        proj["nodes"] = [
+            {"id": "node_ly_cong_uan", "name": "Lý Công Uẩn", "kind": "Nhân vật"},
+            {"id": "node_thang_long", "name": "Thăng Long", "kind": "Địa danh"},
+        ]
+        proj["edges"] = [
+            {
+                "id": f"edge_{i}",
+                "source": "node_ly_cong_uan",
+                "relation": "dong_do",
+                "target": "node_thang_long",
+                "status": "Đã duyệt",
+                "evidence": "dời đô về Thăng Long",
+                "doc_id": "doc_1",
+                "doc_name": "lich_su.txt",
+            }
+            for i in range(120)
+        ]
+        limit_state_key = "_p06_edge_limit_test_pipe_many_edges"
+        st.session_state.pop(limit_state_key, None)
+        render_graph_export_page(proj)
+        self.assertEqual(st.session_state.get(limit_state_key), 60)
+
+        # Cho phép kéo lên tối đa tổng số cạnh (120)
+        st.session_state[limit_state_key] = 120
+        render_graph_export_page(proj)
+        self.assertEqual(st.session_state.get(limit_state_key), 120)
 
 
 if __name__ == "__main__":

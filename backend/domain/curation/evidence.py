@@ -57,14 +57,25 @@ def find_quote_span(text: str, quote: str) -> tuple[int, int] | None:
     return spans[0][0], spans[0][1]
 
 
-def evidence_context(project: dict, edge: dict, radius: int = 420) -> dict[str, Any]:
+def evidence_context(
+    project: dict,
+    edge: dict,
+    radius: int = 420,
+    *,
+    precomputed: dict[str, Any] | None = None,
+    include_snippets: bool = True,
+) -> dict[str, Any]:
     """Đối chiếu bằng chứng trên văn bản gốc hiện tại:
     - Ưu tiên vị trí đã xác minh / đã lưu nếu fingerprint tài liệu còn khớp.
     - Giới hạn trong phạm vi đoạn (start_char..end_char) nếu có.
     - Nếu có nhiều vị trí khớp mà chưa xác định được vị trí duy nhất, báo ambiguous=True ("Nhiều vị trí phù hợp").
     - Không tự bịa số trang nếu tài liệu không có thông tin phân trang.
     """
-    doc = find_document(project, str(edge.get("doc_id", "")))
+    doc_id = str(edge.get("doc_id", ""))
+    if precomputed is not None and "docs_by_id" in precomputed:
+        doc = precomputed["docs_by_id"].get(doc_id)
+    else:
+        doc = find_document(project, doc_id)
     if not doc or not str(doc.get("text", "")):
         return {
             "found": False,
@@ -84,7 +95,10 @@ def evidence_context(project: dict, edge: dict, radius: int = 420) -> dict[str, 
         }
 
     text = str(doc.get("text", ""))
-    cur_fp = doc_fingerprint(doc)
+    if precomputed is not None and "doc_fingerprints" in precomputed:
+        cur_fp = precomputed["doc_fingerprints"].get(doc_id) or doc_fingerprint(doc)
+    else:
+        cur_fp = doc_fingerprint(doc)
     saved_fp = str(edge.get("doc_fingerprint") or "")
     fp_valid = (not saved_fp) or (saved_fp == cur_fp)
     has_pages = bool(doc.get("pages"))
@@ -114,7 +128,7 @@ def evidence_context(project: dict, edge: dict, radius: int = 420) -> dict[str, 
     candidate_spans: list[tuple[int, int, str]] = []
     ambiguous = False
 
-    # ĐƯỜNG NHANH 1: So sánh trực tiếp lát cắt (Direct Slice) nếu fingerprint còn hiệu lực
+    # ĐƯỜNG NHANH 1: So sánh trực tiếp lát cắt hoặc tìm trong phạm vi đoạn (chunk) nếu fingerprint còn hiệu lực
     if fp_valid:
         v_start = edge.get("verified_start_char")
         v_end = edge.get("verified_end_char")
@@ -124,8 +138,10 @@ def evidence_context(project: dict, edge: dict, radius: int = 420) -> dict[str, 
                 slice_text = text[vs:ve]
                 if slice_text == quote_str:
                     selected_span = (vs, ve, "exact")
-                elif normal(slice_text) == normal(quote_str):
+                    candidate_spans = [selected_span]
+                elif abs((ve - vs) - len(quote_str)) <= max(64, len(quote_str)) and normal(slice_text) == normal(quote_str):
                     selected_span = (vs, ve, "normalized")
+                    candidate_spans = [selected_span]
 
         if selected_span is None:
             s_char = edge.get("start_char")
@@ -133,13 +149,24 @@ def evidence_context(project: dict, edge: dict, radius: int = 420) -> dict[str, 
             if s_char is not None and e_char is not None:
                 s_int, e_int = int(s_char), int(e_char)
                 if 0 <= s_int < e_int <= len(text):
-                    slice_text = text[s_int:e_int]
-                    if slice_text == quote_str:
+                    span_len = e_int - s_int
+                    q_len = len(quote_str)
+                    if span_len == q_len and text[s_int:e_int] == quote_str:
                         selected_span = (s_int, e_int, "exact")
-                    elif normal(slice_text) == normal(quote_str):
-                        selected_span = (s_int, e_int, "normalized")
+                        candidate_spans = [selected_span]
+                    elif span_len >= max(1, q_len // 2):
+                        chunk_matches = find_all_quote_spans(text[s_int:e_int], quote_str)
+                        if chunk_matches:
+                            in_chunk = [(s_int + cs, s_int + ce, cm) for cs, ce, cm in chunk_matches]
+                            if len(in_chunk) == 1:
+                                selected_span = in_chunk[0]
+                                candidate_spans = in_chunk
+                            else:
+                                selected_span = in_chunk[0]
+                                candidate_spans = in_chunk
+                                ambiguous = True
 
-    # ĐƯỜNG CHẬM: Chỉ quét toàn văn tài liệu khi không khớp lát cắt trực tiếp
+    # ĐƯỜNG CHẬM: Chỉ quét toàn văn tài liệu khi không tìm thấy trong lát cắt/đoạn đã lưu
     if selected_span is None:
         all_spans = find_all_quote_spans(text, quote_str)
         if not all_spans:
@@ -179,13 +206,42 @@ def evidence_context(project: dict, edge: dict, radius: int = 420) -> dict[str, 
             else:
                 ambiguous = True
                 selected_span = candidate_spans[0]
-    else:
+    elif not candidate_spans:
         candidate_spans = [selected_span]
 
     start, end, method = selected_span
+    page_val = page_at(doc.get("pages"), start) if has_pages else None
+
+    if ambiguous:
+        match_label = f"Nhiều vị trí phù hợp ({len(candidate_spans)})"
+    elif method == "exact":
+        match_label = "Khớp nguyên văn"
+    else:
+        match_label = "Khớp sau chuẩn hóa"
+
+    if not include_snippets:
+        return {
+            "found": True,
+            "match_method": method,
+            "match_label": match_label,
+            "text": "",
+            "before_text": "",
+            "quote": "",
+            "after_text": "",
+            "page": page_val,
+            "chunk_number": edge.get("chunk_number"),
+            "doc_name": doc.get("name", edge.get("doc_name", "")),
+            "start_char": start,
+            "end_char": end,
+            "doc_fingerprint": cur_fp,
+            "fingerprint_valid": fp_valid,
+            "ambiguous": ambiguous,
+            "candidates": [],
+            "reason": "Có nhiều vị trí khớp câu trích dẫn trong tài liệu; hãy chọn vị trí đúng." if ambiguous else "",
+        }
+
     left = max(0, start - radius)
     right = min(len(text), end + radius)
-    page_val = page_at(doc.get("pages"), start) if has_pages else None
 
     candidates_out: list[dict[str, Any]] = []
     for idx, (cs, ce, cm) in enumerate(candidate_spans, 1):
@@ -204,13 +260,6 @@ def evidence_context(project: dict, edge: dict, radius: int = 420) -> dict[str, 
                 "snippet": text[c_left:c_right],
             }
         )
-
-    if ambiguous:
-        match_label = f"Nhiều vị trí phù hợp ({len(candidate_spans)})"
-    elif method == "exact":
-        match_label = "Khớp nguyên văn"
-    else:
-        match_label = "Khớp sau chuẩn hóa"
 
     return {
         "found": True,

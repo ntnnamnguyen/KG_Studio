@@ -35,7 +35,7 @@ from frontend.components.edc_review_table import (
     filter_and_sort_proposals,
     paginate_proposals,
 )
-from frontend.pages.p04_edc_alignment import compute_edc_overview_counts
+from frontend.pages.p04_curation_hub import compute_edc_overview_counts
 from frontend.state.session import (
     assign_shared_target_to_drafts,
     clear_proposal_selection,

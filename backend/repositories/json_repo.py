@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from shared.catalog_utils import (
     CATALOG_FILES,
@@ -270,19 +271,33 @@ class JsonProjectRepository(ProjectRepository):
         journal_path = folder / JOURNAL_FILE
         if not journal_path.exists():
             return
+        bak_files_to_clean: list[Path] = []
         try:
             journal = json.loads(journal_path.read_text(encoding="utf-8"))
-            files_backup: dict[str, str | None] = journal.get("files", {})
-            for filename, content_text in files_backup.items():
+            files_backup = journal.get("files", {})
+            for filename, entry in files_backup.items():
                 target = folder / filename
-                if content_text is None:
+                if isinstance(entry, dict):
+                    bak_name = str(entry.get("bak") or "")
+                    bak_path = folder / bak_name if bak_name else None
+                    if bak_path is not None:
+                        bak_files_to_clean.append(bak_path)
+                    if not entry.get("existed"):
+                        target.unlink(missing_ok=True)
+                    elif bak_path is not None and bak_path.exists():
+                        bak_path.replace(target)
+                elif entry is None:
                     target.unlink(missing_ok=True)
                 else:
-                    atomic_write(target, content_text.encode("utf-8"))
+                    atomic_write(target, str(entry).encode("utf-8"))
         except Exception:
             pass
         finally:
             journal_path.unlink(missing_ok=True)
+            for bp in bak_files_to_clean:
+                bp.unlink(missing_ok=True)
+            for leftover in folder.glob(".*.journal.bak"):
+                leftover.unlink(missing_ok=True)
 
     def load_project(self, name: str) -> dict:
         folder = self.project_dir(name)
@@ -326,7 +341,7 @@ class JsonProjectRepository(ProjectRepository):
             "relations": validate_catalog(relation_catalog(project), "relations"),
             "entity_types": validate_catalog(project.get("entity_types", []), "entity_types"),
         }
-        candidate = copy.deepcopy(project)
+        candidate = dict(project)
         apply_relations(candidate, catalogs["relations"])
         candidate["entity_types"] = catalogs["entity_types"]
         candidate["saved_at"] = now_iso()
@@ -336,7 +351,7 @@ class JsonProjectRepository(ProjectRepository):
             (
                 PROJECT_FILE,
                 folder / PROJECT_FILE,
-                json.dumps(scrubbed(candidate), ensure_ascii=False, indent=2).encode("utf-8"),
+                json.dumps(scrubbed(candidate), ensure_ascii=False).encode("utf-8"),
             ),
             (
                 CATALOG_FILES["relations"],
@@ -350,21 +365,22 @@ class JsonProjectRepository(ProjectRepository):
             ),
         ]
 
-        backups: dict[str, bytes | None] = {}
-        journal_payload: dict[str, str | None] = {}
+        journal_files: dict[str, dict[str, Any]] = {}
+        bak_paths: list[Path] = []
         for filename, target_path, _ in bundle_targets:
+            bak_path = folder / f".{filename}.journal.bak"
+            bak_paths.append(bak_path)
             if target_path.exists():
-                raw_bytes = target_path.read_bytes()
-                backups[filename] = raw_bytes
-                journal_payload[filename] = raw_bytes.decode("utf-8-sig")
+                shutil.copyfile(target_path, bak_path)
+                journal_files[filename] = {"existed": True, "bak": bak_path.name}
             else:
-                backups[filename] = None
-                journal_payload[filename] = None
+                bak_path.unlink(missing_ok=True)
+                journal_files[filename] = {"existed": False, "bak": ""}
 
         journal_path = folder / JOURNAL_FILE
         atomic_write(
             journal_path,
-            json.dumps({"at": now_iso(), "files": journal_payload}, ensure_ascii=False).encode("utf-8"),
+            json.dumps({"version": 2, "at": now_iso(), "files": journal_files}, ensure_ascii=False).encode("utf-8"),
         )
 
         try:
@@ -372,18 +388,24 @@ class JsonProjectRepository(ProjectRepository):
                 self._writer_fn(target_path, payload_bytes)
         except Exception:
             for filename, target_path, _ in bundle_targets:
-                prev_bytes = backups.get(filename)
+                info = journal_files.get(filename, {})
                 try:
-                    if prev_bytes is None:
+                    if not info.get("existed"):
                         target_path.unlink(missing_ok=True)
                     else:
-                        atomic_write(target_path, prev_bytes)
+                        bak_p = folder / str(info.get("bak") or "")
+                        if bak_p.exists():
+                            bak_p.replace(target_path)
                 except Exception:
                     pass
             journal_path.unlink(missing_ok=True)
+            for bp in bak_paths:
+                bp.unlink(missing_ok=True)
             raise
 
         journal_path.unlink(missing_ok=True)
+        for bp in bak_paths:
+            bp.unlink(missing_ok=True)
 
         # Cập nhật manifest metadata và in-memory registry cache sau khi ghi thành công
         try:
@@ -406,8 +428,12 @@ class JsonProjectRepository(ProjectRepository):
         except Exception:
             pass
 
-        project.clear()
-        project.update(candidate)
+        if candidate is not project:
+            project["relations"] = candidate["relations"]
+            project["relation_notes"] = candidate["relation_notes"]
+            project["entity_types"] = candidate["entity_types"]
+            project["saved_at"] = candidate["saved_at"]
+            project["schema_version"] = candidate["schema_version"]
         return folder / PROJECT_FILE
 
     def mark_sync_pending(self, project_name: str, error_msg: str) -> None:
@@ -430,14 +456,18 @@ class JsonProjectRepository(ProjectRepository):
         except Exception:
             return {"at": "", "project_name": project_name, "error": "Pending SQLite sync"}
 
-    def create_snapshot(self, project: dict) -> Path:
+    def create_snapshot(self, project: dict, *, copy_from_disk_if_clean: bool = False) -> Path:
         folder = self.project_dir(project["name"])
-        if not (folder / PROJECT_FILE).exists():
+        project_file_path = folder / PROJECT_FILE
+        if not project_file_path.exists():
             self.save_project(project)
         snap_dir = folder / SNAPSHOT_DIR
         snap_dir.mkdir(parents=True, exist_ok=True)
         snap_path = snap_dir / f'{datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")}.json'
-        atomic_write(snap_path, json.dumps(scrubbed(project), ensure_ascii=False, indent=2).encode("utf-8"))
+        if copy_from_disk_if_clean and project_file_path.exists():
+            shutil.copy2(project_file_path, snap_path)
+            return snap_path
+        atomic_write(snap_path, json.dumps(scrubbed(project), ensure_ascii=False).encode("utf-8"))
         return snap_path
 
     def list_snapshots(self, project: dict) -> list[Path]:
@@ -450,6 +480,7 @@ class JsonProjectRepository(ProjectRepository):
         old["project_id"] = project.get("project_id") or old.get("project_id") or uid()
         old = ensure_project_shape(old, project["name"])
         self.save_project(old)
-        project.clear()
-        project.update(old)
+        if old is not project:
+            project.clear()
+            project.update(old)
         return old

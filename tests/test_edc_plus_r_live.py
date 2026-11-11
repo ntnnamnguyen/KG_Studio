@@ -209,10 +209,10 @@ class TestEDCPlusRLive(unittest.TestCase):
         self.assertIn("suggested_for_review", align_summary)
         self.assertIn("novel_proposals", align_summary)
 
-        # Kiểm tra đề xuất quan hệ
+        # Kiểm tra đề xuất quan hệ (đã được chuẩn hóa thành tiếng Việt tự nhiên có dấu)
         proposals = {p["name"]: p for p in project["schema_proposals"]}
-        self.assertIn("xây_dựng_vào_năm", proposals)
-        self.assertIn("kỷ_niệm_sự_kiện", proposals)
+        self.assertTrue("xây dựng vào năm" in proposals or "xây_dựng_vào_năm" in proposals)
+        self.assertTrue("kỷ niệm sự kiện" in proposals or "kỷ_niệm_sự_kiện" in proposals)
 
         # Kiểm tra rằng cạnh có quan hệ auto-align đã được cập nhật hoặc có candidate
         edge_relations = sorted(str(e["relation"]) for e in project["edges"])

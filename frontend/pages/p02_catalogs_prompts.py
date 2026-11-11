@@ -6,7 +6,7 @@ from __future__ import annotations
 import streamlit as st
 
 from backend.facade import get_facade
-from backend.integrations.llm_gateway import LLMGateway
+from backend.integrations.llm import LLMGateway
 from frontend.components.ml_lab_panel import render_ml_lab_panel
 from frontend.components.pipeline_banner import render_step_next_action
 from frontend.components.prompt_editor import render_prompt_management_panel

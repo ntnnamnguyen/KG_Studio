@@ -6,9 +6,9 @@ from typing import Any
 
 import streamlit as st
 
-from backend.domain.catalogs.service import catalog_rows, is_proposal_candidates_stale
+from backend.domain.catalogs.service import catalog_rows, compute_catalog_hash, is_proposal_candidates_stale
 from backend.facade import get_facade
-from backend.integrations.llm_gateway import LLMGateway
+from backend.integrations.llm import LLMGateway
 from shared.config_loader import CONFIG
 from shared.constants import STATUS_APPROVED, STATUS_CHECK, STATUS_PENDING
 from shared.schemas.curation import (
@@ -340,6 +340,43 @@ def set_focused_proposal(
     t_state["focused_proposal_id"] = str(proposal_id or "").strip()
 
 
+def _apply_selection_state(
+    state_dict: dict[str, Any],
+    action: str,
+    *,
+    item_id: str = "",
+    selected: bool = False,
+    is_eligible: bool = True,
+    eligible_ids: list[str] | None = None,
+    visible_eligible_ids: set[str] | None = None,
+    filter_signature: str = "",
+    item_noun: str = "mục",
+) -> Any:
+    """Helper cấp phát thực thi các thao tác danh sách ID lựa chọn dùng chung."""
+    if action == "toggle":
+        state_dict["selected_ids"] = toggle_id_in_list(state_dict["selected_ids"], item_id, selected, is_eligible)
+        return list(state_dict["selected_ids"])
+    if action == "select_page":
+        state_dict["selected_ids"] = append_unique_ids(state_dict["selected_ids"], eligible_ids or [])
+        return list(state_dict["selected_ids"])
+    if action == "select_all":
+        state_dict["selected_ids"] = list(dict.fromkeys(eligible_ids or []))
+        return list(state_dict["selected_ids"])
+    if action == "clear":
+        state_dict["selected_ids"] = []
+        state_dict["filter_prune_notice"] = ""
+        return None
+    if action == "reconcile":
+        prev_sig = state_dict.get("last_filter_sig", "")
+        state_dict["last_filter_sig"] = filter_signature
+        kept, pruned_count, notice = reconcile_id_selection(
+            state_dict["selected_ids"], visible_eligible_ids or set(), prev_sig, filter_signature, item_noun=item_noun
+        )
+        state_dict["selected_ids"] = kept
+        state_dict["filter_prune_notice"] = notice
+        return pruned_count
+
+
 def toggle_proposal_selection(
     project: dict,
     kind: str,
@@ -355,8 +392,7 @@ def toggle_proposal_selection(
     proposals_by_id = {str(p.get("id", "")): p for p in project.get("schema_proposals", [])}
     prop = proposals_by_id.get(pid)
     is_eligible = bool(prop and prop.get("kind") == kind and prop.get("status") == "pending")
-    t_state["selected_ids"] = toggle_id_in_list(t_state["selected_ids"], pid, selected, is_eligible)
-    return list(t_state["selected_ids"])
+    return _apply_selection_state(t_state, "toggle", item_id=pid, selected=selected, is_eligible=is_eligible)
 
 
 def select_page_proposals(
@@ -372,8 +408,7 @@ def select_page_proposals(
         for prop in page_proposals
         if prop.get("id") and prop.get("kind") == kind and prop.get("status") == "pending"
     ]
-    t_state["selected_ids"] = append_unique_ids(t_state["selected_ids"], eligible_ids)
-    return list(t_state["selected_ids"])
+    return _apply_selection_state(t_state, "select_page", eligible_ids=eligible_ids)
 
 
 def select_all_filtered_proposals(
@@ -389,8 +424,7 @@ def select_all_filtered_proposals(
         for prop in filtered_proposals
         if prop.get("id") and prop.get("kind") == kind and prop.get("status") == "pending"
     ]
-    t_state["selected_ids"] = list(dict.fromkeys(eligible))
-    return list(t_state["selected_ids"])
+    return _apply_selection_state(t_state, "select_all", eligible_ids=eligible)
 
 
 def clear_proposal_selection(
@@ -400,8 +434,7 @@ def clear_proposal_selection(
 ) -> None:
     """Xóa lựa chọn của riêng bảng hiện tại (không ảnh hưởng bảng kia)."""
     t_state = get_edc_table_state(project, kind, state_store)
-    t_state["selected_ids"] = []
-    t_state["filter_prune_notice"] = ""
+    _apply_selection_state(t_state, "clear")
 
 
 def reconcile_selection_with_filter(
@@ -418,14 +451,9 @@ def reconcile_selection_with_filter(
         for p in filtered_proposals
         if p.get("id") and p.get("kind") == kind and p.get("status") == "pending"
     }
-    prev_sig = t_state.get("last_filter_sig", "")
-    t_state["last_filter_sig"] = filter_signature
-    kept, pruned_count, notice = reconcile_id_selection(
-        t_state["selected_ids"], visible_eligible_ids, prev_sig, filter_signature, item_noun="mục"
+    return _apply_selection_state(
+        t_state, "reconcile", visible_eligible_ids=visible_eligible_ids, filter_signature=filter_signature, item_noun="mục"
     )
-    t_state["selected_ids"] = kept
-    t_state["filter_prune_notice"] = notice
-    return pruned_count
 
 
 def get_or_create_draft(
@@ -463,9 +491,10 @@ def update_proposal_draft(
     description: str | None = None,
     note: str | None = None,
     state_store: dict[str, Any] | None = None,
+    invalidate_preview: bool = True,
 ) -> dict[str, Any]:
     """Cập nhật bản nháp theo dòng và làm mất hiệu lực preview cũ."""
-    draft = copy.deepcopy(get_or_create_draft(project, kind, proposal, state_store=state_store))
+    draft = dict(get_or_create_draft(project, kind, proposal, state_store=state_store))
     if action is not None:
         draft["action"] = action
         if action == "approve" and not draft.get("canonical_name"):
@@ -483,7 +512,8 @@ def update_proposal_draft(
 
     t_state = get_edc_table_state(project, kind, state_store)
     t_state["drafts"][str(proposal["id"])] = draft
-    invalidate_active_preview(project, kind, state_store)
+    if invalidate_preview:
+        invalidate_active_preview(project, kind, state_store)
     return draft
 
 
@@ -511,8 +541,11 @@ def assign_shared_target_to_drafts(
             canonical_name=target_name,
             note=note,
             state_store=state_store,
+            invalidate_preview=False,
         )
         updated += 1
+    if updated > 0:
+        invalidate_active_preview(project, kind, state_store)
     return updated
 
 
@@ -527,6 +560,7 @@ def fill_top1_candidate_to_drafts(
     """Điền ứng viên đầu tiên vào bản nháp chỉ cho những dòng có ứng viên còn hợp lệ (không bị stale, đích còn tồn tại)."""
     proposals_by_id = {str(p.get("id", "")): p for p in project.get("schema_proposals", [])}
     valid_targets = {normal(r["name"]): r["name"] for r in catalog_rows(project, kind)}
+    cat_hash = compute_catalog_hash(project, kind)
     filled_ids: list[str] = []
     skipped: list[dict[str, str]] = []
 
@@ -539,7 +573,12 @@ def fill_top1_candidate_to_drafts(
         if not cands:
             skipped.append({"proposal_id": str(pid), "reason": "Chưa có ứng viên gợi ý"})
             continue
-        stale, stale_reason = is_proposal_candidates_stale(project, prop, current_model_fingerprint)
+        stale, stale_reason = is_proposal_candidates_stale(
+            project,
+            prop,
+            current_model_fingerprint,
+            precomputed_cat_hash=cat_hash,
+        )
         if stale:
             skipped.append({"proposal_id": str(pid), "reason": stale_reason})
             continue
@@ -555,8 +594,12 @@ def fill_top1_candidate_to_drafts(
             action="merge",
             canonical_name=canonical,
             state_store=state_store,
+            invalidate_preview=False,
         )
         filled_ids.append(str(pid))
+
+    if filled_ids:
+        invalidate_active_preview(project, kind, state_store)
 
     return {
         "filled_count": len(filled_ids),
@@ -853,8 +896,7 @@ def toggle_edge_selection(
     edges_by_id = {str(e.get("id", "")): e for e in project.get("edges", [])}
     edge = edges_by_id.get(eid)
     is_eligible = bool(edge and edge.get("status") in (STATUS_PENDING, STATUS_CHECK))
-    s_state["selected_ids"] = toggle_id_in_list(s_state["selected_ids"], eid, selected, is_eligible)
-    return list(s_state["selected_ids"])
+    return _apply_selection_state(s_state, "toggle", item_id=eid, selected=selected, is_eligible=is_eligible)
 
 
 def select_page_edges(
@@ -869,8 +911,7 @@ def select_page_edges(
         for edge in page_edges
         if edge.get("id") and edge.get("status") in (STATUS_PENDING, STATUS_CHECK)
     ]
-    s_state["selected_ids"] = append_unique_ids(s_state["selected_ids"], eligible_ids)
-    return list(s_state["selected_ids"])
+    return _apply_selection_state(s_state, "select_page", eligible_ids=eligible_ids)
 
 
 def select_all_filtered_edges(
@@ -885,8 +926,7 @@ def select_all_filtered_edges(
         for edge in filtered_edges
         if edge.get("id") and edge.get("status") in (STATUS_PENDING, STATUS_CHECK)
     ]
-    s_state["selected_ids"] = list(dict.fromkeys(eligible))
-    return list(s_state["selected_ids"])
+    return _apply_selection_state(s_state, "select_all", eligible_ids=eligible)
 
 
 def clear_edge_selection(
@@ -894,8 +934,7 @@ def clear_edge_selection(
     state_store: dict[str, Any] | None = None,
 ) -> None:
     s_state = get_curation_section_state(project, "edges", state_store)
-    s_state["selected_ids"] = []
-    s_state["filter_prune_notice"] = ""
+    _apply_selection_state(s_state, "clear")
 
 
 def reconcile_edge_selection_with_filter(
@@ -911,14 +950,9 @@ def reconcile_edge_selection_with_filter(
         for e in filtered_edges
         if e.get("id") and e.get("status") in (STATUS_PENDING, STATUS_CHECK)
     }
-    prev_sig = s_state.get("last_filter_sig", "")
-    s_state["last_filter_sig"] = filter_signature
-    kept, pruned_count, notice = reconcile_id_selection(
-        s_state["selected_ids"], visible_eligible_ids, prev_sig, filter_signature, item_noun="cạnh"
+    return _apply_selection_state(
+        s_state, "reconcile", visible_eligible_ids=visible_eligible_ids, filter_signature=filter_signature, item_noun="cạnh"
     )
-    s_state["selected_ids"] = kept
-    s_state["filter_prune_notice"] = notice
-    return pruned_count
 
 
 def toggle_entity_selection(
@@ -934,8 +968,7 @@ def toggle_entity_selection(
         return list(s_state["selected_ids"])
     nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", [])}
     is_eligible = nid in nodes_by_id
-    s_state["selected_ids"] = toggle_id_in_list(s_state["selected_ids"], nid, selected, is_eligible)
-    return list(s_state["selected_ids"])
+    return _apply_selection_state(s_state, "toggle", item_id=nid, selected=selected, is_eligible=is_eligible)
 
 
 def select_page_entities(
@@ -946,8 +979,7 @@ def select_page_entities(
     """Chọn các thực thể trên trang hiện tại, giữ nguyên lựa chọn trang khác."""
     s_state = get_curation_section_state(project, "entities", state_store)
     node_ids = [str(node.get("id", "")) for node in page_nodes if node.get("id")]
-    s_state["selected_ids"] = append_unique_ids(s_state["selected_ids"], node_ids)
-    return list(s_state["selected_ids"])
+    return _apply_selection_state(s_state, "select_page", eligible_ids=node_ids)
 
 
 def select_all_filtered_entities(
@@ -958,8 +990,7 @@ def select_all_filtered_entities(
     """Chọn toàn bộ các thực thể khớp bộ lọc hiện tại."""
     s_state = get_curation_section_state(project, "entities", state_store)
     node_ids = [str(node.get("id", "")) for node in filtered_nodes if node.get("id")]
-    s_state["selected_ids"] = list(dict.fromkeys(node_ids))
-    return list(s_state["selected_ids"])
+    return _apply_selection_state(s_state, "select_all", eligible_ids=node_ids)
 
 
 def clear_entity_selection(
@@ -967,8 +998,7 @@ def clear_entity_selection(
     state_store: dict[str, Any] | None = None,
 ) -> None:
     s_state = get_curation_section_state(project, "entities", state_store)
-    s_state["selected_ids"] = []
-    s_state["filter_prune_notice"] = ""
+    _apply_selection_state(s_state, "clear")
 
 
 def reconcile_entity_selection_with_filter(
@@ -979,14 +1009,9 @@ def reconcile_entity_selection_with_filter(
 ) -> int:
     s_state = get_curation_section_state(project, "entities", state_store)
     visible_ids = {str(n.get("id", "")) for n in filtered_nodes if n.get("id")}
-    prev_sig = s_state.get("last_filter_sig", "")
-    s_state["last_filter_sig"] = filter_signature
-    kept, pruned_count, notice = reconcile_id_selection(
-        s_state["selected_ids"], visible_ids, prev_sig, filter_signature, item_noun="thực thể"
+    return _apply_selection_state(
+        s_state, "reconcile", visible_eligible_ids=visible_ids, filter_signature=filter_signature, item_noun="thực thể"
     )
-    s_state["selected_ids"] = kept
-    s_state["filter_prune_notice"] = notice
-    return pruned_count
 
 
 def get_or_create_edge_draft(
@@ -1226,10 +1251,17 @@ def ensure_session_state() -> dict:
         default_name = projects[0] if projects else CONFIG["app"]["default_project_name"]
         st.session_state["active_project_name"] = default_name
 
-    if "project" not in st.session_state or st.session_state.get("_loaded_name") != st.session_state["active_project_name"]:
+    curr_proj = st.session_state.get("project")
+    needs_reload = (
+        curr_proj is None
+        or not isinstance(curr_proj, dict)
+        or not curr_proj.get("name")
+        or st.session_state.get("_loaded_name") != st.session_state["active_project_name"]
+    )
+    if needs_reload:
         proj = facade.load_project(st.session_state["active_project_name"])
         st.session_state["project"] = proj
-        st.session_state["_loaded_name"] = proj["name"]
+        st.session_state["_loaded_name"] = proj.get("name", st.session_state["active_project_name"])
         reset_edc_state_if_project_changed(proj, st.session_state)
         reset_curation_state_if_project_changed(proj, st.session_state)
     else:
@@ -1301,64 +1333,51 @@ def sync_llm_state_from_store() -> None:
     st.session_state["p02_llm_max_out"] = mo
 
 
+def _sync_llm_state_field(field_name: str, src_key: str, dest_key: str, is_int: bool = False) -> None:
+    raw = st.session_state.get(src_key, 0 if is_int else "")
+    val = int(raw) if is_int else str(raw).strip()
+    st.session_state[field_name] = val
+    st.session_state[dest_key] = val
+
+
 def on_sb_llm_key_change() -> None:
-    val = str(st.session_state.get("sb_llm_key", "")).strip()
-    st.session_state["llm_api_key"] = val
-    st.session_state["p02_llm_key"] = val
+    _sync_llm_state_field("llm_api_key", "sb_llm_key", "p02_llm_key")
 
 
 def on_p02_llm_key_change() -> None:
-    val = str(st.session_state.get("p02_llm_key", "")).strip()
-    st.session_state["llm_api_key"] = val
-    st.session_state["sb_llm_key"] = val
+    _sync_llm_state_field("llm_api_key", "p02_llm_key", "sb_llm_key")
 
 
 def on_sb_llm_model_change() -> None:
-    val = str(st.session_state.get("sb_llm_model", "")).strip()
-    st.session_state["llm_model"] = val
-    st.session_state["p02_llm_model"] = val
+    _sync_llm_state_field("llm_model", "sb_llm_model", "p02_llm_model")
 
 
 def on_p02_llm_model_change() -> None:
-    val = str(st.session_state.get("p02_llm_model", "")).strip()
-    st.session_state["llm_model"] = val
-    st.session_state["sb_llm_model"] = val
+    _sync_llm_state_field("llm_model", "p02_llm_model", "sb_llm_model")
 
 
 def on_sb_llm_url_change() -> None:
-    val = str(st.session_state.get("sb_llm_url", "")).strip()
-    st.session_state["llm_base_url"] = val
-    st.session_state["p02_llm_url"] = val
+    _sync_llm_state_field("llm_base_url", "sb_llm_url", "p02_llm_url")
 
 
 def on_p02_llm_url_change() -> None:
-    val = str(st.session_state.get("p02_llm_url", "")).strip()
-    st.session_state["llm_base_url"] = val
-    st.session_state["sb_llm_url"] = val
+    _sync_llm_state_field("llm_base_url", "p02_llm_url", "sb_llm_url")
 
 
 def on_sb_llm_max_in_change() -> None:
-    val = int(st.session_state.get("sb_llm_max_in", 16000))
-    st.session_state["llm_max_input_tokens"] = val
-    st.session_state["p02_llm_max_in"] = val
+    _sync_llm_state_field("llm_max_input_tokens", "sb_llm_max_in", "p02_llm_max_in", is_int=True)
 
 
 def on_p02_llm_max_in_change() -> None:
-    val = int(st.session_state.get("p02_llm_max_in", 16000))
-    st.session_state["llm_max_input_tokens"] = val
-    st.session_state["sb_llm_max_in"] = val
+    _sync_llm_state_field("llm_max_input_tokens", "p02_llm_max_in", "sb_llm_max_in", is_int=True)
 
 
 def on_sb_llm_max_out_change() -> None:
-    val = int(st.session_state.get("sb_llm_max_out", 16384))
-    st.session_state["llm_max_output_tokens"] = val
-    st.session_state["p02_llm_max_out"] = val
+    _sync_llm_state_field("llm_max_output_tokens", "sb_llm_max_out", "p02_llm_max_out", is_int=True)
 
 
 def on_p02_llm_max_out_change() -> None:
-    val = int(st.session_state.get("p02_llm_max_out", 16384))
-    st.session_state["llm_max_output_tokens"] = val
-    st.session_state["sb_llm_max_out"] = val
+    _sync_llm_state_field("llm_max_output_tokens", "p02_llm_max_out", "sb_llm_max_out", is_int=True)
 
 
 def switch_llm_provider(new_provider: str) -> None:

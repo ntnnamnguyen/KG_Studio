@@ -435,6 +435,15 @@ def apply_entity_merge(
     # Loại các node đã gộp khỏi danh sách node hoạt động (nhưng giữ toàn bộ edges!)
     candidate["nodes"] = [n for n in candidate.get("nodes", []) if str(n.get("id", "")) not in drop_set]
 
+    merged_dup_count = 0
+    if getattr(req, "collapse_edges", False):
+        _, merged_dup_count, _ = collapse_duplicate_edges(
+            candidate,
+            actor=req.actor,
+            note=f"Tự động hợp nhất cạnh trùng sau khi gộp thực thể về '{req.canonical_name or keep_id}'",
+            mutate_in_place=True,
+        )
+
     batch_id = uid()
     request_id = req.request_id or uid()
     rev_after = compute_project_revision(candidate)
@@ -454,6 +463,7 @@ def apply_entity_merge(
         "note": req.note.strip(),
         "affected_edge_ids": affected_edge_ids,
         "changed_endpoint_count": changed_endpoints,
+        "merged_duplicate_edges": merged_dup_count,
         "new_self_loop_ids": fresh_preview.new_self_loop_ids,
         "apparent_duplicate_groups": fresh_preview.apparent_duplicate_groups,
         "node_redirects_added": {d_id: keep_id for d_id in drop_ids},
@@ -494,9 +504,10 @@ def apply_entity_merge(
         item_results=[merge_record],
         affected_edge_ids=affected_edge_ids,
         changed_endpoint_count=changed_endpoints,
+        merged_duplicate_edges=merged_dup_count,
     )
 
-    if mutate_in_place:
+    if mutate_in_place and candidate is not project:
         project.clear()
         project.update(candidate)
     clear_duplicate_suggestions_cache()
@@ -562,10 +573,31 @@ def merge_nodes(
         return {"ok": False, "reason": str(exc)}
 
 
+def _clone_project_for_merge_mutation(project: dict) -> dict:
+    """Tạo bản sao có mục tiêu cho gộp thực thể / quan hệ / cạnh trùng (tránh copy.deepcopy văn bản tài liệu lớn)."""
+    candidate = dict(project)
+    candidate["nodes"] = list(project.get("nodes", []))
+    candidate["edges"] = list(project.get("edges", []))
+    candidate["node_redirects"] = dict(project.get("node_redirects") or {})
+    candidate["edge_redirects"] = dict(project.get("edge_redirects") or {})
+    candidate["relation_redirects"] = dict(project.get("relation_redirects") or {})
+    candidate["relation_aliases"] = copy.deepcopy(project.get("relation_aliases") or {})
+    if project.get("relation_types") is not None:
+        candidate["relation_types"] = [copy.deepcopy(r) for r in project.get("relation_types", [])]
+    candidate["relation_notes"] = copy.deepcopy(project.get("relation_notes") or {})
+    candidate["relations"] = list(project.get("relations", []))
+    candidate["schema_proposals"] = list(project.get("schema_proposals", []))
+    candidate["entity_merges"] = list(project.get("entity_merges", []))
+    candidate["relation_merges"] = list(project.get("relation_merges", []))
+    candidate["curation_history"] = list(project.get("curation_history", []))
+    return candidate
+
+
 def apply_bulk_entity_merges(
     project: dict,
     pairs: list[dict | tuple[str, str]],
     *,
+    collapse_edges: bool = False,
     actor: str = "human_reviewer",
     note: str = "",
     mutate_in_place: bool = True,
@@ -578,10 +610,12 @@ def apply_bulk_entity_merges(
     if not pairs:
         raise ValueError("Danh sách cặp thực thể cần gộp trống.")
 
-    candidate = copy.deepcopy(project)
+    candidate = _clone_project_for_merge_mutation(project)
     rev_before = compute_project_revision(candidate)
-    nodes_by_id = {str(n["id"]).strip(): n for n in candidate.get("nodes", []) if n.get("id")}
-    edges = candidate.get("edges", [])
+    nodes_list = candidate["nodes"]
+    node_idx_by_id = {str(n["id"]).strip(): idx for idx, n in enumerate(nodes_list) if n.get("id")}
+    nodes_by_id = {nid: nodes_list[idx] for nid, idx in node_idx_by_id.items()}
+    edges = candidate["edges"]
 
     degs: dict[str, int] = {}
     for e in edges:
@@ -639,6 +673,8 @@ def apply_bulk_entity_merges(
     batch_id = uid()
     request_id = uid()
 
+    drop_to_keep: dict[str, str] = {}
+
     for root, member_ids in clusters_by_root.items():
         if len(member_ids) < 2:
             continue
@@ -653,7 +689,9 @@ def apply_bulk_entity_merges(
         )
         keep_id = sorted_members[0]
         drop_ids = sorted_members[1:]
-        keep_node = nodes_by_id[keep_id]
+        keep_node = copy.deepcopy(nodes_by_id[keep_id])
+        nodes_list[node_idx_by_id[keep_id]] = keep_node
+        nodes_by_id[keep_id] = keep_node
         all_dropped_ids.extend(drop_ids)
 
         raw_aliases: list[str] = list(keep_node.get("aliases", []))
@@ -663,6 +701,7 @@ def apply_bulk_entity_merges(
         merged_from = list(keep_node.get("merged_from", []))
 
         for d_id in drop_ids:
+            drop_to_keep[d_id] = keep_id
             d_node = nodes_by_id[d_id]
             raw_aliases.append(str(d_node.get("name", "")))
             raw_aliases.extend(str(a) for a in d_node.get("aliases", []))
@@ -693,35 +732,44 @@ def apply_bulk_entity_merges(
         keep_node["schema_proposal_ids"] = list(dict.fromkeys(merged_props))
         keep_node["edc_observations"] = merged_obs
         keep_node["merged_from"] = merged_from
+        total_applied_clusters += 1
 
+    if drop_to_keep:
         redirects = candidate.setdefault("node_redirects", {})
-        for d_id in drop_ids:
-            redirects[d_id] = keep_id
         for old_id, target in list(redirects.items()):
-            if target in drop_ids:
-                redirects[old_id] = keep_id
+            if target in drop_to_keep:
+                redirects[old_id] = drop_to_keep[target]
+        redirects.update(drop_to_keep)
 
-        drop_set = set(drop_ids)
-        for edge in edges:
+        for idx, edge in enumerate(edges):
             src = str(edge.get("source", ""))
             tgt = str(edge.get("target", ""))
-            src_changed = src in drop_set
-            tgt_changed = tgt in drop_set
+            src_changed = src in drop_to_keep
+            tgt_changed = tgt in drop_to_keep
             if src_changed or tgt_changed:
-                all_affected_edge_ids.add(str(edge["id"]))
+                new_edge = dict(edge)
+                all_affected_edge_ids.add(str(new_edge["id"]))
                 total_changed_endpoints += (1 if src_changed else 0) + (1 if tgt_changed else 0)
                 if src_changed:
-                    edge["source"] = keep_id
+                    new_edge["source"] = drop_to_keep[src]
                 if tgt_changed:
-                    edge["target"] = keep_id
-                if edge["source"] == edge["target"]:
-                    edge["status"] = STATUS_CHECK
-                    edge["self_loop_confirmed"] = False
-
-        total_applied_clusters += 1
+                    new_edge["target"] = drop_to_keep[tgt]
+                if new_edge["source"] == new_edge["target"]:
+                    new_edge["status"] = STATUS_CHECK
+                    new_edge["self_loop_confirmed"] = False
+                edges[idx] = new_edge
 
     dropped_set = set(all_dropped_ids)
     candidate["nodes"] = [n for n in candidate.get("nodes", []) if str(n.get("id")) not in dropped_set]
+
+    merged_dup_count = 0
+    if collapse_edges:
+        _, merged_dup_count, _ = collapse_duplicate_edges(
+            candidate,
+            actor=actor,
+            note=f"Tự động hợp nhất cạnh trùng sau khi gộp hàng loạt {len(normalized_pairs)} cặp thực thể",
+            mutate_in_place=True,
+        )
 
     candidate.setdefault("entity_merges", []).append(
         {
@@ -734,6 +782,7 @@ def apply_bulk_entity_merges(
             "dropped_count": len(all_dropped_ids),
             "affected_edge_count": len(all_affected_edge_ids),
             "changed_endpoint_count": total_changed_endpoints,
+            "merged_duplicate_edges": merged_dup_count,
             "note": note or f"Gộp hàng loạt {len(normalized_pairs)} cặp thực thể qua {total_applied_clusters} cụm.",
         }
     )
@@ -755,8 +804,9 @@ def apply_bulk_entity_merges(
         item_results=[{"cluster_root": r, "members": list(m)} for r, m in clusters_by_root.items()],
         affected_edge_ids=list(all_affected_edge_ids),
         changed_endpoint_count=total_changed_endpoints,
+        merged_duplicate_edges=merged_dup_count,
     )
-    if mutate_in_place:
+    if mutate_in_place and candidate is not project:
         project.clear()
         project.update(candidate)
     clear_duplicate_suggestions_cache()
@@ -799,91 +849,176 @@ def relation_duplicate_suggestions(
             if r and r not in redirects and (edge_counts.get(r, 0) > 0 or r in catalog_rels)
         }
         all_rels = sorted(all_rels_set)
+        n_rels = len(all_rels)
+        norms = [normal(r) for r in all_rels]
+        cleans = [n_val.replace("_", " ").strip() for n_val in norms]
+        words_list = [set(c_val.split()) for c_val in cleans]
+
+        candidate_pairs: set[tuple[int, int]] | None = None
+        if n_rels >= 120:
+            candidate_pairs = set()
+            clean_buckets: dict[str, list[int]] = {}
+            fourgram_buckets: dict[str, set[int]] = {}
+            word_buckets: dict[str, list[int]] = {}
+            word_pair_buckets: dict[tuple[str, str], list[int]] = {}
+            prefix3_buckets: dict[str, list[int]] = {}
+
+            for idx, c_val in enumerate(cleans):
+                if not c_val:
+                    continue
+                clean_buckets.setdefault(c_val, []).append(idx)
+                if len(c_val) >= 3:
+                    prefix3_buckets.setdefault(c_val[:3], []).append(idx)
+                if len(c_val) >= 4:
+                    for pos in range(len(c_val) - 3):
+                        fourgram_buckets.setdefault(c_val[pos : pos + 4], set()).add(idx)
+
+                w_sorted = sorted(words_list[idx])
+                for tok in w_sorted:
+                    if len(tok) >= 2:
+                        word_buckets.setdefault(tok, []).append(idx)
+                if len(w_sorted) >= 2:
+                    for wi in range(len(w_sorted)):
+                        for wj in range(wi + 1, len(w_sorted)):
+                            word_pair_buckets.setdefault((w_sorted[wi], w_sorted[wj]), []).append(idx)
+
+            def _add_cand(a_i: int, b_i: int) -> None:
+                if a_i != b_i:
+                    candidate_pairs.add((a_i, b_i) if a_i < b_i else (b_i, a_i))  # type: ignore[union-attr]
+
+            # 1. Exact clean / norm matches
+            for bucket in clean_buckets.values():
+                if len(bucket) > 1:
+                    for bi in range(len(bucket)):
+                        for bj in range(bi + 1, len(bucket)):
+                            _add_cand(bucket[bi], bucket[bj])
+
+            # 2. Exact substring matches (100% recall via first-4gram & last-4gram intersection)
+            for idx, c_val in enumerate(cleans):
+                if len(c_val) >= 4:
+                    head_set = fourgram_buckets.get(c_val[:4])
+                    tail_set = fourgram_buckets.get(c_val[-4:])
+                    if head_set and tail_set:
+                        small, large = (head_set, tail_set) if len(head_set) <= len(tail_set) else (tail_set, head_set)
+                        for other_idx in small:
+                            if other_idx != idx and other_idx in large and len(cleans[other_idx]) >= len(c_val):
+                                _add_cand(idx, other_idx)
+
+            # 3. Word-pair overlap (100% recall for Jaccard >= 0.65 when |W| >= 2)
+            for bucket in word_pair_buckets.values():
+                if 1 < len(bucket) <= 250:
+                    for bi in range(len(bucket)):
+                        for bj in range(bi + 1, len(bucket)):
+                            _add_cand(bucket[bi], bucket[bj])
+
+            # 4. Shared token & 3-char prefix buckets for high character similarity
+            for bucket in word_buckets.values():
+                if 1 < len(bucket) <= 80:
+                    for bi in range(len(bucket)):
+                        for bj in range(bi + 1, len(bucket)):
+                            _add_cand(bucket[bi], bucket[bj])
+            for bucket in prefix3_buckets.values():
+                if 1 < len(bucket) <= 80:
+                    for bi in range(len(bucket)):
+                        for bj in range(bi + 1, len(bucket)):
+                            _add_cand(bucket[bi], bucket[bj])
+
+        pair_iter = (
+            sorted(candidate_pairs)
+            if candidate_pairs is not None
+            else ((i, j) for i in range(n_rels) for j in range(i + 1, n_rels))
+        )
 
         pairs: list[dict[str, Any]] = []
 
-        for i in range(len(all_rels)):
-            for j in range(i + 1, len(all_rels)):
-                r1 = all_rels[i]
-                r2 = all_rels[j]
+        for i, j in pair_iter:
+            r1 = all_rels[i]
+            r2 = all_rels[j]
 
-                # Nếu quan hệ đã được gộp/chuyển hướng về nhau hoặc về cùng một đích -> bỏ qua
-                if r1 in redirects or r2 in redirects:
-                    continue
-                if redirects.get(r1) == r2 or redirects.get(r2) == r1:
-                    continue
-                if redirects.get(r1) and redirects.get(r1) == redirects.get(r2):
-                    continue
+            # Nếu quan hệ đã được gộp/chuyển hướng về nhau hoặc về cùng một đích -> bỏ qua
+            if r1 in redirects or r2 in redirects:
+                continue
+            if redirects.get(r1) == r2 or redirects.get(r2) == r1:
+                continue
+            if redirects.get(r1) and redirects.get(r1) == redirects.get(r2):
+                continue
 
-                norm_1 = normal(r1)
-                norm_2 = normal(r2)
-                clean_1 = norm_1.replace("_", " ").strip()
-                clean_2 = norm_2.replace("_", " ").strip()
+            norm_1 = norms[i]
+            norm_2 = norms[j]
+            clean_1 = cleans[i]
+            clean_2 = cleans[j]
 
-                reasons: list[str] = []
-                score = 0.0
+            reasons: list[str] = []
+            score = 0.0
 
-                if norm_1 == norm_2:
-                    reasons.append("Trùng tên chuẩn hóa")
-                    score = 1.0
-                elif clean_1 == clean_2:
-                    reasons.append("Trùng tên khi chuẩn hóa khoảng trắng/gạch dưới")
-                    score = 0.98
-                else:
-                    ratio = SequenceMatcher(None, clean_1, clean_2).ratio()
-                    if (clean_1 in clean_2 or clean_2 in clean_1) and min(len(clean_1), len(clean_2)) >= 4:
-                        reasons.append("Chứa nhau (tiền tố/hậu tố)")
-                        score = max(0.85, ratio)
-                    elif ratio >= fuzzy_threshold:
+            if norm_1 == norm_2:
+                reasons.append("Trùng tên chuẩn hóa")
+                score = 1.0
+            elif clean_1 == clean_2:
+                reasons.append("Trùng tên khi chuẩn hóa khoảng trắng/gạch dưới")
+                score = 0.98
+            else:
+                is_sub = min(len(clean_1), len(clean_2)) >= 4 and (clean_1 in clean_2 or clean_2 in clean_1)
+                sm = SequenceMatcher(None, clean_1, clean_2)
+                if is_sub:
+                    ratio = sm.ratio()
+                    reasons.append("Chứa nhau (tiền tố/hậu tố)")
+                    score = max(0.85, ratio)
+                elif sm.real_quick_ratio() >= fuzzy_threshold and sm.quick_ratio() >= fuzzy_threshold:
+                    ratio = sm.ratio()
+                    if ratio >= fuzzy_threshold:
                         reasons.append(f"Độ giống tên cao ({ratio:.2f})")
                         score = ratio
 
-                    w1 = set(clean_1.split())
-                    w2 = set(clean_2.split())
-                    if w1 and w2:
-                        jaccard = len(w1 & w2) / len(w1 | w2)
+                w1 = words_list[i]
+                w2 = words_list[j]
+                if w1 and w2:
+                    inter_len = len(w1 & w2)
+                    if inter_len > 0:
+                        union_len = len(w1) + len(w2) - inter_len
+                        jaccard = inter_len / union_len
                         if jaccard >= 0.65 and jaccard > score:
-                            reasons.append(f"Trùng {len(w1 & w2)}/{len(w1 | w2)} từ khóa")
+                            reasons.append(f"Trùng {inter_len}/{union_len} từ khóa")
                             score = max(score, jaccard)
 
-                if reasons and score >= fuzzy_threshold:
-                    cnt_1 = edge_counts.get(r1, 0)
-                    cnt_2 = edge_counts.get(r2, 0)
+            if reasons and score >= fuzzy_threshold:
+                cnt_1 = edge_counts.get(r1, 0)
+                cnt_2 = edge_counts.get(r2, 0)
 
-                    # Ưu tiên quan hệ có nhiều cạnh hơn làm đích
-                    if cnt_1 > cnt_2:
-                        target = r1
-                        source = r2
-                    elif cnt_2 > cnt_1:
-                        target = r2
-                        source = r1
-                    elif r1 in catalog_rels and r2 not in catalog_rels:
-                        target = r1
-                        source = r2
-                    elif r2 in catalog_rels and r1 not in catalog_rels:
-                        target = r2
-                        source = r1
-                    else:
-                        target = r1 if len(r1) >= len(r2) else r2
-                        source = r2 if target == r1 else r1
+                # Ưu tiên quan hệ có nhiều cạnh hơn làm đích
+                if cnt_1 > cnt_2:
+                    target = r1
+                    source = r2
+                elif cnt_2 > cnt_1:
+                    target = r2
+                    source = r1
+                elif r1 in catalog_rels and r2 not in catalog_rels:
+                    target = r1
+                    source = r2
+                elif r2 in catalog_rels and r1 not in catalog_rels:
+                    target = r2
+                    source = r1
+                else:
+                    target = r1 if len(r1) >= len(r2) else r2
+                    source = r2 if target == r1 else r1
 
-                    pair_fp = sha(f"{min(norm_1, norm_2)}::{max(norm_1, norm_2)}")[:16]
-                    pairs.append(
-                        {
-                            "pair_key": f"{r1} ↔ {r2}",
-                            "pair_fingerprint": pair_fp,
-                            "relation_a": r1,
-                            "relation_b": r2,
-                            "count_a": cnt_1,
-                            "count_b": cnt_2,
-                            "target": target,
-                            "source": source,
-                            "suggested_target": target,
-                            "suggested_drop": source,
-                            "score": round(score, 2),
-                            "reason": "; ".join(reasons),
-                        }
-                    )
+                pair_fp = sha(f"{min(norm_1, norm_2)}::{max(norm_1, norm_2)}")[:16]
+                pairs.append(
+                    {
+                        "pair_key": f"{r1} ↔ {r2}",
+                        "pair_fingerprint": pair_fp,
+                        "relation_a": r1,
+                        "relation_b": r2,
+                        "count_a": cnt_1,
+                        "count_b": cnt_2,
+                        "target": target,
+                        "source": source,
+                        "suggested_target": target,
+                        "suggested_drop": source,
+                        "score": round(score, 2),
+                        "reason": "; ".join(reasons),
+                    }
+                )
 
         pairs.sort(key=lambda x: -x["score"])
         if len(_RELATION_DUPLICATE_SUGGESTIONS_CACHE) > 32:
@@ -904,11 +1039,159 @@ def relation_duplicate_suggestions(
     ]
 
 
+def collapse_duplicate_edges(
+    project: dict,
+    *,
+    actor: str = "human_reviewer",
+    note: str = "",
+    mutate_in_place: bool = True,
+) -> tuple[dict, int, list[dict[str, Any]]]:
+    """Hợp nhất thông minh các cạnh có cùng bộ ba (source, normal(relation), target).
+    
+    Bảo toàn 100% bằng chứng: dồn toàn bộ evidences của các cạnh trùng vào cạnh đại diện.
+    Thu thập tất cả original_relations và cập nhật bảng ánh xạ edge_redirects.
+    """
+    candidate = _clone_project_for_merge_mutation(project)
+    edges = candidate.get("edges", [])
+    if not edges:
+        return candidate, 0, []
+    edge_idx_by_id = {str(e.get("id", "")): idx for idx, e in enumerate(edges)}
+
+    groups: dict[tuple[str, str, str], list[dict]] = {}
+    for e in edges:
+        if e.get("status") == STATUS_REJECTED:
+            continue
+        s = str(e.get("source", "")).strip()
+        r = normal(str(e.get("relation", "")).strip())
+        t = str(e.get("target", "")).strip()
+        if s and r and t:
+            groups.setdefault((s, r, t), []).append(e)
+
+    status_rank = {
+        STATUS_APPROVED: 3,
+        STATUS_CHECK: 2,
+        STATUS_PENDING: 1,
+    }
+
+    dropped_ids: set[str] = set()
+    collapsed_records: list[dict[str, Any]] = []
+    edge_redirects = candidate.setdefault("edge_redirects", {})
+    now_time = now_iso()
+
+    for (s, r, t), grp in groups.items():
+        if len(grp) <= 1:
+            continue
+
+        def _rank(item: dict) -> tuple[int, int]:
+            st_rank = status_rank.get(item.get("status"), 0)
+            ev_len = len(str(item.get("evidence", "")))
+            return (st_rank, ev_len)
+
+        sorted_grp = sorted(grp, key=_rank, reverse=True)
+        kept = copy.deepcopy(sorted_grp[0])
+        if str(kept.get("id", "")) in edge_idx_by_id:
+            edges[edge_idx_by_id[str(kept["id"])]] = kept
+        duplicates = sorted_grp[1:]
+
+        kept_evs: list[dict] = []
+        if isinstance(kept.get("evidences"), list) and kept["evidences"]:
+            kept_evs.extend(kept["evidences"])
+        else:
+            kept_evs.append({
+                "edge_id": str(kept["id"]),
+                "doc_id": kept.get("doc_id", ""),
+                "doc_name": kept.get("doc_name", ""),
+                "chunk_number": kept.get("chunk_number", 0),
+                "start_char": kept.get("start_char"),
+                "end_char": kept.get("end_char"),
+                "evidence": kept.get("evidence", ""),
+                "status": kept.get("status", ""),
+                "original_relation": kept.get("original_relation") or kept.get("relation", ""),
+            })
+
+        orig_rels = list(kept.get("original_relations") or [])
+        if not orig_rels:
+            if kept.get("original_relation"):
+                orig_rels.append(kept["original_relation"])
+            if kept.get("relation") and kept["relation"] not in orig_rels:
+                orig_rels.append(kept["relation"])
+
+        for dup in duplicates:
+            dup_id = str(dup["id"])
+            dropped_ids.add(dup_id)
+            edge_redirects[dup_id] = str(kept["id"])
+
+            if isinstance(dup.get("evidences"), list) and dup["evidences"]:
+                for dev in dup["evidences"]:
+                    if not any(x.get("edge_id") == dev.get("edge_id") for x in kept_evs):
+                        kept_evs.append(dev)
+            else:
+                dev = {
+                    "edge_id": dup_id,
+                    "doc_id": dup.get("doc_id", ""),
+                    "doc_name": dup.get("doc_name", ""),
+                    "chunk_number": dup.get("chunk_number", 0),
+                    "start_char": dup.get("start_char"),
+                    "end_char": dup.get("end_char"),
+                    "evidence": dup.get("evidence", ""),
+                    "status": dup.get("status", ""),
+                    "original_relation": dup.get("original_relation") or dup.get("relation", ""),
+                }
+                if not any(x.get("edge_id") == dev.get("edge_id") for x in kept_evs):
+                    kept_evs.append(dev)
+
+            d_origs = list(dup.get("original_relations") or [])
+            if not d_origs:
+                if dup.get("original_relation"):
+                    d_origs.append(dup["original_relation"])
+                if dup.get("relation") and dup["relation"] not in d_origs:
+                    d_origs.append(dup["relation"])
+            for d_rel in d_origs:
+                if d_rel and d_rel not in orig_rels:
+                    orig_rels.append(d_rel)
+
+            if dup.get("override") and kept.get("status") == STATUS_APPROVED:
+                kept["override"] = True
+                ovr_note = str(dup.get("override_reason") or "")
+                if ovr_note and ovr_note not in str(kept.get("override_reason", "")):
+                    kept["override_reason"] = (str(kept.get("override_reason") or "") + "; " + ovr_note).strip("; ")
+
+        kept["evidences"] = kept_evs
+        kept["original_relations"] = orig_rels
+
+        collapsed_records.append({
+            "kept_edge_id": str(kept["id"]),
+            "dropped_edge_ids": [str(d["id"]) for d in duplicates],
+            "triple": (s, kept.get("relation", ""), t),
+            "total_evidences": len(kept_evs),
+            "at": now_time,
+        })
+
+    if dropped_ids:
+        candidate["edges"] = [e for e in candidate.get("edges", []) if str(e.get("id")) not in dropped_ids]
+        candidate.setdefault("curation_history", []).append({
+            "id": uid(),
+            "at": now_time,
+            "actor": actor,
+            "action": "collapse_duplicate_edges",
+            "dropped_count": len(dropped_ids),
+            "records": collapsed_records,
+            "note": note or f"Hợp nhất {len(dropped_ids)} cạnh trùng bộ ba.",
+        })
+
+    if mutate_in_place and candidate is not project:
+        project.clear()
+        project.update(candidate)
+
+    return candidate, len(dropped_ids), collapsed_records
+
+
 def apply_relation_merge(
     project: dict,
     source_relations: list[str],
     target_relation: str,
     *,
+    collapse_edges: bool = False,
     actor: str = "human_reviewer",
     note: str = "",
     mutate_in_place: bool = True,
@@ -922,7 +1205,7 @@ def apply_relation_merge(
     if not sources:
         raise ValueError("Cần ít nhất một quan hệ nguồn khác quan hệ đích để thực hiện gộp.")
 
-    candidate = copy.deepcopy(project)
+    candidate = _clone_project_for_merge_mutation(project)
     rev_before = compute_project_revision(candidate)
     batch_id = uid()
     request_id = uid()
@@ -930,12 +1213,16 @@ def apply_relation_merge(
 
     source_set = set(sources)
     affected_edges: list[str] = []
+    edges_list = candidate["edges"]
 
-    for edge in candidate.get("edges", []):
+    for idx, edge in enumerate(edges_list):
         r = str(edge.get("relation", "")).strip()
         if r in source_set:
-            edge["relation"] = target_clean
-            affected_edges.append(str(edge["id"]))
+            new_edge = dict(edge)
+            new_edge["original_relation"] = new_edge.get("original_relation") or r
+            new_edge["relation"] = target_clean
+            edges_list[idx] = new_edge
+            affected_edges.append(str(new_edge["id"]))
 
     redirects = candidate.setdefault("relation_redirects", {})
     for s in sources:
@@ -944,30 +1231,64 @@ def apply_relation_merge(
         if tgt in source_set:
             redirects[old_r] = target_clean
 
+    aliases_map = candidate.setdefault("relation_aliases", {})
+    tgt_aliases = list(aliases_map.get(target_clean, []))
+    for s in sources:
+        if s not in tgt_aliases and normal(s) != normal(target_clean):
+            tgt_aliases.append(s)
+    aliases_map[target_clean] = tgt_aliases
+
     rel_types = candidate.setdefault("relation_types", [])
     candidate["relation_types"] = [
         r for r in rel_types if str(r.get("name", "")).strip() not in source_set
     ]
-    has_target = any(normal(r.get("name", "")) == normal(target_clean) for r in candidate["relation_types"])
+    has_target = False
+    for r in candidate["relation_types"]:
+        if normal(r.get("name", "")) == normal(target_clean):
+            has_target = True
+            r_aliases = list(r.get("aliases") or [])
+            for a in tgt_aliases:
+                if a not in r_aliases and normal(a) != normal(target_clean):
+                    r_aliases.append(a)
+            r["aliases"] = r_aliases
+
     if not has_target:
         candidate["relation_types"].append(
             {
                 "name": target_clean,
                 "description": f"Quan hệ chuẩn hóa sau gộp từ: {', '.join(sources)}",
                 "definition": f"Quan hệ '{target_clean}' gộp từ các biến thể.",
+                "aliases": list(tgt_aliases),
             }
         )
+    rel_notes = candidate.setdefault("relation_notes", {})
+    for s in sources:
+        rel_notes.pop(s, None)
+    rel_notes.setdefault(target_clean, {})["aliases"] = list(tgt_aliases)
+
     raw_rels = candidate.setdefault("relations", [])
     candidate["relations"] = [r for r in raw_rels if r not in source_set]
     if target_clean not in candidate["relations"]:
         candidate["relations"].append(target_clean)
 
-    for p in candidate.get("schema_proposals", []):
+    props_list = candidate.get("schema_proposals", [])
+    for idx, p in enumerate(props_list):
         if p.get("kind") == "relations" and p.get("name") in source_set:
-            p["status"] = "merged"
-            p["canonical_name"] = target_clean
-            p["reviewed_at"] = merge_time
-            p["review_note"] = (str(p.get("review_note") or "") + f" [Gộp vào '{target_clean}']").strip()
+            new_p = copy.deepcopy(p)
+            new_p["status"] = "merged"
+            new_p["canonical_name"] = target_clean
+            new_p["reviewed_at"] = merge_time
+            new_p["review_note"] = (str(new_p.get("review_note") or "") + f" [Gộp vào '{target_clean}']").strip()
+            props_list[idx] = new_p
+
+    merged_dup_count = 0
+    if collapse_edges:
+        _, merged_dup_count, _ = collapse_duplicate_edges(
+            candidate,
+            actor=actor,
+            note=f"Tự động hợp nhất cạnh trùng sau khi gộp quan hệ về '{target_clean}'",
+            mutate_in_place=True,
+        )
 
     candidate.setdefault("relation_merges", []).append(
         {
@@ -978,6 +1299,8 @@ def apply_relation_merge(
             "source_relations": sources,
             "target_relation": target_clean,
             "affected_edge_count": len(affected_edges),
+            "merged_duplicate_edges": merged_dup_count,
+            "aliases_stored": list(tgt_aliases),
             "note": note or f"Gộp quan hệ: {', '.join(sources)} → {target_clean}",
         }
     )
@@ -998,8 +1321,9 @@ def apply_relation_merge(
         skipped_count=0,
         item_results=[{"source": s, "target": target_clean} for s in sources],
         affected_edge_ids=affected_edges,
+        merged_duplicate_edges=merged_dup_count,
     )
-    if mutate_in_place:
+    if mutate_in_place and candidate is not project:
         project.clear()
         project.update(candidate)
     clear_duplicate_suggestions_cache()
@@ -1011,6 +1335,7 @@ def bulk_apply_relation_merges(
     project: dict,
     mappings: list[dict | tuple[str, str]] | dict[str, str],
     *,
+    collapse_edges: bool = False,
     actor: str = "human_reviewer",
     note: str = "",
     mutate_in_place: bool = True,
@@ -1021,7 +1346,7 @@ def bulk_apply_relation_merges(
     if not mappings:
         raise ValueError("Danh sách quan hệ cần gộp trống.")
 
-    candidate = copy.deepcopy(project)
+    candidate = _clone_project_for_merge_mutation(project)
     rev_before = compute_project_revision(candidate)
     batch_id = uid()
     request_id = uid()
@@ -1057,15 +1382,26 @@ def bulk_apply_relation_merges(
         flat_map[s] = curr
 
     affected_edges: list[str] = []
-    for edge in candidate.get("edges", []):
+    edges_list = candidate["edges"]
+    for idx, edge in enumerate(edges_list):
         r = str(edge.get("relation", "")).strip()
         if r in flat_map:
-            edge["relation"] = flat_map[r]
-            affected_edges.append(str(edge["id"]))
+            new_edge = dict(edge)
+            new_edge["original_relation"] = new_edge.get("original_relation") or r
+            new_edge["relation"] = flat_map[r]
+            edges_list[idx] = new_edge
+            affected_edges.append(str(new_edge["id"]))
 
     redirects = candidate.setdefault("relation_redirects", {})
     for s, t in flat_map.items():
         redirects[s] = t
+
+    aliases_map = candidate.setdefault("relation_aliases", {})
+    for s, t in flat_map.items():
+        t_aliases = list(aliases_map.get(t, []))
+        if s not in t_aliases and normal(s) != normal(t):
+            t_aliases.append(s)
+        aliases_map[t] = t_aliases
 
     source_set = set(flat_map.keys())
     rel_types = candidate.setdefault("relation_types", [])
@@ -1074,25 +1410,61 @@ def bulk_apply_relation_merges(
     ]
     raw_rels = candidate.setdefault("relations", [])
     candidate["relations"] = [r for r in raw_rels if r not in source_set]
+    raw_rels_set = set(candidate["relations"])
     all_targets = set(flat_map.values())
-    for t in all_targets:
-        if not any(normal(r.get("name", "")) == normal(t) for r in candidate["relation_types"]):
-            candidate["relation_types"].append(
-                {
-                    "name": t,
-                    "description": "Quan hệ nạp tự động qua gộp hàng loạt",
-                    "definition": f"Quan hệ '{t}' gộp hàng loạt.",
-                }
-            )
-        if t not in candidate["relations"]:
-            candidate["relations"].append(t)
+    rel_notes = candidate.setdefault("relation_notes", {})
+    for s in source_set:
+        rel_notes.pop(s, None)
 
-    for p in candidate.get("schema_proposals", []):
+    rel_types_by_norm: dict[str, list[dict]] = {}
+    for r in candidate["relation_types"]:
+        rel_types_by_norm.setdefault(normal(r.get("name", "")), []).append(r)
+
+    for t in all_targets:
+        t_aliases = aliases_map.get(t, [])
+        t_norm = normal(t)
+        matched_rows = rel_types_by_norm.get(t_norm)
+        if matched_rows:
+            for r in matched_rows:
+                curr_r_aliases = list(r.get("aliases") or [])
+                curr_set = set(curr_r_aliases)
+                for a in t_aliases:
+                    if a not in curr_set and normal(a) != t_norm:
+                        curr_r_aliases.append(a)
+                        curr_set.add(a)
+                r["aliases"] = curr_r_aliases
+        else:
+            new_rt = {
+                "name": t,
+                "description": "Quan hệ nạp tự động qua gộp hàng loạt",
+                "definition": f"Quan hệ '{t}' gộp hàng loạt.",
+                "aliases": list(t_aliases),
+            }
+            candidate["relation_types"].append(new_rt)
+            rel_types_by_norm.setdefault(t_norm, []).append(new_rt)
+        rel_notes.setdefault(t, {})["aliases"] = list(t_aliases)
+        if t not in raw_rels_set:
+            candidate["relations"].append(t)
+            raw_rels_set.add(t)
+
+    props_list = candidate.get("schema_proposals", [])
+    for idx, p in enumerate(props_list):
         p_name = p.get("name", "")
         if p.get("kind") == "relations" and p_name in flat_map:
-            p["status"] = "merged"
-            p["canonical_name"] = flat_map[p_name]
-            p["reviewed_at"] = merge_time
+            new_p = copy.deepcopy(p)
+            new_p["status"] = "merged"
+            new_p["canonical_name"] = flat_map[p_name]
+            new_p["reviewed_at"] = merge_time
+            props_list[idx] = new_p
+
+    merged_dup_count = 0
+    if collapse_edges:
+        _, merged_dup_count, _ = collapse_duplicate_edges(
+            candidate,
+            actor=actor,
+            note=f"Tự động hợp nhất cạnh trùng sau khi gộp hàng loạt {len(flat_map)} quan hệ",
+            mutate_in_place=True,
+        )
 
     candidate.setdefault("relation_merges", []).append(
         {
@@ -1103,6 +1475,7 @@ def bulk_apply_relation_merges(
             "is_bulk": True,
             "merged_relations_count": len(flat_map),
             "affected_edge_count": len(affected_edges),
+            "merged_duplicate_edges": merged_dup_count,
             "note": note or f"Gộp hàng loạt {len(flat_map)} quan hệ.",
         }
     )
@@ -1123,8 +1496,9 @@ def bulk_apply_relation_merges(
         skipped_count=0,
         item_results=[{"source": s, "target": t} for s, t in flat_map.items()],
         affected_edge_ids=affected_edges,
+        merged_duplicate_edges=merged_dup_count,
     )
-    if mutate_in_place:
+    if mutate_in_place and candidate is not project:
         project.clear()
         project.update(candidate)
     clear_duplicate_suggestions_cache()
@@ -1150,6 +1524,42 @@ def mark_relation_pair_not_duplicate(project: dict, rel_a: str, rel_b: str, note
     existing = [p for p in pairs if tuple(sorted([normal(p.get("relation_a", "")), normal(p.get("relation_b", ""))])) == key]
     if not existing:
         pairs.append(entry)
+def mark_relation_pairs_not_duplicate_bulk(
+    project: dict,
+    pairs: list[tuple[str, str] | list[str] | dict[str, Any]],
+    note: str = "",
+) -> dict[str, Any]:
+    """Đánh dấu hàng loạt cặp quan hệ là khác nhau trong một lần quét O(R + K)."""
+    existing_list = project.setdefault("not_duplicate_relation_pairs", [])
+    seen_keys = {
+        tuple(sorted([normal(str(p.get("relation_a", ""))), normal(str(p.get("relation_b", "")))]))
+        for p in existing_list
+    }
+    ts = now_iso()
+    clean_note = str(note or "").strip()
+    added = 0
+    for item in pairs:
+        if isinstance(item, dict):
+            a = str(item.get("relation_a") or item.get("source") or "").strip()
+            b = str(item.get("relation_b") or item.get("target") or "").strip()
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            a, b = str(item[0]).strip(), str(item[1]).strip()
+        else:
+            continue
+        if not a or not b or a == b:
+            continue
+        key = tuple(sorted([normal(a), normal(b)]))
+        if key not in seen_keys:
+            seen_keys.add(key)
+            existing_list.append(
+                {
+                    "relation_a": min(a, b),
+                    "relation_b": max(a, b),
+                    "at": ts,
+                    "note": clean_note,
+                }
+            )
+            added += 1
     clear_relation_duplicate_suggestions_cache()
-    return {"ok": True, "pair": entry}
+    return {"ok": True, "added_count": added}
 

@@ -258,6 +258,7 @@ class EntityMergeRequestDTO:
     expected_revision: str = ""
     request_id: str = ""
     actor: str = "human_reviewer"
+    collapse_edges: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -283,6 +284,7 @@ class EntityMergeRequestDTO:
             expected_revision=str(raw.get("expected_revision", "")).strip(),
             request_id=str(raw.get("request_id", "")).strip(),
             actor=str(raw.get("actor", "human_reviewer") or "human_reviewer").strip(),
+            collapse_edges=bool(raw.get("collapse_edges", False)),
         )
 
 
@@ -364,6 +366,7 @@ class CurationResultDTO:
     item_results: list[dict[str, Any]] = field(default_factory=list)
     affected_edge_ids: list[str] = field(default_factory=list)
     changed_endpoint_count: int = 0
+    merged_duplicate_edges: int = 0
     snapshot_path: str = ""
     sync_status: str = "synced"
     sync_error: str = ""
@@ -394,6 +397,7 @@ class CurationResultDTO:
             item_results=list(raw.get("item_results", [])),
             affected_edge_ids=list(raw.get("affected_edge_ids", [])),
             changed_endpoint_count=int(raw.get("changed_endpoint_count", 0) or 0),
+            merged_duplicate_edges=int(raw.get("merged_duplicate_edges", 0) or 0),
             snapshot_path=str(raw.get("snapshot_path", "")),
             sync_status=str(raw.get("sync_status", "synced")),
             sync_error=str(raw.get("sync_error", "")),

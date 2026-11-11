@@ -25,6 +25,7 @@ from .entities import (
     compute_apparent_duplicate_edge_groups,
     duplicate_suggestions,
     mark_pair_not_duplicate,
+    mark_pairs_not_duplicate_bulk,
     node_degrees,
     review_stats,
     token_totals,
@@ -43,11 +44,20 @@ from .merge import (
     apply_entity_merge,
     apply_relation_merge,
     bulk_apply_relation_merges,
+    collapse_duplicate_edges,
     compute_entity_merge_hash,
     mark_relation_pair_not_duplicate,
+    mark_relation_pairs_not_duplicate_bulk,
     merge_nodes,
     preview_entity_merge,
     relation_duplicate_suggestions,
+)
+from .semantic_clustering import (
+    apply_semantic_clusters,
+    bulk_apply_entity_type_merges,
+    canonical_key,
+    preview_clustering_prompt,
+    scan_semantic_clusters,
 )
 from .review import (
     _normalize_review_action,
@@ -61,6 +71,8 @@ from .review import (
 )
 from .validation import (
     approvable_edges,
+    build_curation_validation_context,
+    build_schema_precomputed,
     inspect_edge_schema_status,
     is_edge_exportable,
     validate_edge_for_approval,
@@ -83,6 +95,8 @@ __all__ = [
     "select_edge_evidence_span",
     "recheck_edge_evidence",
     # Validation
+    "build_schema_precomputed",
+    "build_curation_validation_context",
     "inspect_edge_schema_status",
     "validate_edge_for_approval",
     "is_edge_exportable",
@@ -113,6 +127,12 @@ __all__ = [
     "relation_duplicate_suggestions",
     "apply_relation_merge",
     "bulk_apply_relation_merges",
+    "collapse_duplicate_edges",
     "mark_relation_pair_not_duplicate",
     "merge_nodes",
+    # Semantic Clustering
+    "preview_clustering_prompt",
+    "scan_semantic_clusters",
+    "apply_semantic_clusters",
+    "bulk_apply_entity_type_merges",
 ]

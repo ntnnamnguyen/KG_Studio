@@ -1,7 +1,9 @@
 """Quản lý Danh mục, Prompt, Đề xuất EDC và Duyệt Hàng Loạt (Độc lập 100%)."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 import copy
+import hashlib
 import json
 from typing import Any
 
@@ -20,7 +22,7 @@ from shared.schemas.edc import (
     BulkReviewResultDTO,
     ProposalDecisionDTO,
 )
-from shared.text_utils import normal, now_iso, sha, uid
+from shared.text_utils import clean_relation_name, normal, now_iso, sha, uid
 from backend.domain.prompts.service import (
     get_active_prompt_content,
     save_prompt_version,
@@ -77,60 +79,62 @@ def compute_catalog_hash(project: dict, kind: str | None = None) -> str:
 
 
 def compute_project_revision(project: dict) -> str:
-    """Tính revision phản ánh chính xác trạng thái dự án, danh mục, đề xuất và node/cạnh."""
-    snapshot_state = {
-        "project_id": str(project.get("project_id", "")),
-        "name": str(project.get("name", "")),
-        "catalog_hash": compute_catalog_hash(project),
-        "proposals": [
-            {
-                "id": str(p.get("id", "")),
-                "kind": str(p.get("kind", "")),
-                "name": str(p.get("name", "")),
-                "definition": str(p.get("definition", "")),
-                "description": str(p.get("description", "")),
-                "status": str(p.get("status", "pending")),
-                "canonical_name": str(p.get("canonical_name", "")),
-                "auto_aligned": bool(p.get("auto_aligned", False)),
-                "decision_origin": str(p.get("decision_origin", "")),
-            }
-            for p in project.get("schema_proposals", [])
-        ],
-        "nodes": [
-            {
-                "id": str(n.get("id", "")),
-                "name": str(n.get("name", "")),
-                "kind": str(n.get("kind", "")),
-                "description": str(n.get("description", "")),
-                "aliases": list(n.get("aliases", [])),
-                "documents": list(n.get("documents", [])),
-                "schema_proposal_ids": list(n.get("schema_proposal_ids", [])),
-            }
-            for n in project.get("nodes", [])
-        ],
-        "edges": [
-            {
-                "id": str(e.get("id", "")),
-                "source": str(e.get("source", "")),
-                "target": str(e.get("target", "")),
-                "relation": str(e.get("relation", "")),
-                "evidence": str(e.get("evidence", "")),
-                "doc_id": str(e.get("doc_id", "")),
-                "start_char": e.get("start_char"),
-                "end_char": e.get("end_char"),
-                "status": str(e.get("status", "")),
-                "override": bool(e.get("override", False)),
-                "rejection_code": str(e.get("rejection_code", "")),
-                "schema_proposal_ids": list(e.get("schema_proposal_ids", [])),
-            }
-            for e in project.get("edges", [])
-        ],
-        "node_redirects": dict(project.get("node_redirects") or {}),
-        "not_duplicate_pairs_count": len(project.get("not_duplicate_pairs", [])),
-        "prompt_bindings": dict(project.get("prompt_bindings") or {}),
-        "prompt_version_ids": sorted([v.get("id", "") for v in project.get("prompt_versions", [])]),
-    }
-    return sha(json.dumps(snapshot_state, ensure_ascii=False, sort_keys=True))[:16]
+    """Tính revision phản ánh chính xác trạng thái dự án, danh mục, đề xuất và node/cạnh (streaming SHA-256 O(V+E+P))."""
+    h = hashlib.sha256()
+    upd = h.update
+    sep = "\x1f"
+    rec = "\x1e"
+
+    upd(
+        f"hdr{sep}{project.get('project_id', '')}{sep}{project.get('name', '')}{sep}{compute_catalog_hash(project)}{rec}".encode(
+            "utf-8"
+        )
+    )
+
+    prop_chunks: list[str] = []
+    for p in project.get("schema_proposals", []):
+        prop_chunks.append(
+            f"{p.get('id', '')}{sep}{p.get('kind', '')}{sep}{p.get('name', '')}{sep}"
+            f"{p.get('definition', '')}{sep}{p.get('description', '')}{sep}"
+            f"{p.get('status', 'pending')}{sep}{p.get('canonical_name', '')}{sep}"
+            f"{1 if p.get('auto_aligned', False) else 0}{sep}{p.get('decision_origin', '')}"
+        )
+    upd(("P:" + rec.join(prop_chunks) + rec).encode("utf-8"))
+
+    node_chunks: list[str] = []
+    for n in project.get("nodes", []):
+        aliases_s = "\x1d".join(str(x) for x in n.get("aliases", ()))
+        docs_s = "\x1d".join(str(x) for x in n.get("documents", ()))
+        pids_s = "\x1d".join(str(x) for x in n.get("schema_proposal_ids", ()))
+        node_chunks.append(
+            f"{n.get('id', '')}{sep}{n.get('name', '')}{sep}{n.get('kind', '')}{sep}"
+            f"{n.get('description', '')}{sep}{aliases_s}{sep}{docs_s}{sep}{pids_s}"
+        )
+    upd(("N:" + rec.join(node_chunks) + rec).encode("utf-8"))
+
+    edge_chunks: list[str] = []
+    for e in project.get("edges", []):
+        pids_s = "\x1d".join(str(x) for x in e.get("schema_proposal_ids", ()))
+        edge_chunks.append(
+            f"{e.get('id', '')}{sep}{e.get('source', '')}{sep}{e.get('target', '')}{sep}"
+            f"{e.get('relation', '')}{sep}{e.get('evidence', '')}{sep}{e.get('doc_id', '')}{sep}"
+            f"{e.get('start_char')}{sep}{e.get('end_char')}{sep}{e.get('status', '')}{sep}"
+            f"{1 if e.get('override', False) else 0}{sep}{e.get('rejection_code', '')}{sep}{pids_s}"
+        )
+    upd(("E:" + rec.join(edge_chunks) + rec).encode("utf-8"))
+
+    node_redirs = sorted((str(k), str(v)) for k, v in (project.get("node_redirects") or {}).items())
+    rel_redirs = sorted((str(k), str(v)) for k, v in (project.get("relation_redirects") or {}).items())
+    p_bindings = sorted((str(k), str(v)) for k, v in (project.get("prompt_bindings") or {}).items())
+    p_versions = sorted(str(v.get("id", "")) for v in project.get("prompt_versions", ()))
+    tail = (
+        f"T:{node_redirs}{sep}{rel_redirs}{sep}"
+        f"{len(project.get('not_duplicate_pairs', ()))}{sep}"
+        f"{len(project.get('not_duplicate_relation_pairs', ()))}{sep}"
+        f"{p_bindings}{sep}{p_versions}"
+    )
+    upd(tail.encode("utf-8"))
+    return h.hexdigest()[:16]
 
 
 def compute_decisions_hash(project_id: str, kind: str, decisions: list[ProposalDecisionDTO | dict]) -> str:
@@ -160,13 +164,15 @@ def is_proposal_candidates_stale(
     project: dict,
     proposal: dict,
     current_model_fingerprint: str = "",
+    *,
+    precomputed_cat_hash: str | None = None,
 ) -> tuple[bool, str]:
     """Kiểm tra xem gợi ý ứng viên của đề xuất có bị cũ (stale) do đổi định nghĩa, catalog hoặc model không."""
     cands = proposal.get("alignment_candidates") or []
     if not cands:
         return False, ""
     kind = proposal.get("kind", "relations")
-    cur_cat_hash = compute_catalog_hash(project, kind)
+    cur_cat_hash = precomputed_cat_hash if precomputed_cat_hash is not None else compute_catalog_hash(project, kind)
     saved_cat_hash = str(proposal.get("candidates_catalog_hash") or "")
     if saved_cat_hash and saved_cat_hash != cur_cat_hash:
         return True, "Danh mục đã thay đổi kể từ lần gợi ý trước"
@@ -186,6 +192,20 @@ def is_proposal_candidates_stale(
 def propose_term(project: dict, kind: str, name: str, definition: str, observation: dict) -> tuple[str, str]:
     rows = catalog_rows(project, kind)
     canonical = {normal(row["name"]): row["name"] for row in rows}
+    if kind == "relations":
+        for row in rows:
+            canonical[normal(clean_relation_name(row["name"]))] = row["name"]
+        match = canonical.get(normal(name))
+        if match is None:
+            cleaned = clean_relation_name(name)
+            match = canonical.get(normal(cleaned))
+            if match is None:
+                name = cleaned
+            else:
+                name = match
+        else:
+            name = match
+
     proposals = project.setdefault("schema_proposals", [])
     proposal = next((p for p in proposals if p["kind"] == kind and normal(p["name"]) == normal(name)), None)
     if proposal is None and normal(name) in canonical:
@@ -219,8 +239,15 @@ def propose_term(project: dict, kind: str, name: str, definition: str, observati
 
 def prepare_edc(project: dict, clean: dict, payload: dict, context: dict) -> None:
     definitions = {}
-    for kind, key in (("relations", "dinh_nghia_quan_he"), ("entity_types", "dinh_nghia_loai")):
-        definitions[kind] = {normal(row["ten"]): row["dinh_nghia"].strip() for row in payload.get(key, [])}
+    definitions["entity_types"] = {normal(row["ten"]): row["dinh_nghia"].strip() for row in payload.get("dinh_nghia_loai", [])}
+    rel_defs = {}
+    for row in payload.get("dinh_nghia_quan_he", []):
+        raw_t = row.get("ten", "")
+        clean_t = clean_relation_name(raw_t)
+        d_val = row.get("dinh_nghia", "").strip()
+        rel_defs[normal(raw_t)] = d_val
+        rel_defs[normal(clean_t)] = d_val
+    definitions["relations"] = rel_defs
     entities = {}
     for entity in clean["thuc_the"]:
         original = entity["loai"]
@@ -249,13 +276,24 @@ def prepare_edc(project: dict, clean: dict, payload: dict, context: dict) -> Non
         relation.update(quan_he=label, edc_original=original, schema_proposal_ids=list(dict.fromkeys(ids)))
 
 
-def schema_review_issue(project: dict, edge: dict) -> str:
+def schema_review_issue(
+    project: dict,
+    edge: dict,
+    *,
+    precomputed: dict[str, Any] | None = None,
+) -> str:
     if edge.get("extraction_mode") not in (MODE_EDC, MODE_EDC_PLUS_R):
         return ""
-    proposals = {p["id"]: p for p in project.get("schema_proposals", [])}
-    nodes = {n["id"]: n for n in project.get("nodes", [])}
-    rel_rows = {normal(row["name"]) for row in catalog_rows(project, "relations")}
-    types = {normal(row["name"]) for row in catalog_rows(project, "entity_types")}
+    if precomputed is not None:
+        proposals = precomputed.get("proposals", {})
+        nodes = precomputed.get("nodes", {})
+        rel_rows = precomputed.get("rel_norms", set())
+        types = precomputed.get("type_norms", set())
+    else:
+        proposals = {p["id"]: p for p in project.get("schema_proposals", [])}
+        nodes = {n["id"]: n for n in project.get("nodes", [])}
+        rel_rows = {normal(row["name"]) for row in catalog_rows(project, "relations")}
+        types = {normal(row["name"]) for row in catalog_rows(project, "entity_types")}
 
     rel_name = str(edge.get("relation", "")).strip()
     src_node = nodes.get(edge.get("source"), {})
@@ -382,6 +420,20 @@ def _default_description_for_approval(proposal: dict, target_name: str, explicit
     return f"Ví dụ: {example}" if example else target_name
 
 
+def _clone_project_for_edc_mutation(project: dict) -> dict:
+    """Tạo bản sao có mục tiêu cho thao tác duyệt đề xuất EDC (tránh copy.deepcopy toàn bộ văn bản tài liệu lớn)."""
+    candidate = dict(project)
+    candidate["relations"] = list(project.get("relations", []))
+    candidate["relation_notes"] = copy.deepcopy(project.get("relation_notes", {}))
+    candidate["entity_types"] = [copy.deepcopy(r) for r in project.get("entity_types", [])]
+    candidate["schema_proposals"] = list(project.get("schema_proposals", []))
+    candidate["nodes"] = list(project.get("nodes", []))
+    candidate["edges"] = list(project.get("edges", []))
+    candidate["schema_decisions"] = list(project.get("schema_decisions", []))
+    candidate["schema_decision_batches"] = list(project.get("schema_decision_batches", []))
+    return candidate
+
+
 def decide_proposal(
     project: dict,
     proposal_id: str,
@@ -398,11 +450,18 @@ def decide_proposal(
 ) -> dict:
     if action not in ("approve", "merge", "reject"):
         raise ValueError("Thao tác đề xuất không hợp lệ")
-    candidate = copy.deepcopy(project)
-    proposal = next((p for p in candidate.get("schema_proposals", []) if p["id"] == proposal_id), None)
-    if proposal is None:
+    candidate = _clone_project_for_edc_mutation(project)
+    prop_idx = next(
+        (idx for idx, p in enumerate(candidate["schema_proposals"]) if p["id"] == proposal_id),
+        None,
+    )
+    if prop_idx is None:
         raise ValueError("Không tìm thấy đề xuất")
-    previous = copy.deepcopy(proposal)
+    orig_proposal = candidate["schema_proposals"][prop_idx]
+    previous = copy.deepcopy(orig_proposal)
+    proposal = copy.deepcopy(orig_proposal)
+    candidate["schema_proposals"][prop_idx] = proposal
+
     impact = proposal_impact(candidate, proposal_id)
     rows = catalog_rows(candidate, proposal["kind"])
     target_name = canonical_name.strip()
@@ -435,20 +494,31 @@ def decide_proposal(
                 apply_relations(candidate, rows)
             else:
                 candidate["entity_types"] = rows
-        if proposal["kind"] == "relations":
-            for edge in candidate["edges"]:
-                if proposal_id in edge.get("schema_proposal_ids", []):
-                    edge["relation"] = target_name
-        else:
-            for node in candidate["nodes"]:
+        if proposal["kind"] != "relations":
+            nodes_list = candidate["nodes"]
+            for idx, node in enumerate(nodes_list):
                 if proposal_id in node.get("schema_proposal_ids", []):
-                    node["kind"] = target_name
+                    new_node = dict(node)
+                    new_node["kind"] = target_name
+                    nodes_list[idx] = new_node
+
     affected_nodes = set(impact["nodes"])
     affected_edge_set = set(impact["edges"])
-    for edge in candidate["edges"]:
-        if edge["id"] in affected_edge_set or (affected_nodes & {edge.get("source"), edge.get("target")}):
-            if edge.get("status") != STATUS_REJECTED:
-                edge.update(status=STATUS_CHECK, reviewed_at="", override=False)
+    is_rel_update = action != "reject" and proposal["kind"] == "relations"
+    edges_list = candidate["edges"]
+    for idx, edge in enumerate(edges_list):
+        rel_hit = is_rel_update and (proposal_id in edge.get("schema_proposal_ids", []))
+        status_hit = edge["id"] in affected_edge_set or (
+            edge.get("source") in affected_nodes or edge.get("target") in affected_nodes
+        )
+        if rel_hit or status_hit:
+            new_edge = dict(edge)
+            if rel_hit:
+                new_edge["relation"] = target_name
+            if status_hit and new_edge.get("status") != STATUS_REJECTED:
+                new_edge.update(status=STATUS_CHECK, reviewed_at="", override=False)
+            edges_list[idx] = new_edge
+
     proposal.update(
         status={"approve": "approved", "merge": "merged", "reject": "rejected"}[action],
         canonical_name=target_name if action != "reject" else "",
@@ -461,7 +531,7 @@ def decide_proposal(
     )
     if action == "approve":
         proposal["description"] = next(row["description"] for row in rows if normal(row["name"]) == normal(target_name))
-    candidate.setdefault("schema_decisions", []).append(
+    candidate["schema_decisions"].append(
         {
             "at": now_iso(),
             "proposal_id": proposal_id,
@@ -486,9 +556,9 @@ def preview_proposal_decisions(
     *,
     current_model_fingerprint: str = "",
 ) -> BulkReviewPreviewDTO:
-    """Kiểm tra toàn bộ lô quyết định trên bản sao dự án, trả về BulkReviewPreviewDTO."""
+    """Kiểm tra toàn bộ lô quyết định không ghi dự án (O(V+E+B)), trả về BulkReviewPreviewDTO."""
     req = BulkReviewRequestDTO.from_dict(request)
-    work_project = copy.deepcopy(project)
+    work_project = project
     proj_id = str(work_project.get("project_id") or "")
     proj_name = str(work_project.get("name") or "")
     revision = compute_project_revision(work_project)
@@ -538,6 +608,11 @@ def preview_proposal_decisions(
             conflicting_duplicate_pids.add(pid)
         deduped_decisions.append(group[0])
 
+    # Tính phạm vi ảnh hưởng một lần O(V+E) cho toàn bộ lô thay vì quét lại theo từng dòng
+    existing_pids_in_batch = [pid for pid in ordered_unique_pids if pid in proposals_by_id]
+    impacts_map = batch_proposal_impacts(work_project, existing_pids_in_batch) if existing_pids_in_batch else {}
+    empty_impact = {"nodes": [], "edges": [], "direct_edges": [], "indirect_edges": []}
+
     # 2. Kiểm tra từng dòng và thu thập thông tin để kiểm tra xung đột chéo trong lô
     item_map: dict[str, dict[str, Any]] = {}
     approve_name_groups: dict[str, list[str]] = {}
@@ -545,7 +620,6 @@ def preview_proposal_decisions(
 
     for dec in deduped_decisions:
         pid = dec.proposal_id
-        proposal = proposals_by_id.get(pid)
         if dec.action == "approve" and dec.canonical_name.strip():
             norm_target = normal(dec.canonical_name.strip())
             approve_name_groups.setdefault(norm_target, []).append(pid)
@@ -565,14 +639,14 @@ def preview_proposal_decisions(
 
         if proposal is None:
             errors.append(f"Không tìm thấy đề xuất ID '{pid}' trong dự án")
-            impact = {"nodes": [], "edges": [], "direct_edges": [], "indirect_edges": []}
+            impact = dict(empty_impact)
             orig_name = ""
             resolved_desc = dec.description.strip()
             resolved_def = dec.definition.strip()
             resolved_target = dec.canonical_name.strip()
         else:
             orig_name = str(proposal.get("name", ""))
-            impact = proposal_impact(work_project, pid)
+            impact = impacts_map.get(pid, dict(empty_impact))
             prop_kind = str(proposal.get("kind", ""))
             if prop_kind != req.kind or (dec.kind and dec.kind != req.kind):
                 errors.append(f"Đề xuất '{orig_name}' thuộc nhóm '{prop_kind}', không khớp bảng '{req.kind}'")
@@ -581,7 +655,13 @@ def preview_proposal_decisions(
                     f"Đề xuất '{orig_name}' đang ở trạng thái '{proposal.get('status')}' (chỉ duyệt hàng loạt mục 'pending')"
                 )
 
-            stale, stale_reason = is_proposal_candidates_stale(work_project, proposal, current_model_fingerprint)
+            stale_cat_hash = cat_hash if prop_kind == req.kind else None
+            stale, stale_reason = is_proposal_candidates_stale(
+                work_project,
+                proposal,
+                current_model_fingerprint,
+                precomputed_cat_hash=stale_cat_hash,
+            )
             if stale:
                 warnings.append(stale_reason)
 
@@ -657,47 +737,48 @@ def preview_proposal_decisions(
         return ("set", normal(it["canonical_name"]))
 
     batch_pid_set = set(item_map.keys())
-    for node in work_project.get("nodes", []):
-        touching = [pid for pid in node.get("schema_proposal_ids", []) if pid in batch_pid_set]
-        if len(touching) > 1:
-            outcomes = {_effective_outcome(pid) for pid in touching}
-            if len(outcomes) > 1:
-                for pid in touching:
-                    msg = (
-                        f"Xung đột tác động trên cùng node '{node.get('name', node['id'])}' ({node['id']}) "
-                        f"giữa các đề xuất: {', '.join(touching)}"
-                    )
-                    if msg not in item_map[pid]["errors"]:
-                        item_map[pid]["errors"].append(msg)
-
-    nodes_by_id = {n["id"]: n for n in work_project.get("nodes", [])}
-    for edge in work_project.get("edges", []):
-        touching = [pid for pid in edge.get("schema_proposal_ids", []) if pid in batch_pid_set]
-        if len(touching) <= 1:
-            continue
-        if req.kind == "relations":
-            outcomes = {_effective_outcome(pid) for pid in touching}
-            if len(outcomes) > 1:
-                for pid in touching:
-                    msg = f"Xung đột tác động trên cùng cạnh '{edge['id']}' giữa các đề xuất quan hệ: {', '.join(touching)}"
-                    if msg not in item_map[pid]["errors"]:
-                        item_map[pid]["errors"].append(msg)
-        else:
-            src_node = nodes_by_id.get(edge.get("source"), {})
-            tgt_node = nodes_by_id.get(edge.get("target"), {})
-            src_pids = set(src_node.get("schema_proposal_ids", []))
-            tgt_pids = set(tgt_node.get("schema_proposal_ids", []))
-            direct_only_pids = [pid for pid in touching if pid not in src_pids and pid not in tgt_pids]
-            if len(direct_only_pids) > 1 or (direct_only_pids and len(touching) > 1):
+    if len(batch_pid_set) > 1:
+        for node in work_project.get("nodes", []):
+            touching = [pid for pid in node.get("schema_proposal_ids", []) if pid in batch_pid_set]
+            if len(touching) > 1:
                 outcomes = {_effective_outcome(pid) for pid in touching}
                 if len(outcomes) > 1:
                     for pid in touching:
                         msg = (
-                            f"Xung đột tác động trên cùng cạnh '{edge['id']}' "
-                            f"giữa các đề xuất loại thực thể: {', '.join(touching)}"
+                            f"Xung đột tác động trên cùng node '{node.get('name', node['id'])}' ({node['id']}) "
+                            f"giữa các đề xuất: {', '.join(touching)}"
                         )
                         if msg not in item_map[pid]["errors"]:
                             item_map[pid]["errors"].append(msg)
+
+        nodes_by_id = {n["id"]: n for n in work_project.get("nodes", [])} if req.kind != "relations" else {}
+        for edge in work_project.get("edges", []):
+            touching = [pid for pid in edge.get("schema_proposal_ids", []) if pid in batch_pid_set]
+            if len(touching) <= 1:
+                continue
+            if req.kind == "relations":
+                outcomes = {_effective_outcome(pid) for pid in touching}
+                if len(outcomes) > 1:
+                    for pid in touching:
+                        msg = f"Xung đột tác động trên cùng cạnh '{edge['id']}' giữa các đề xuất quan hệ: {', '.join(touching)}"
+                        if msg not in item_map[pid]["errors"]:
+                            item_map[pid]["errors"].append(msg)
+            else:
+                src_node = nodes_by_id.get(edge.get("source"), {})
+                tgt_node = nodes_by_id.get(edge.get("target"), {})
+                src_pids = set(src_node.get("schema_proposal_ids", []))
+                tgt_pids = set(tgt_node.get("schema_proposal_ids", []))
+                direct_only_pids = [pid for pid in touching if pid not in src_pids and pid not in tgt_pids]
+                if len(direct_only_pids) > 1 or (direct_only_pids and len(touching) > 1):
+                    outcomes = {_effective_outcome(pid) for pid in touching}
+                    if len(outcomes) > 1:
+                        for pid in touching:
+                            msg = (
+                                f"Xung đột tác động trên cùng cạnh '{edge['id']}' "
+                                f"giữa các đề xuất loại thực thể: {', '.join(touching)}"
+                            )
+                            if msg not in item_map[pid]["errors"]:
+                                item_map[pid]["errors"].append(msg)
 
     item_previews: list[dict[str, Any]] = []
     valid_count = 0
@@ -820,9 +901,10 @@ def apply_proposal_decisions(
     else:
         raise ValueError(f"Chế độ áp dụng không được hỗ trợ: {req.apply_mode}")
 
-    candidate = copy.deepcopy(project)
+    candidate = _clone_project_for_edc_mutation(project)
     batch_id = uid()
     request_id = req.request_id or uid()
+    decision_ts = now_iso()
 
     item_results: list[dict[str, Any]] = []
     applied_ids: list[str] = []
@@ -831,24 +913,96 @@ def apply_proposal_decisions(
     applied_edges: list[str] = []
     action_counts = {"approve": 0, "merge": 0, "reject": 0}
 
+    proposals_list = candidate["schema_proposals"]
+    prop_idx_by_id = {str(p.get("id", "")): idx for idx, p in enumerate(proposals_list)}
+
+    rows = catalog_rows(candidate, req.kind)
+    rows_by_norm = {normal(row["name"]): row for row in rows}
+
+    # 1. Gom toàn bộ mục mới cần nạp vào danh mục để validate và cập nhật đúng 1 lần
+    new_catalog_rows: list[dict] = []
     for item in fresh_preview.item_previews:
+        if item["valid"] and item["action"] == "approve":
+            p_idx = prop_idx_by_id.get(item["proposal_id"])
+            if p_idx is None:
+                continue
+            orig_prop = proposals_list[p_idx]
+            target_name = item["canonical_name"].strip()
+            resolved_desc = _default_description_for_approval(orig_prop, target_name, item["description"])
+            new_catalog_rows.append(
+                {
+                    "name": target_name,
+                    "description": resolved_desc,
+                    "definition": item["definition"].strip(),
+                }
+            )
+
+    if new_catalog_rows:
+        rows = validate_catalog(rows + new_catalog_rows, req.kind)
+        rows_by_norm = {normal(row["name"]): row for row in rows}
+        if req.kind == "relations":
+            apply_relations(candidate, rows)
+        else:
+            candidate["entity_types"] = rows
+
+    # 2. Áp dụng quyết định lên từng proposal, thu thập ánh xạ pid -> target_name và tập ảnh hưởng
+    pid_to_target: dict[str, str] = {}
+    pid_order_rank: dict[str, int] = {}
+    status_map = {"approve": "approved", "merge": "merged", "reject": "rejected"}
+
+    for rank_idx, item in enumerate(fresh_preview.item_previews):
         pid = item["proposal_id"]
         if item["valid"]:
-            impact = decide_proposal(
-                candidate,
-                pid,
-                item["action"],
-                canonical_name=item["canonical_name"],
-                definition=item["definition"],
-                note=item["note"],
-                description=item["description"],
-                batch_id=batch_id,
-                request_id=request_id,
+            p_idx = prop_idx_by_id.get(pid)
+            if p_idx is None:
+                raise ValueError("Không tìm thấy đề xuất")
+            orig_prop = proposals_list[p_idx]
+            previous = copy.deepcopy(orig_prop)
+            updated_prop = copy.deepcopy(orig_prop)
+            proposals_list[p_idx] = updated_prop
+
+            act = item["action"]
+            target_name = item["canonical_name"].strip() if act != "reject" else ""
+            if act == "merge":
+                matched_row = rows_by_norm.get(normal(target_name))
+                if matched_row is None:
+                    raise ValueError("Chọn một mục đã có trong danh mục để hợp nhất")
+                target_name = matched_row["name"]
+
+            if act != "reject":
+                pid_to_target[pid] = target_name
+                pid_order_rank[pid] = rank_idx
+
+            updated_prop.update(
+                status=status_map[act],
+                canonical_name=target_name,
+                reviewed_at=decision_ts,
+                definition=item["definition"].strip() or updated_prop.get("definition", ""),
+                review_note=item["note"].strip(),
+                auto_aligned=False,
                 decision_origin="human",
-                actor=req.actor,
+                batch_id=batch_id,
+            )
+            if act == "approve":
+                updated_prop["description"] = rows_by_norm[normal(target_name)]["description"]
+
+            impact = item["impact"]
+            candidate["schema_decisions"].append(
+                {
+                    "at": decision_ts,
+                    "proposal_id": pid,
+                    "action": act,
+                    "before": previous,
+                    "after": copy.deepcopy(updated_prop),
+                    "impact": impact,
+                    "batch_id": batch_id,
+                    "request_id": request_id,
+                    "decision_origin": "human",
+                    "actor": req.actor,
+                }
             )
             applied_ids.append(pid)
-            action_counts[item["action"]] = action_counts.get(item["action"], 0) + 1
+            action_counts[act] = action_counts.get(act, 0) + 1
             applied_nodes.extend(impact["nodes"])
             applied_edges.extend(impact["edges"])
             item_results.append(
@@ -856,8 +1010,8 @@ def apply_proposal_decisions(
                     "proposal_id": pid,
                     "original_name": item["original_name"],
                     "status": "applied",
-                    "action": item["action"],
-                    "canonical_name": item["canonical_name"],
+                    "action": act,
+                    "canonical_name": target_name if act != "reject" else item["canonical_name"],
                     "errors": [],
                     "impact": impact,
                 }
@@ -875,6 +1029,47 @@ def apply_proposal_decisions(
                     "impact": item["impact"],
                 }
             )
+
+    # 3. Quét 1 lượt duy nhất trên nodes & edges để cập nhật kind/relation và trạng thái Cần kiểm tra
+    if req.kind == "entity_types" and pid_to_target:
+        nodes_list = candidate["nodes"]
+        for idx, node in enumerate(nodes_list):
+            best_pid = ""
+            best_rank = -1
+            for pid in node.get("schema_proposal_ids", []):
+                if pid in pid_to_target and pid_order_rank[pid] > best_rank:
+                    best_rank = pid_order_rank[pid]
+                    best_pid = pid
+            if best_pid:
+                new_node = dict(node)
+                new_node["kind"] = pid_to_target[best_pid]
+                nodes_list[idx] = new_node
+
+    affected_nodes_set = set(applied_nodes)
+    affected_edges_set = set(applied_edges)
+    is_rel_batch = req.kind == "relations" and bool(pid_to_target)
+
+    if affected_nodes_set or affected_edges_set or is_rel_batch:
+        edges_list = candidate["edges"]
+        for idx, edge in enumerate(edges_list):
+            best_rel_pid = ""
+            if is_rel_batch:
+                best_rank = -1
+                for pid in edge.get("schema_proposal_ids", []):
+                    if pid in pid_to_target and pid_order_rank[pid] > best_rank:
+                        best_rank = pid_order_rank[pid]
+                        best_rel_pid = pid
+
+            status_hit = edge["id"] in affected_edges_set or (
+                edge.get("source") in affected_nodes_set or edge.get("target") in affected_nodes_set
+            )
+            if best_rel_pid or status_hit:
+                new_edge = dict(edge)
+                if best_rel_pid:
+                    new_edge["relation"] = pid_to_target[best_rel_pid]
+                if status_hit and new_edge.get("status") != STATUS_REJECTED:
+                    new_edge.update(status=STATUS_CHECK, reviewed_at="", override=False)
+                edges_list[idx] = new_edge
 
     dedup_nodes = list(dict.fromkeys(applied_nodes))
     dedup_edges = list(dict.fromkeys(applied_edges))

@@ -8,10 +8,11 @@ import streamlit as st
 
 from backend.domain.catalogs.service import (
     batch_proposal_impacts,
+    compute_catalog_hash,
     is_proposal_candidates_stale,
     proposal_impact,
 )
-from frontend.components.shared_curation_ui import paginate_items
+from frontend.components.shared_curation_ui import paginate_items, render_selection_action_bar
 from frontend.client import get_client
 from frontend.state.session import (
     clear_proposal_selection,
@@ -42,6 +43,7 @@ def verification_badge_label(
     proposal: dict,
     *,
     current_model_fingerprint: str = "",
+    precomputed_cat_hash: str | None = None,
 ) -> str:
     """Phân biệt rõ: gợi ý vector, đã được LLM kiểm tra, tự động hợp nhất, con người quyết định, hoặc gợi ý cũ."""
     origin = str(proposal.get("decision_origin") or "")
@@ -63,7 +65,12 @@ def verification_badge_label(
             return "Lỗi làm mới gợi ý"
         return "Chưa có gợi ý"
 
-    stale, _ = is_proposal_candidates_stale(project, proposal, current_model_fingerprint)
+    stale, _ = is_proposal_candidates_stale(
+        project,
+        proposal,
+        current_model_fingerprint,
+        precomputed_cat_hash=precomputed_cat_hash,
+    )
     suffix = " [Gợi ý cũ]" if stale else ""
     if any(c.get("verified_by_llm") for c in cands):
         return f"Đã được LLM kiểm tra{suffix}"
@@ -180,10 +187,17 @@ def build_table_display_rows(
     current_model_fingerprint: str = "",
 ) -> list[dict[str, Any]]:
     """Tạo dữ liệu bảng hiển thị chuẩn 10 cột theo đặc tả mục 2.1."""
+    if not proposals:
+        return []
+    impacts_map = batch_proposal_impacts(project, [str(p.get("id", "")) for p in proposals])
+    cat_hash_by_kind: dict[str, str] = {}
     rows: list[dict[str, Any]] = []
     for prop in proposals:
         pid = str(prop.get("id", ""))
-        impact = proposal_impact(project, pid)
+        p_kind = str(prop.get("kind") or "relations")
+        if p_kind not in cat_hash_by_kind:
+            cat_hash_by_kind[p_kind] = compute_catalog_hash(project, p_kind)
+        impact = impacts_map.get(pid, {"nodes": [], "edges": [], "direct_edges": [], "indirect_edges": []})
         cands = prop.get("alignment_candidates") or []
         top_cand_name = str(cands[0].get("name", "")) if cands else "Chưa có"
         top_score = float(cands[0].get("score", 0.0)) if cands else float(prop.get("alignment_score", 0.0) or 0.0)
@@ -211,6 +225,7 @@ def build_table_display_rows(
                     project,
                     prop,
                     current_model_fingerprint=current_model_fingerprint,
+                    precomputed_cat_hash=cat_hash_by_kind[p_kind],
                 ),
                 "Trạng thái": status_label_vn(str(prop.get("status", "pending"))),
                 "Tên chuẩn": str(prop.get("canonical_name", "")) or "—",
@@ -475,48 +490,26 @@ def render_edc_review_table(
     )
     filters["page"] = cur_page
 
-    b1, b2, b3, b4, b5 = st.columns([1.2, 1.5, 1.0, 1.2, 2.2])
-    if b1.button(
-        f"☑️ Chọn trang này ({sum(1 for p in page_items if p.get('status') == 'pending')})",
-        disabled=not any(p.get("status") == "pending" for p in page_items),
-        key=f"btn_sel_page_{kind}",
-        width='stretch',
-    ):
-        select_page_proposals(project, kind, page_items)
-        st.rerun()
-
-    if b2.button(
-        f"☑️ Chọn tất cả kết quả lọc ({len(eligible_filtered)})",
-        disabled=len(eligible_filtered) == 0,
-        key=f"btn_sel_all_{kind}",
-        width='stretch',
-    ):
-        select_all_filtered_proposals(project, kind, filtered_proposals)
-        st.rerun()
-
-    if b3.button(
-        "⬜ Bỏ chọn",
-        disabled=len(t_state["selected_ids"]) == 0,
-        key=f"btn_clear_sel_{kind}",
-        width='stretch',
-    ):
-        clear_proposal_selection(project, kind)
-        st.rerun()
-
-    if total_pages > 1:
-        filters["page"] = b4.number_input(
-            f"Trang (1..{total_pages})",
-            min_value=1,
-            max_value=total_pages,
-            value=cur_page,
-            step=1,
-            key=f"num_page_{kind}",
-        )
-
-    b5.markdown(
+    summary_text = (
         f"**Đã chọn `{len(t_state['selected_ids'])}`** / `{filtered_count}` kết quả lọc "
         f"(`{len(eligible_filtered)}` chờ duyệt) / `{total_count}` tổng số"
     )
+    new_p = render_selection_action_bar(
+        selected_count=len(t_state["selected_ids"]),
+        page_eligible_count=sum(1 for p in page_items if p.get("status") == "pending"),
+        filtered_eligible_count=len(eligible_filtered),
+        total_count=total_count,
+        key_prefix=f"edc_{kind}",
+        item_noun="đề xuất",
+        on_select_page=lambda: select_page_proposals(project, kind, page_items),
+        on_select_all_filtered=lambda: select_all_filtered_proposals(project, kind, filtered_proposals),
+        on_clear=lambda: clear_proposal_selection(project, kind),
+        current_page=cur_page,
+        total_pages=total_pages,
+        summary_text=summary_text,
+    )
+    if isinstance(new_p, int):
+        filters["page"] = new_p
 
     if not filtered_proposals:
         st.info("Không có đề xuất nào khớp bộ lọc hiện tại.")

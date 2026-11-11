@@ -19,6 +19,7 @@ from backend.domain.curation.service import (
     apply_entity_merge,
     apply_relation_merge,
     bulk_apply_relation_merges,
+    collapse_duplicate_edges,
     compute_apparent_duplicate_edge_groups,
     doc_fingerprint,
     duplicate_suggestions,
@@ -999,17 +1000,31 @@ class CurationMergeTests(unittest.TestCase):
             {"id": "er3", "source": "n1", "target": "n3", "relation": "dien_tich", "evidence": "Chùa Một Cột tọa lạc tại quận Ba Đình, Hà Nội.", "doc_id": "doc1", "status": STATUS_PENDING},
         ])
 
+        # Kiểm tra lưu alias sau khi gộp quan hệ đơn lẻ
         _, res1 = apply_relation_merge(project, ["nam_tai"], "nằm tại")
         self.assertEqual(res1.status, "applied")
         e1 = next(e for e in project["edges"] if e["id"] == "er1")
         self.assertEqual(e1["relation"], "nằm tại")
         self.assertEqual(project.get("relation_redirects", {}).get("nam_tai"), "nằm tại")
+        self.assertIn("nam_tai", project.get("relation_aliases", {}).get("nằm tại", []))
 
-        _, res2 = bulk_apply_relation_merges(project, {"dien_tich": "co_dien_tich"})
+        # Kiểm tra khi collapse_edges=False thì e3 vẫn được giữ lại với tên mới
+        proj_no_col = copy.deepcopy(project)
+        _, res_no_col = bulk_apply_relation_merges(proj_no_col, {"dien_tich": "co_dien_tich"}, collapse_edges=False)
+        e3_keep = next(e for e in proj_no_col["edges"] if e["id"] == "er3")
+        self.assertEqual(e3_keep["relation"], "co_dien_tich")
+
+        # Kiểm tra khi collapse_edges=True (mặc định): er3 và er2 có cùng bộ ba nên er3 được gộp thông minh vào er2
+        _, res2 = bulk_apply_relation_merges(project, {"dien_tich": "co_dien_tich"}, collapse_edges=True)
         self.assertEqual(res2.status, "applied")
-        e3 = next(e for e in project["edges"] if e["id"] == "er3")
-        self.assertEqual(e3["relation"], "co_dien_tich")
+        self.assertEqual(res2.merged_duplicate_edges, 1)
+        self.assertEqual(project.get("edge_redirects", {}).get("er3"), "er2")
+        e2 = next(e for e in project["edges"] if e["id"] == "er2")
+        self.assertEqual(e2["relation"], "co_dien_tich")
+        self.assertIn("dien_tich", e2.get("original_relations", []))
+        self.assertEqual(len(e2.get("evidences", [])), 2)
         self.assertEqual(project.get("relation_redirects", {}).get("dien_tich"), "co_dien_tich")
+        self.assertIn("dien_tich", project.get("relation_aliases", {}).get("co_dien_tich", []))
 
         # Kiểm tra sau khi gộp, các quan hệ đã gộp (nam_tai, dien_tich) bị ẩn hoàn toàn khỏi danh sách gợi ý
         sugs_after_merge = relation_duplicate_suggestions(project, fuzzy_threshold=0.65)
@@ -1040,18 +1055,146 @@ class CurationMergeTests(unittest.TestCase):
             res_ent = client.apply_bulk_entity_merges(project, [("n1", "n2")])
             self.assertEqual(res_ent.status, "applied")
             self.assertEqual(res_ent.applied_count, 1)
+            self.assertEqual(project.get("name"), "Facade_Bulk_Merge_Test")
 
             # 2. Gọi client.bulk_apply_relation_merges
             res_rel = client.bulk_apply_relation_merges(project, {"nam_tai": "nằm tại"})
             self.assertEqual(res_rel.status, "applied")
             self.assertEqual(res_rel.applied_count, 1)
+            self.assertEqual(project.get("name"), "Facade_Bulk_Merge_Test")
 
             # 3. Gọi client.apply_relation_merge
             project["edges"].append({"id": "e3", "source": "n1", "target": "n1", "relation": "nam_tai", "evidence": "bằng chứng", "doc_id": "doc1", "status": STATUS_PENDING})
             res_single_rel = client.apply_relation_merge(project, ["nam_tai"], "nằm tại")
             self.assertEqual(res_single_rel.status, "applied")
+            self.assertEqual(project.get("name"), "Facade_Bulk_Merge_Test")
 
+            # 4. Gọi client.collapse_duplicate_edges trực tiếp (đảm bảo không bị KeyError 'name' hay rỗng dict)
+            project["edges"].append({"id": "e4", "source": "n1", "target": "n1", "relation": "nằm tại", "evidence": "bằng chứng thứ hai", "doc_id": "doc1", "status": STATUS_APPROVED})
+            res_collapse = client.collapse_duplicate_edges(project)
+            self.assertEqual(res_collapse.status, "applied")
+            self.assertGreaterEqual(res_collapse.merged_duplicate_edges, 1)
+            self.assertEqual(project.get("name"), "Facade_Bulk_Merge_Test")
+            self.assertIn("name", project)
 
+    def test_collapse_duplicate_edges_standalone(self) -> None:
+        """Kiểm tra hàm collapse_duplicate_edges hợp nhất đúng cạnh, dồn evidences và cập nhật edge_redirects."""
+        project = _seed_curation_project("Collapse_Edges_Test")
+        project["edges"] = [
+            {"id": "c1", "source": "node_a", "target": "node_b", "relation": "nằm tại", "evidence": "Câu bằng chứng ngắn.", "doc_id": "d1", "status": STATUS_PENDING},
+            {"id": "c2", "source": "node_a", "target": "node_b", "relation": "nằm tại", "evidence": "Câu bằng chứng rất dài và đầy đủ ngữ cảnh lịch sử.", "doc_id": "d2", "status": STATUS_APPROVED},
+            {"id": "c3", "source": "node_a", "target": "node_b", "relation": "nằm tại", "evidence": "Câu bằng chứng thứ ba từ nguồn khác.", "doc_id": "d3", "status": STATUS_CHECK},
+            {"id": "c4", "source": "node_x", "target": "node_y", "relation": "khác", "evidence": "Cạnh độc lập.", "doc_id": "d1", "status": STATUS_APPROVED},
+        ]
+
+        candidate, dropped_count, records = collapse_duplicate_edges(project, actor="reviewer_test")
+        self.assertEqual(dropped_count, 2)
+        self.assertEqual(len(candidate["edges"]), 2)
+        
+        # Cạnh giữ lại phải là c2 vì có status=STATUS_APPROVED và evidence dài nhất
+        kept_edge = next(e for e in candidate["edges"] if e["source"] == "node_a")
+        self.assertEqual(kept_edge["id"], "c2")
+        self.assertEqual(kept_edge["status"], STATUS_APPROVED)
+        self.assertEqual(len(kept_edge.get("evidences", [])), 3)
+
+        # Kiểm tra edge_redirects
+        self.assertEqual(candidate["edge_redirects"]["c1"], "c2")
+        self.assertEqual(candidate["edge_redirects"]["c3"], "c2")
+
+    def test_three_tier_curation_pipeline_flow(self) -> None:
+        """Kiểm tra tường minh luồng 3 bước độc lập:
+        Bước 1: Gộp thực thể B -> A (rewire cạnh)
+        Bước 2: Gộp quan hệ 'tọa lạc ở', 'ở' -> 'nằm tại' (đổi tên nhãn)
+        Bước 3: Gộp cạnh / Khử trùng bộ ba (dồn bằng chứng, xóa đúng cạnh trùng, bảo toàn cạnh không trùng)
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            json_repo = JsonProjectRepository(Path(tmp_dir) / "projects")
+            sqlite_repo = SQLiteProjectRepository(db_path=Path(tmp_dir) / "test.db")
+            facade = KGStudioFacade(json_repo=json_repo, sqlite_repo=sqlite_repo)
+            client = FrontendClient(facade=facade)
+
+            project = _seed_curation_project("Three_Tier_Pipeline_Test")
+            project["nodes"] = [
+                {"id": "node_A", "name": "Hà Nội", "kind": "Địa danh", "aliases": [], "documents": ["d1"]},
+                {"id": "node_B", "name": "Ha Noi", "kind": "Địa danh", "aliases": [], "documents": ["d1"]},
+                {"id": "node_C", "name": "Việt Nam", "kind": "Quốc gia", "aliases": [], "documents": ["d1"]},
+                {"id": "node_D", "name": "Đồng bằng Sông Hồng", "kind": "Khu vực", "aliases": [], "documents": ["d1"]},
+            ]
+            project["edges"] = [
+                {"id": "e1", "source": "node_A", "target": "node_C", "relation": "nằm tại", "evidence": "Hà Nội nằm tại Việt Nam.", "doc_id": "d1", "status": STATUS_APPROVED},
+                {"id": "e2", "source": "node_B", "target": "node_C", "relation": "nằm tại", "evidence": "Ha Noi nằm tại Việt Nam theo tài liệu 2.", "doc_id": "d2", "status": STATUS_PENDING},
+                {"id": "e3", "source": "node_A", "target": "node_D", "relation": "tọa lạc ở", "evidence": "Hà Nội tọa lạc ở Đồng bằng Sông Hồng.", "doc_id": "d1", "status": STATUS_CHECK},
+                {"id": "e4", "source": "node_A", "target": "node_D", "relation": "ở", "evidence": "Hà Nội ở Đồng bằng Sông Hồng theo văn bản khác.", "doc_id": "d3", "status": STATUS_APPROVED},
+                {"id": "e5", "source": "node_A", "target": "node_D", "relation": "thuộc", "evidence": "Hà Nội thuộc Đồng bằng Sông Hồng.", "doc_id": "d1", "status": STATUS_APPROVED},
+                {"id": "e6", "source": "node_C", "target": "node_D", "relation": "ở", "evidence": "Việt Nam ở khu vực Đồng bằng Sông Hồng.", "doc_id": "d1", "status": STATUS_PENDING},
+            ]
+            json_repo.save_project(project)
+            self.assertEqual(len(project["edges"]), 6)
+
+            # --- BƯỚC 1: GỘP THỰC THỂ (node_B -> node_A) ---
+            # Chỉ nối lại đầu mút, bảo toàn toàn bộ cạnh (collapse_edges=False)
+            res_e = client.apply_bulk_entity_merges(project, [("node_A", "node_B")], collapse_edges=False)
+            self.assertEqual(res_e.applied_count, 1)
+            self.assertEqual(len(project["edges"]), 6)
+            # e2 đã được nối lại sang node_A, tạo thành bộ ba (node_A, nằm tại, node_C) giống e1
+            e2 = next(e for e in project["edges"] if e["id"] == "e2")
+            self.assertEqual(e2["source"], "node_A")
+
+            # --- BƯỚC 2: GỘP QUAN HỆ ('tọa lạc ở', 'ở' -> 'nằm tại') ---
+            # Chỉ đổi nhãn quan hệ, bảo toàn toàn bộ cạnh (collapse_edges=False)
+            res_r = client.bulk_apply_relation_merges(
+                project, {"tọa lạc ở": "nằm tại", "ở": "nằm tại"}, collapse_edges=False
+            )
+            self.assertEqual(res_r.applied_count, 2)
+            self.assertEqual(len(project["edges"]), 6)
+            # e3, e4 và e6 đã được đổi tên quan hệ
+            e3 = next(e for e in project["edges"] if e["id"] == "e3")
+            e4 = next(e for e in project["edges"] if e["id"] == "e4")
+            e5 = next(e for e in project["edges"] if e["id"] == "e5")
+            e6 = next(e for e in project["edges"] if e["id"] == "e6")
+            self.assertEqual(e3["relation"], "nằm tại")
+            self.assertEqual(e4["relation"], "nằm tại")
+            self.assertEqual(e5["relation"], "thuộc") # Quan hệ khác giữ nguyên
+            self.assertEqual(e6["relation"], "nằm tại")
+
+            # --- BƯỚC 3: GỘP CẠNH / KHỬ TRÙNG BỘ BA (Triple Deduplication) ---
+            # Kiểm tra phát hiện đúng 2 nhóm trùng:
+            # Nhóm 1: (node_A, nằm tại, node_C) -> gồm e1 và e2 (2 cạnh)
+            # Nhóm 2: (node_A, nằm tại, node_D) -> gồm e3 và e4 (2 cạnh)
+            # Các cạnh độc lập: e5 (thuộc), e6 (nguồn node_C)
+            dup_groups = compute_apparent_duplicate_edge_groups(project.get("edges", []))
+            self.assertEqual(len(dup_groups), 2)
+            total_dup = sum(g.get("count", 1) - 1 for g in dup_groups)
+            self.assertEqual(total_dup, 2)
+
+            # Thực thi gộp cạnh qua client.collapse_duplicate_edges
+            res_c = client.collapse_duplicate_edges(project)
+            self.assertEqual(res_c.status, "applied")
+            self.assertEqual(res_c.merged_duplicate_edges, 2)
+            
+            # Số cạnh sau khi dọn sạch từ 6 cạnh giảm xuống đúng 4 cạnh
+            self.assertEqual(len(project["edges"]), 4)
+            remaining_ids = {e["id"] for e in project["edges"]}
+            
+            # e1 được giữ lại (do status=APPROVED), e2 bị gộp vào e1
+            self.assertIn("e1", remaining_ids)
+            self.assertNotIn("e2", remaining_ids)
+            kept_e1 = next(e for e in project["edges"] if e["id"] == "e1")
+            self.assertEqual(len(kept_e1.get("evidences", [])), 2)
+
+            # e4 được giữ lại (do status=APPROVED cao hơn CHECK của e3), e3 bị gộp vào e4
+            self.assertIn("e4", remaining_ids)
+            self.assertNotIn("e3", remaining_ids)
+            kept_e4 = next(e for e in project["edges"] if e["id"] == "e4")
+            self.assertEqual(len(kept_e4.get("evidences", [])), 2)
+
+            # Cạnh không trùng e5 và e6 hoàn toàn bảo toàn nguyên vẹn
+            self.assertIn("e5", remaining_ids)
+            self.assertIn("e6", remaining_ids)
+
+            # Kiểm tra edge_redirects lưu đúng ánh xạ
+            self.assertEqual(project["edge_redirects"]["e2"], "e1")
+            self.assertEqual(project["edge_redirects"]["e3"], "e4")
 
 
 if __name__ == "__main__":

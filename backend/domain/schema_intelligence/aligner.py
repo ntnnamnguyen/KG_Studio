@@ -32,14 +32,17 @@ class TargetAligner:
         *,
         top_k: int = 5,
         embedder: EmbedderGateway | None = None,
+        cat_hash: str | None = None,
+        catalog_items: list[dict] | None = None,
     ) -> list[AlignmentCandidateDTO]:
         active_embedder = embedder or self.embedder
         project_id = str(project.get("project_id") or "default")
-        catalog_items = relation_catalog(project) if kind == "relations" else project.get("entity_types", [])
+        if catalog_items is None:
+            catalog_items = relation_catalog(project) if kind == "relations" else project.get("entity_types", [])
         if not catalog_items:
             return []
 
-        cat_hash = compute_catalog_hash(project, kind)
+        resolved_cat_hash = cat_hash if cat_hash is not None else compute_catalog_hash(project, kind)
         model_fp = getattr(active_embedder, "fingerprint", "") or ""
         exact_norm = normal(open_name)
         hits = self.vector_repo.search(
@@ -66,7 +69,7 @@ class TargetAligner:
                     score=score,
                     verified_by_llm=False,
                     reason="Trùng khớp tên chuẩn" if score >= 0.999 else f"Tương đồng ngữ nghĩa ({score:.2f})",
-                    catalog_hash=cat_hash,
+                    catalog_hash=resolved_cat_hash,
                     model_fingerprint=model_fp,
                 )
             )
@@ -125,6 +128,10 @@ class TargetAligner:
         error_count = 0
         item_results: list[dict[str, Any]] = []
 
+        cat_hash_by_kind: dict[str, str] = {}
+        cat_items_by_kind: dict[str, list[dict]] = {}
+        refresh_ts = now_iso()
+
         for pid in unique_ids:
             proposal = proposals_by_id.get(pid)
             if proposal is None:
@@ -155,6 +162,12 @@ class TargetAligner:
             try:
                 if active_embedder is None:
                     raise RuntimeError("Thiếu mô hình embedding để tìm ứng viên")
+                if p_kind not in cat_hash_by_kind:
+                    cat_hash_by_kind[p_kind] = compute_catalog_hash(project, p_kind)
+                    cat_items_by_kind[p_kind] = (
+                        relation_catalog(project) if p_kind == "relations" else project.get("entity_types", [])
+                    )
+                cat_hash = cat_hash_by_kind[p_kind]
                 open_name = str(proposal.get("name", ""))
                 open_def = str(proposal.get("definition", ""))
                 candidates = self.rank_candidates(
@@ -164,9 +177,10 @@ class TargetAligner:
                     open_def,
                     top_k=top_k,
                     embedder=active_embedder,
+                    cat_hash=cat_hash,
+                    catalog_items=cat_items_by_kind[p_kind],
                 )
                 filtered = [c for c in candidates if c.score >= candidate_threshold]
-                cat_hash = compute_catalog_hash(project, p_kind)
                 def_hash = sha(open_def.strip())[:16]
 
                 proposal["alignment_candidates"] = [c.to_dict() for c in filtered]
@@ -176,7 +190,7 @@ class TargetAligner:
                 proposal["candidates_catalog_hash"] = cat_hash
                 proposal["candidates_model_fingerprint"] = model_fp
                 proposal["candidates_definition_hash"] = def_hash
-                proposal["candidates_refreshed_at"] = now_iso()
+                proposal["candidates_refreshed_at"] = refresh_ts
                 proposal["last_refresh_error"] = ""
 
                 refreshed_count += 1
@@ -231,6 +245,11 @@ class TargetAligner:
         novel_count = 0
         error_count = 0
         allowed_ids = set(proposal_ids) if proposal_ids is not None else None
+        cat_hash_by_kind: dict[str, str] = {}
+        cat_items_by_kind: dict[str, list[dict]] = {}
+        align_ts = now_iso()
+        aligned_rel_targets: dict[str, str] = {}
+        aligned_type_targets: dict[str, str] = {}
 
         for proposal in project.get("schema_proposals", []):
             if proposal.get("status") != "pending":
@@ -246,6 +265,12 @@ class TargetAligner:
             try:
                 if active_embedder is None:
                     raise RuntimeError("Thiếu mô hình embedding")
+                if p_kind not in cat_hash_by_kind:
+                    cat_hash_by_kind[p_kind] = compute_catalog_hash(project, p_kind)
+                    cat_items_by_kind[p_kind] = (
+                        relation_catalog(project) if p_kind == "relations" else project.get("entity_types", [])
+                    )
+                cat_hash = cat_hash_by_kind[p_kind]
                 candidates = self.rank_candidates(
                     project,
                     p_kind,
@@ -253,20 +278,21 @@ class TargetAligner:
                     open_def,
                     top_k=5,
                     embedder=active_embedder,
+                    cat_hash=cat_hash,
+                    catalog_items=cat_items_by_kind[p_kind],
                 )
             except Exception as exc:
                 proposal["last_refresh_error"] = str(exc)
                 error_count += 1
                 continue
 
-            cat_hash = compute_catalog_hash(project, p_kind)
             def_hash = sha(open_def.strip())[:16]
             filtered = [c for c in candidates if c.score >= candidate_threshold]
             proposal["alignment_candidates"] = [c.to_dict() for c in filtered]
             proposal["candidates_catalog_hash"] = cat_hash
             proposal["candidates_model_fingerprint"] = model_fp
             proposal["candidates_definition_hash"] = def_hash
-            proposal["candidates_refreshed_at"] = now_iso()
+            proposal["candidates_refreshed_at"] = align_ts
             proposal["last_refresh_error"] = ""
 
             if not filtered:
@@ -315,19 +341,26 @@ class TargetAligner:
                 proposal["auto_aligned"] = True
                 proposal["decision_origin"] = "llm_verified_auto" if verified_by_llm else "auto_align"
                 proposal["review_note"] = f"[Target Alignment tự động] Khớp '{chosen_target}' (score={best.score:.2f})"
-                pid = proposal["id"]
+                pid = str(proposal["id"])
                 if p_kind == "relations":
-                    for edge in project.get("edges", []):
-                        if pid in edge.get("schema_proposal_ids", []):
-                            edge["relation"] = chosen_target
+                    aligned_rel_targets[pid] = chosen_target
                 else:
-                    for node in project.get("nodes", []):
-                        if pid in node.get("schema_proposal_ids", []):
-                            node["kind"] = chosen_target
+                    aligned_type_targets[pid] = chosen_target
                 auto_aligned_count += 1
             else:
                 proposal["auto_aligned"] = False
                 suggested_count += 1
+
+        if aligned_rel_targets:
+            for edge in project.get("edges", []):
+                for pid in edge.get("schema_proposal_ids", []):
+                    if pid in aligned_rel_targets:
+                        edge["relation"] = aligned_rel_targets[pid]
+        if aligned_type_targets:
+            for node in project.get("nodes", []):
+                for pid in node.get("schema_proposal_ids", []):
+                    if pid in aligned_type_targets:
+                        node["kind"] = aligned_type_targets[pid]
 
         return {
             "auto_aligned": auto_aligned_count,

@@ -23,6 +23,9 @@ class SQLiteProjectRepository:
     def _connect(self):
         with closing(sqlite3.connect(str(self.db_path))) as conn:
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA temp_store=MEMORY;")
             with conn:
                 yield conn
 
@@ -96,7 +99,16 @@ class SQLiteProjectRepository:
             return
         mode = str(project.get("extraction_mode") or "closed")
         saved_at = str(project.get("saved_at") or "")
-        raw_json = json.dumps(project, ensure_ascii=False)
+        excluded_heavy_keys = {
+            "documents",
+            "nodes",
+            "edges",
+            "schema_proposals",
+            "curation_history",
+            "schema_decisions",
+        }
+        header_meta = {k: v for k, v in project.items() if k not in excluded_heavy_keys}
+        raw_json = json.dumps(header_meta, ensure_ascii=False)
 
         with self._connect() as conn:
             conn.execute(

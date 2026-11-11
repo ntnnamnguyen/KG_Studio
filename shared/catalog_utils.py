@@ -86,7 +86,7 @@ def validate_catalog(rows: object, key: str, allow_empty: bool = True) -> list[d
             row = {"name": row}
         if not isinstance(row, dict):
             raise ValueError(f"{key}: mục {index} phải là chuỗi tên hoặc JSON object có name.")
-        extra = set(row) - {*CATALOG_FIELDS, "example"}
+        extra = set(row) - {*CATALOG_FIELDS, "example", "aliases"}
         if extra:
             raise ValueError(f"{key}: mục {index} có trường không hỗ trợ: {', '.join(sorted(extra))}")
         item = {}
@@ -95,6 +95,14 @@ def validate_catalog(rows: object, key: str, allow_empty: bool = True) -> list[d
             if not isinstance(value, str):
                 raise ValueError(f"{key}: {field} tại mục {index} phải là chuỗi.")
             item[field] = value.strip()
+        if "aliases" in row:
+            raw_aliases = row["aliases"]
+            if isinstance(raw_aliases, str):
+                item["aliases"] = [a.strip() for a in raw_aliases.split(",") if a.strip()]
+            elif isinstance(raw_aliases, (list, tuple, set)):
+                item["aliases"] = [str(a).strip() for a in raw_aliases if str(a).strip()]
+            else:
+                item["aliases"] = []
         if "definition" not in row:
             item["definition"] = item["description"]
         example = item.pop("example")
@@ -155,7 +163,20 @@ def write_catalog(path: Path, rows: list[dict], key: str) -> None:
 
 def relation_catalog(project: dict) -> list[dict]:
     notes = project.get("relation_notes", {})
-    raw = [dict(notes.get(name, {}), name=name) for name in project.get("relations", [])]
+    aliases_map = project.get("relation_aliases", {})
+    type_rows = {
+        r.get("name"): r.get("aliases", [])
+        for r in project.get("relation_types", [])
+        if isinstance(r, dict) and r.get("name")
+    }
+    raw = []
+    for name in project.get("relations", []):
+        entry = dict(notes.get(name, {}), name=name)
+        if "aliases" not in entry:
+            cand_aliases = aliases_map.get(name) or type_rows.get(name)
+            if cand_aliases:
+                entry["aliases"] = list(cand_aliases)
+        raw.append(entry)
     return validate_catalog(raw, "relations", allow_empty=True)
 
 
@@ -163,7 +184,11 @@ def apply_relations(project: dict, rows: list[dict]) -> None:
     rows = validate_catalog(rows, "relations", allow_empty=True)
     project["relations"] = [row["name"] for row in rows]
     project["relation_notes"] = {
-        row["name"]: {"description": row["description"], "definition": row["definition"]}
+        row["name"]: {
+            "description": row["description"],
+            "definition": row["definition"],
+            "aliases": row.get("aliases", []),
+        }
         for row in rows
     }
 

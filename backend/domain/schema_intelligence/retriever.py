@@ -58,13 +58,27 @@ class SchemaRetriever:
         if extracted_relation_hints:
             seen_names = {normal(item["name"]) for item in rel_hits}
             rel_by_norm = {normal(item["name"]): item for item in rel_catalog}
+            rel_redirects = project.get("relation_redirects", {})
             for hint in extracted_relation_hints:
-                key = normal(hint)
+                resolved_hint = rel_redirects.get(hint, hint)
+                key = normal(resolved_hint)
                 if key in rel_by_norm and key not in seen_names:
                     entry = dict(rel_by_norm[key])
                     entry["score"] = 1.0
                     rel_hits.insert(0, entry)
                     seen_names.add(key)
+                else:
+                    for rel_entry in rel_catalog:
+                        r_norm = normal(rel_entry["name"])
+                        if r_norm in seen_names:
+                            continue
+                        cand_aliases = [normal(str(a)) for a in rel_entry.get("aliases", [])]
+                        if key in cand_aliases:
+                            entry = dict(rel_entry)
+                            entry["score"] = 1.0
+                            rel_hits.insert(0, entry)
+                            seen_names.add(r_norm)
+                            break
 
         return {
             "relations": rel_hits[: max(1, top_k_relations)],
@@ -85,7 +99,9 @@ class SchemaRetriever:
             lines.append("GỢI Ý QUAN HỆ CHUẨN LIÊN QUAN ĐẾN ĐOẠN VĂN (Ưu tiên dùng tên chuẩn nếu đúng nghĩa, hoặc tự đề xuất tên mới nếu chưa có):")
             for r in relations:
                 defn = r.get("definition") or r.get("description") or ""
-                lines.append(f"- {r['name']}: {defn}")
+                aliases = r.get("aliases") or []
+                alias_part = f" (từ đồng nghĩa/biến thể: {', '.join(str(a) for a in aliases)})" if aliases else ""
+                lines.append(f"- {r['name']}{alias_part}: {defn}")
 
         if entity_types:
             lines.append("\nGỢI Ý LOẠI THỰC THỂ CHUẨN LIÊN QUAN:")

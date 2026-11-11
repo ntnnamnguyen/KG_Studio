@@ -10,7 +10,7 @@ from backend.domain.prompts.service import get_active_prompt_version
 from backend.domain.schema_intelligence.aligner import TargetAligner
 from backend.domain.schema_intelligence.retriever import SchemaRetriever
 from backend.integrations.embedder_gateway import default_embedder
-from backend.integrations.llm_gateway import LLMGateway
+from backend.integrations.llm import LLMGateway
 from shared.catalog_utils import edc_prompt
 from shared.constants import DEFAULT_EDC_PROMPT, MODE_EDC, MODE_EDC_PLUS_R
 from shared.schemas.graph import StepTraceDTO
@@ -50,10 +50,8 @@ class EDCPlusREngine(BaseExtractionEngine):
         entity_hints: list[str] = []
         relation_hints: list[str] = []
 
-        active_ver = get_active_prompt_version(project, MODE_EDC_PLUS_R)
-        ver_id = active_ver["id"] if active_ver else ""
-        ver_hash = active_ver["content_hash"] if active_ver else ""
-        base_instructions = active_ver["content"] if active_ver else project.get("edc_prompt", DEFAULT_EDC_PROMPT)
+        ver_id, ver_hash, base_inst = self.resolve_prompt_version_info(project)
+        base_instructions = base_inst or project.get("edc_prompt", DEFAULT_EDC_PROMPT)
         last_prep = None
 
         for loop_idx in range(1, settings.refinement_loops + 1):
@@ -147,9 +145,7 @@ class EDCPlusREngine(BaseExtractionEngine):
                 ).to_dict()
             )
 
-        prev_mode = project.get("extraction_mode")
-        project["extraction_mode"] = MODE_EDC
-        try:
+        def _do_ingest_and_align():
             prompt_id = prompt_signature(edc_prompt(base_instructions), ["edc_plus_r", embedder.fingerprint])
             stats = ingest_extraction(
                 project,
@@ -165,26 +161,26 @@ class EDCPlusREngine(BaseExtractionEngine):
                 page=ctx.chunk_record.get("page_from"),
                 chunk_hash=ctx.chunk_record.get("chunk_hash", ""),
             )
-        finally:
-            project["extraction_mode"] = prev_mode or MODE_EDC_PLUS_R
+            t_align = time.perf_counter()
+            llm_params = {
+                "provider": ctx.provider,
+                "api_key": ctx.api_key,
+                "model": ctx.model,
+                "base_url": ctx.base_url,
+                "client": ctx.client,
+            }
+            alignment_summary = self.aligner.align_project_proposals(
+                project,
+                auto_align_threshold=settings.auto_align_threshold,
+                candidate_threshold=settings.candidate_threshold,
+                enable_llm_verifier=settings.enable_llm_verifier,
+                llm_params=llm_params,
+                embedder=embedder,
+            )
+            align_ms = int((time.perf_counter() - t_align) * 1000)
+            return stats, alignment_summary, align_ms
 
-        t_align = time.perf_counter()
-        llm_params = {
-            "provider": ctx.provider,
-            "api_key": ctx.api_key,
-            "model": ctx.model,
-            "base_url": ctx.base_url,
-            "client": ctx.client,
-        }
-        alignment_summary = self.aligner.align_project_proposals(
-            project,
-            auto_align_threshold=settings.auto_align_threshold,
-            candidate_threshold=settings.candidate_threshold,
-            enable_llm_verifier=settings.enable_llm_verifier,
-            llm_params=llm_params,
-            embedder=embedder,
-        )
-        align_ms = int((time.perf_counter() - t_align) * 1000)
+        stats, alignment_summary, align_ms = self.safe_ingest(ctx, _do_ingest_and_align, MODE_EDC)
 
         step_traces.append(
             StepTraceDTO(
@@ -200,8 +196,7 @@ class EDCPlusREngine(BaseExtractionEngine):
             ).to_dict()
         )
 
-        req_hash = last_prep.request_hash if last_prep else ""
-        prep_dict = last_prep.to_dict() if last_prep else {}
+        req_hash, prep_dict = self.extract_prepared_request_info(last_prep)
 
         return EngineOutput(
             payload=final_payload,

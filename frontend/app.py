@@ -4,7 +4,7 @@ from __future__ import annotations
 import streamlit as st
 
 from backend.facade import get_facade
-from backend.integrations.llm_gateway import LLMGateway
+from backend.integrations.llm import LLMGateway
 from frontend.components.pipeline_banner import render_pipeline_header
 from frontend.pages import (
     render_catalogs_prompts_page,
@@ -50,15 +50,20 @@ def main() -> None:
 
         # 1. KHÔNG GIAN LÀM VIỆC DỰ ÁN (Project Workspace)
         existing_projects = facade.list_projects()
-        if project["name"] not in existing_projects:
-            existing_projects = [project["name"], *existing_projects]
+        cur_name = str(
+            project.get("name")
+            or st.session_state.get("active_project_name")
+            or (existing_projects[0] if existing_projects else CONFIG["app"]["default_project_name"])
+        )
+        if cur_name not in existing_projects:
+            existing_projects = [cur_name, *existing_projects]
 
         selected_proj = st.selectbox(
             "📁 Dự án đang mở",
             existing_projects,
-            index=existing_projects.index(project["name"]),
+            index=existing_projects.index(cur_name),
         )
-        if selected_proj != project["name"]:
+        if selected_proj != cur_name:
             st.session_state["active_project_name"] = selected_proj
             st.rerun()
 
@@ -66,7 +71,7 @@ def main() -> None:
         if st.button("➕ Mở / Tạo dự án", width="stretch") and new_proj_name.strip():
             proj = facade.load_project(new_proj_name.strip())
             facade.save_project(proj)
-            st.session_state["active_project_name"] = proj["name"]
+            st.session_state["active_project_name"] = proj.get("name", new_proj_name.strip())
             st.rerun()
 
         # 2. ĐIỀU HƯỚNG QUY TRÌNH 5 BƯỚC (Pipeline Navigation & Badges)

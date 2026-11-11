@@ -5,7 +5,7 @@ config_version = 2
 title = "🕸️ Knowledge Graph Studio Pro (EDC+R & ML Lab)"
 page_title = "KG Studio Pro — EDC+R & Target Alignment"
 page_icon = "🕸️"
-caption = "Kiến trúc Thương mại & Học máy · EDC+R · Target Alignment · Active Learning"
+caption = ""
 default_project_name = "HanoiQA"
 initial_tab = 0
 
@@ -29,7 +29,7 @@ gather_usage_stats = false
 [llm]
 default_provider = "deepseek"
 temperature = 0.0
-max_input_tokens = 64000
+max_input_tokens = 91136
 max_tokens = 65536
 timeout_seconds = 90.0
 max_retries = 1
@@ -61,9 +61,9 @@ recommended_chunk_size = 4200
 [llm.providers.deepseek]
 model = "deepseek-flash"
 base_url = "https://api.deepseek.com"
-max_input_tokens = 64000
+max_input_tokens = 91136
 max_tokens = 65536
-recommended_chunk_size = 4800
+recommended_chunk_size = 2700
 
 [llm.providers.ollama]
 model = "qwen3.5:latest"
@@ -73,7 +73,7 @@ max_tokens = 4096
 recommended_chunk_size = 3200
 
 [extraction]
-chunk_size = 4800
+chunk_size = 2700
 overlap = 50
 max_chunks_per_document = 8
 reprocess = false

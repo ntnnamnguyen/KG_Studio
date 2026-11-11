@@ -5,12 +5,9 @@ import time
 
 from backend.domain.catalogs.service import extraction_prompt, prompt_signature
 from backend.domain.extraction.base_engine import BaseExtractionEngine, ChunkContext, EngineOutput
-from backend.domain.extraction.validator import ingest_extraction
-from backend.domain.prompts.service import get_active_prompt_version
-from backend.integrations.llm_gateway import LLMGateway
+from backend.integrations.llm import LLMGateway
 from shared.constants import MODE_EDC
 from shared.schemas.graph import StepTraceDTO
-from shared.text_utils import uid
 
 
 class EDCOnePassEngine(BaseExtractionEngine):
@@ -25,11 +22,7 @@ class EDCOnePassEngine(BaseExtractionEngine):
         try:
             sys_prompt = extraction_prompt(project)
             prompt_id = prompt_signature(sys_prompt, ["edc"])
-
-            active_ver = get_active_prompt_version(project, MODE_EDC)
-            ver_id = active_ver["id"] if active_ver else ""
-            ver_hash = active_ver["content_hash"] if active_ver else ""
-            base_inst = active_ver["content"] if active_ver else ""
+            ver_id, ver_hash, base_inst = self.resolve_prompt_version_info(project)
 
             result = LLMGateway.extract(
                 ctx.provider,
@@ -51,28 +44,12 @@ class EDCOnePassEngine(BaseExtractionEngine):
                 base_instructions=base_inst,
             )
             duration = int((time.perf_counter() - t0) * 1000)
-
-            stats = ingest_extraction(
-                project,
-                result.data,
-                ctx.document,
-                ctx.chunk_record["text"],
-                ctx.chunk_record["chunk_number"],
-                ctx.model,
-                prompt_id,
-                run_id=uid(),
-                start_char=ctx.chunk_record.get("start_char"),
-                end_char=ctx.chunk_record.get("end_char"),
-                page=ctx.chunk_record.get("page_from"),
-                chunk_hash=ctx.chunk_record.get("chunk_hash", ""),
-            )
+            stats = self.perform_ingest(ctx, result.data, prompt_id, MODE_EDC)
         finally:
             if prev_mode is not None:
                 project["extraction_mode"] = prev_mode
 
-        prep = result.prepared_request
-        req_hash = prep.request_hash if prep else ""
-        prep_dict = prep.to_dict() if prep else {}
+        req_hash, prep_dict = self.extract_prepared_request_info(result.prepared_request)
 
         trace = StepTraceDTO(
             step_name="EDC Open Extraction + Schema Definition",
@@ -99,4 +76,3 @@ class EDCOnePassEngine(BaseExtractionEngine):
             prepared_request_hash=req_hash,
             prepared_request=prep_dict,
         )
-

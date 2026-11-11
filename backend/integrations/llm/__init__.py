@@ -10,6 +10,7 @@ Cấu trúc:
 """
 from __future__ import annotations
 
+from .clients import ChatAdapter, ChatResponse, make_adapter
 from .errors import LLMError, classify_error
 from .gateway import ExtractionResult, LLMGateway
 from .parsing import build_user_message, clean_llm_json

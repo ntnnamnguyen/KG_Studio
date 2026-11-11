@@ -8,6 +8,7 @@ import streamlit as st
 
 from backend.domain.catalogs.service import catalog_rows, compute_project_revision
 from backend.domain.curation.service import (
+    build_curation_validation_context,
     duplicate_suggestions,
     evidence_context,
     find_document,
@@ -16,8 +17,8 @@ from backend.domain.curation.service import (
     node_degrees,
 )
 from backend.facade import get_facade
-from frontend.components.shared_curation_ui import paginate_items
-from frontend.client import FrontendClient, get_client
+from frontend.components.shared_curation_ui import paginate_items, render_selection_action_bar
+from frontend.client import FrontendClient
 from frontend.state.session import (
     clear_edge_selection,
     clear_entity_selection,
@@ -63,7 +64,14 @@ def compute_edge_filter_signature(filters: dict[str, Any]) -> str:
     return sha(json.dumps(payload, ensure_ascii=False, sort_keys=True))[:16]
 
 
-def _edge_priority_rank(project: dict, edge: dict) -> tuple[int, int, str]:
+def _edge_priority_rank(
+    project: dict,
+    edge: dict,
+    *,
+    precomputed: dict[str, Any] | None = None,
+    ev_ctx: dict[str, Any] | None = None,
+    schema_info: dict[str, Any] | None = None,
+) -> tuple[int, int, str]:
     status = str(edge.get("status", STATUS_PENDING))
     status_order = {
         STATUS_CHECK: 0,
@@ -71,8 +79,10 @@ def _edge_priority_rank(project: dict, edge: dict) -> tuple[int, int, str]:
         STATUS_APPROVED: 2,
         STATUS_REJECTED: 3,
     }.get(status, 4)
-    ev_ctx = evidence_context(project, edge)
-    schema_info = inspect_edge_schema_status(project, edge)
+    if ev_ctx is None:
+        ev_ctx = evidence_context(project, edge, precomputed=precomputed, include_snippets=False)
+    if schema_info is None:
+        schema_info = inspect_edge_schema_status(project, edge, precomputed=precomputed)
     issue_rank = 0
     if not ev_ctx.get("found"):
         issue_rank -= 2
@@ -83,23 +93,33 @@ def _edge_priority_rank(project: dict, edge: dict) -> tuple[int, int, str]:
 
 def filter_and_sort_edges(project: dict, filters: dict[str, Any]) -> list[dict]:
     """Lọc và sắp xếp danh sách cạnh theo bộ lọc Khu vực A."""
-    nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", [])}
     f_status = str(filters.get("status") or "all")
     f_doc = str(filters.get("doc_id") or "all")
     f_rel = str(filters.get("relation") or "all")
+    f_rel_norm = normal(f_rel) if f_rel != "all" else ""
     f_ent = str(filters.get("entity_id") or "all")
     f_kind = str(filters.get("entity_kind") or "all")
+    f_kind_norm = normal(f_kind) if f_kind != "all" else ""
     f_ev = str(filters.get("evidence_state") or "all")
     f_schema = str(filters.get("schema_state") or "all")
     f_search = normal(str(filters.get("search") or ""))
+    sort_by = str(filters.get("sort_by") or "priority")
+    sort_desc = bool(filters.get("sort_desc", False))
+
+    needs_priority_sort = sort_by not in ("relation", "source", "status")
+    needs_val_ctx = (f_ev not in ("all", "override")) or (f_schema != "all") or needs_priority_sort
+    val_ctx = build_curation_validation_context(project) if needs_val_ctx else None
+    nodes_by_id = val_ctx["nodes"] if val_ctx is not None else {str(n.get("id", "")): n for n in project.get("nodes", [])}
 
     matched: list[dict] = []
+    priority_ranks: dict[int, tuple[int, int, str]] = {}
+
     for edge in project.get("edges", []):
         if f_status != "all" and edge.get("status") != f_status:
             continue
         if f_doc != "all" and edge.get("doc_id") != f_doc:
             continue
-        if f_rel != "all" and normal(edge.get("relation", "")) != normal(f_rel):
+        if f_rel != "all" and normal(edge.get("relation", "")) != f_rel_norm:
             continue
         src_id = str(edge.get("source", ""))
         tgt_id = str(edge.get("target", ""))
@@ -109,28 +129,11 @@ def filter_and_sort_edges(project: dict, filters: dict[str, Any]) -> list[dict]:
         src_node = nodes_by_id.get(src_id, {})
         tgt_node = nodes_by_id.get(tgt_id, {})
         if f_kind != "all":
-            if normal(src_node.get("kind", "")) != normal(f_kind) and normal(tgt_node.get("kind", "")) != normal(f_kind):
+            if normal(src_node.get("kind", "")) != f_kind_norm and normal(tgt_node.get("kind", "")) != f_kind_norm:
                 continue
 
-        ev_ctx = evidence_context(project, edge)
-        if f_ev != "all":
-            if f_ev == "matched" and not ev_ctx.get("found"):
-                continue
-            if f_ev == "not_found" and (ev_ctx.get("found") or edge.get("override")):
-                continue
-            if f_ev == "override" and not edge.get("override"):
-                continue
-            if f_ev == "ambiguous" and not ev_ctx.get("ambiguous"):
-                continue
-
-        schema_info = inspect_edge_schema_status(project, edge)
-        if f_schema != "all":
-            if f_schema == "valid" and schema_info["status_code"] != "valid":
-                continue
-            if f_schema == "blocked" and schema_info["status_code"] == "valid":
-                continue
-            if f_schema in ("pending_proposal", "rejected_proposal", "out_of_catalog") and schema_info["status_code"] != f_schema:
-                continue
+        if f_ev == "override" and not edge.get("override"):
+            continue
 
         if f_search:
             haystack = " ".join(
@@ -145,10 +148,37 @@ def filter_and_sort_edges(project: dict, filters: dict[str, Any]) -> list[dict]:
             if f_search not in normal(haystack):
                 continue
 
+        schema_info: dict[str, Any] | None = None
+        if f_schema != "all":
+            schema_info = inspect_edge_schema_status(project, edge, precomputed=val_ctx)
+            if f_schema == "valid" and schema_info["status_code"] != "valid":
+                continue
+            if f_schema == "blocked" and schema_info["status_code"] == "valid":
+                continue
+            if f_schema in ("pending_proposal", "rejected_proposal", "out_of_catalog") and schema_info["status_code"] != f_schema:
+                continue
+
+        ev_ctx: dict[str, Any] | None = None
+        if f_ev not in ("all", "override"):
+            ev_ctx = evidence_context(project, edge, precomputed=val_ctx, include_snippets=False)
+            if f_ev == "matched" and not ev_ctx.get("found"):
+                continue
+            if f_ev == "not_found" and (ev_ctx.get("found") or edge.get("override")):
+                continue
+            if f_ev == "ambiguous" and not ev_ctx.get("ambiguous"):
+                continue
+
+        if needs_priority_sort:
+            priority_ranks[id(edge)] = _edge_priority_rank(
+                project,
+                edge,
+                precomputed=val_ctx,
+                ev_ctx=ev_ctx,
+                schema_info=schema_info,
+            )
+
         matched.append(edge)
 
-    sort_by = str(filters.get("sort_by") or "priority")
-    sort_desc = bool(filters.get("sort_desc", False))
     if sort_by == "relation":
         matched.sort(key=lambda e: (normal(e.get("relation", "")), str(e.get("id", ""))), reverse=sort_desc)
     elif sort_by == "source":
@@ -159,7 +189,7 @@ def filter_and_sort_edges(project: dict, filters: dict[str, Any]) -> list[dict]:
     elif sort_by == "status":
         matched.sort(key=lambda e: (str(e.get("status", "")), str(e.get("id", ""))), reverse=sort_desc)
     else:
-        matched.sort(key=lambda e: _edge_priority_rank(project, e), reverse=sort_desc)
+        matched.sort(key=lambda e: priority_ranks[id(e)], reverse=sort_desc)
 
     return matched
 
@@ -167,9 +197,15 @@ def filter_and_sort_edges(project: dict, filters: dict[str, Any]) -> list[dict]:
 # paginate_items được import dùng chung từ frontend.components.shared_curation_ui
 
 
-def format_edge_source_badge(project: dict, edge: dict) -> str:
+def format_edge_source_badge(
+    project: dict,
+    edge: dict,
+    *,
+    docs_by_id: dict[str, dict] | None = None,
+) -> str:
     """Hiển thị nguồn (doc_name, chunk_number, và chỉ hiện số trang khi tài liệu thật sự có thông tin trang)."""
-    doc = find_document(project, str(edge.get("doc_id", "")))
+    doc_id = str(edge.get("doc_id", ""))
+    doc = docs_by_id.get(doc_id) if docs_by_id is not None else find_document(project, doc_id)
     doc_name = str((doc or {}).get("name") or edge.get("doc_name") or edge.get("doc_id") or "Không rõ")
     parts = [doc_name]
     if edge.get("chunk_number") is not None:
@@ -185,15 +221,19 @@ def build_edge_table_rows(
     selected_ids: list[str] | set[str],
 ) -> list[dict[str, Any]]:
     """Tạo dữ liệu hiển thị cho bảng quan hệ đúng theo mục 5.1."""
-    nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", [])}
+    if not edges:
+        return []
+    val_ctx = build_curation_validation_context(project)
+    nodes_by_id = val_ctx["nodes"]
+    docs_by_id = val_ctx["docs_by_id"]
     sel_set = set(selected_ids)
     rows: list[dict[str, Any]] = []
     for edge in edges:
         eid = str(edge.get("id", ""))
         src = nodes_by_id.get(str(edge.get("source", "")), {})
         tgt = nodes_by_id.get(str(edge.get("target", "")), {})
-        ev_ctx = evidence_context(project, edge)
-        schema_info = inspect_edge_schema_status(project, edge)
+        ev_ctx = evidence_context(project, edge, precomputed=val_ctx, include_snippets=False)
+        schema_info = inspect_edge_schema_status(project, edge, precomputed=val_ctx)
         quote = str(edge.get("evidence") or "").strip()
         short_quote = quote if len(quote) <= 90 else f"{quote[:87]}..."
         rows.append(
@@ -205,7 +245,7 @@ def build_edge_table_rows(
                 "relation_display": str(edge.get("relation", "")).strip(),
                 "target_display": f"{tgt.get('name', edge.get('target', ''))} [{tgt.get('kind', '?')}]",
                 "evidence_snippet": short_quote,
-                "source_location": format_edge_source_badge(project, edge),
+                "source_location": format_edge_source_badge(project, edge, docs_by_id=docs_by_id),
                 "evidence_match_label": ev_ctx.get("match_label", ""),
                 "schema_badge": schema_info.get("badge_label", schema_info.get("label", "")),
                 "schema_status_label": schema_info["label"],
@@ -232,7 +272,7 @@ def build_edge_batch_preview(
     state_store: dict[str, Any] | None = None,
 ) -> CurationPreviewDTO:
     """Đóng gói các cạnh được chọn theo ID và gọi Backend tạo bản xem trước lô duyệt cạnh."""
-    svc_client = client or get_client()
+    svc_client = client or get_facade()
     locked_ids = list(dict.fromkeys(str(eid).strip() for eid in edge_ids if str(eid).strip()))
     decisions = [
         EdgeReviewDecisionDTO(
@@ -276,7 +316,7 @@ def execute_edge_batch_apply(
     state_store: dict[str, Any] | None = None,
 ) -> CurationResultDTO:
     """Thực thi lô duyệt cạnh đã xem trước và đồng bộ lại lựa chọn theo kết quả."""
-    svc_client = client or get_client()
+    svc_client = client or get_facade()
     s_state = get_curation_section_state(project, "edges", state_store)
     active_prev = s_state.get("active_preview")
     raw_decisions = s_state.get("preview_decisions") or []
@@ -591,34 +631,22 @@ def render_edge_curation_table_and_batch_bar(project: dict) -> dict[str, Any]:
     ):
         set_focused_edge(project, str(page_edges[0]["id"]))
 
-    sel_col1, sel_col2, sel_col3, sel_col4, sel_col5 = st.columns([1.2, 1.4, 1.0, 1.1, 1.3])
-    if sel_col1.button("☑️ Chọn trang hiện tại", width='stretch', key="btn_cur_sel_page"):
-        select_page_edges(project, page_edges)
-        st.rerun()
-    if sel_col2.button(
-        f"📑 Chọn tất cả khớp bộ lọc ({sum(1 for e in filtered_edges if e.get('status') in (STATUS_PENDING, STATUS_CHECK))})",
-        width='stretch',
-        key="btn_cur_sel_all",
-    ):
-        select_all_filtered_edges(project, filtered_edges)
-        st.rerun()
-    if sel_col3.button("✖️ Bỏ chọn tất cả", width='stretch', key="btn_cur_clear_sel"):
-        clear_edge_selection(project)
-        st.rerun()
-    filters["page_size"] = sel_col4.selectbox(
-        "Số dòng/trang",
-        [10, 25, 50, 100],
-        index=[10, 25, 50, 100].index(filters["page_size"]) if filters["page_size"] in [10, 25, 50, 100] else 1,
-        key="cur_edge_page_size",
+    page_res = render_selection_action_bar(
+        selected_count=len(s_state["selected_ids"]),
+        page_eligible_count=len(page_edges),
+        filtered_eligible_count=sum(1 for e in filtered_edges if e.get("status") in (STATUS_PENDING, STATUS_CHECK)),
+        total_count=len(project.get("edges", [])),
+        key_prefix="cur_edge",
+        item_noun="cạnh",
+        on_select_page=lambda: select_page_edges(project, page_edges),
+        on_select_all_filtered=lambda: select_all_filtered_edges(project, filtered_edges),
+        on_clear=lambda: clear_edge_selection(project),
+        page_size=filters["page_size"],
+        current_page=cur_page,
+        total_pages=total_pages,
     )
-    filters["page"] = sel_col5.number_input(
-        f"Trang (1..{total_pages})",
-        min_value=1,
-        max_value=total_pages,
-        value=cur_page,
-        step=1,
-        key="cur_edge_page_num",
-    )
+    if page_res:
+        filters["page"], filters["page_size"] = page_res
 
     display_rows = build_edge_table_rows(project, page_edges, s_state["selected_ids"])
     st.caption(
@@ -956,16 +984,17 @@ def render_entity_table(project: dict) -> dict[str, Any]:
     ):
         set_focused_entity(project, str(page_nodes[0]["id"]))
 
-    sel_n1, sel_n2, sel_n3 = st.columns([1.2, 1.4, 1.0])
-    if sel_n1.button(f"☑️ Chọn trang này ({len(page_nodes)})", width='stretch', key="btn_cur_sel_page_nodes"):
-        select_page_entities(project, page_nodes)
-        st.rerun()
-    if sel_n2.button(f"📑 Chọn tất cả kết quả lọc ({len(filtered_nodes)})", width='stretch', key="btn_cur_sel_all_nodes"):
-        select_all_filtered_entities(project, filtered_nodes)
-        st.rerun()
-    if sel_n3.button("✖️ Bỏ chọn tất cả", width='stretch', key="btn_cur_clear_sel_nodes"):
-        clear_entity_selection(project)
-        st.rerun()
+    render_selection_action_bar(
+        selected_count=len(e_state.get("selected_ids", [])),
+        page_eligible_count=len(page_nodes),
+        filtered_eligible_count=len(filtered_nodes),
+        total_count=len(project.get("nodes", [])),
+        key_prefix="cur_entity",
+        item_noun="thực thể",
+        on_select_page=lambda: select_page_entities(project, page_nodes),
+        on_select_all_filtered=lambda: select_all_filtered_entities(project, filtered_nodes),
+        on_clear=lambda: clear_entity_selection(project),
+    )
 
     rows = build_entity_table_rows(project, page_nodes)
     selected_node_ids = set(e_state.get("selected_ids", []))
@@ -1041,15 +1070,17 @@ def render_entity_table(project: dict) -> dict[str, Any]:
                     ):
                         facade = get_facade()
                         facade.create_snapshot(project)
+                        selected_set = set(selected_node_ids)
+                        nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", [])}
                         updated_cnt = 0
                         for nid in selected_node_ids:
-                            node = find_node(project, nid)
+                            node = nodes_by_id.get(str(nid))
                             if node:
                                 node["kind"] = batch_target_kind
                                 node["schema_proposal_ids"] = []
                                 updated_cnt += 1
                         for edge in project.get("edges", []):
-                            if edge.get("source") in selected_node_ids or edge.get("target") in selected_node_ids:
+                            if edge.get("source") in selected_set or edge.get("target") in selected_set:
                                 if edge.get("status") not in (STATUS_REJECTED, STATUS_APPROVED):
                                     edge["status"] = STATUS_CHECK
                         facade.save_project(project)

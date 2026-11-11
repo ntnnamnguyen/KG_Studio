@@ -12,8 +12,44 @@ from shared.constants import (
 )
 from shared.text_utils import normal
 
-from .common import find_document, find_node
+from .common import doc_fingerprint, find_document, find_node
 from .evidence import evidence_context
+
+
+def build_schema_precomputed(project: dict) -> dict[str, Any]:
+    """Xây dựng chỉ mục O(1) cho kiểm tra danh mục / đề xuất schema của cạnh."""
+    proposals: dict[str, dict] = {}
+    proposals_by_kind_norm: dict[tuple[str, str], list[str]] = {}
+    for p in project.get("schema_proposals", []):
+        pid = str(p.get("id", ""))
+        if not pid:
+            continue
+        proposals[pid] = p
+        pk = str(p.get("kind", ""))
+        pn = normal(str(p.get("name", "")))
+        if pk and pn:
+            proposals_by_kind_norm.setdefault((pk, pn), []).append(pid)
+
+    nodes = {str(n.get("id", "")): n for n in project.get("nodes", []) if n.get("id")}
+    rel_norms = {normal(r["name"]) for r in catalog_rows(project, "relations")}
+    type_norms = {normal(t["name"]) for t in catalog_rows(project, "entity_types")}
+    return {
+        "proposals": proposals,
+        "proposals_by_kind_norm": proposals_by_kind_norm,
+        "nodes": nodes,
+        "rel_norms": rel_norms,
+        "type_norms": type_norms,
+    }
+
+
+def build_curation_validation_context(project: dict) -> dict[str, Any]:
+    """Xây dựng ngữ cảnh tra cứu O(1) đầy đủ (schema + nodes + documents + fingerprints) cho thao tác hàng loạt."""
+    ctx = build_schema_precomputed(project)
+    docs_by_id = {str(d.get("id", "")): d for d in project.get("documents", []) if d.get("id")}
+    doc_fingerprints = {did: doc_fingerprint(d) for did, d in docs_by_id.items()}
+    ctx["docs_by_id"] = docs_by_id
+    ctx["doc_fingerprints"] = doc_fingerprints
+    return ctx
 
 
 def inspect_edge_schema_status(
@@ -31,11 +67,13 @@ def inspect_edge_schema_status(
     """
     if precomputed:
         proposals = precomputed.get("proposals", {})
+        proposals_by_kind_norm = precomputed.get("proposals_by_kind_norm")
         nodes = precomputed.get("nodes", {})
         rel_norms = precomputed.get("rel_norms", set())
         type_norms = precomputed.get("type_norms", set())
     else:
         proposals = {str(p.get("id", "")): p for p in project.get("schema_proposals", [])}
+        proposals_by_kind_norm = None
         nodes = {str(n.get("id", "")): n for n in project.get("nodes", [])}
         rel_norms = {normal(r["name"]) for r in catalog_rows(project, "relations")}
         type_norms = {normal(t["name"]) for t in catalog_rows(project, "entity_types")}
@@ -72,10 +110,14 @@ def inspect_edge_schema_status(
             if proposals.get(pid, {}).get("kind") == "relations"
         ]
         if not rel_prop_candidates:
-            rel_prop_candidates = [
-                pid for pid, p in proposals.items()
-                if p.get("kind") == "relations" and normal(p.get("name", "")) == normal(rel_name)
-            ]
+            rel_norm_key = normal(rel_name)
+            if proposals_by_kind_norm is not None:
+                rel_prop_candidates = list(proposals_by_kind_norm.get(("relations", rel_norm_key), ()))
+            else:
+                rel_prop_candidates = [
+                    pid for pid, p in proposals.items()
+                    if p.get("kind") == "relations" and normal(p.get("name", "")) == rel_norm_key
+                ]
 
         if rel_prop_candidates:
             for pid in rel_prop_candidates:
@@ -116,10 +158,14 @@ def inspect_edge_schema_status(
                 if proposals.get(pid, {}).get("kind") == "entity_types"
             ]
             if not s_prop_candidates:
-                s_prop_candidates = [
-                    pid for pid, p in proposals.items()
-                    if p.get("kind") == "entity_types" and normal(p.get("name", "")) == normal(s_kind)
-                ]
+                s_norm_key = normal(s_kind)
+                if proposals_by_kind_norm is not None:
+                    s_prop_candidates = list(proposals_by_kind_norm.get(("entity_types", s_norm_key), ()))
+                else:
+                    s_prop_candidates = [
+                        pid for pid, p in proposals.items()
+                        if p.get("kind") == "entity_types" and normal(p.get("name", "")) == s_norm_key
+                    ]
 
             if s_prop_candidates:
                 for pid in s_prop_candidates:
@@ -160,10 +206,14 @@ def inspect_edge_schema_status(
                 if proposals.get(pid, {}).get("kind") == "entity_types"
             ]
             if not t_prop_candidates:
-                t_prop_candidates = [
-                    pid for pid, p in proposals.items()
-                    if p.get("kind") == "entity_types" and normal(p.get("name", "")) == normal(t_kind)
-                ]
+                t_norm_key = normal(t_kind)
+                if proposals_by_kind_norm is not None:
+                    t_prop_candidates = list(proposals_by_kind_norm.get(("entity_types", t_norm_key), ()))
+                else:
+                    t_prop_candidates = [
+                        pid for pid, p in proposals.items()
+                        if p.get("kind") == "entity_types" and normal(p.get("name", "")) == t_norm_key
+                    ]
 
             if t_prop_candidates:
                 for pid in t_prop_candidates:
@@ -243,12 +293,17 @@ def validate_edge_for_approval(
     note: str = "",
     check_existing_override: bool = False,
     allow_schema_bypass: bool = False,
+    precomputed: dict[str, Any] | None = None,
+    include_evidence_snippets: bool = True,
 ) -> dict[str, Any]:
     """Validator thống nhất ở backend cho duyệt đơn, duyệt lô và kiểm tra xuất đồ thị (Trang 6)."""
     errors: list[str] = []
     warnings: list[str] = []
 
-    nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", []) if n.get("id")}
+    if precomputed is not None and "nodes" in precomputed:
+        nodes_by_id = precomputed["nodes"]
+    else:
+        nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", []) if n.get("id")}
     src_id = str(edge.get("source") or "")
     tgt_id = str(edge.get("target") or "")
 
@@ -263,11 +318,15 @@ def validate_edge_for_approval(
     if not str(edge.get("relation") or "").strip():
         errors.append("Tên quan hệ không được rỗng.")
 
-    doc = find_document(project, str(edge.get("doc_id", "")))
+    doc_id = str(edge.get("doc_id", ""))
+    if precomputed is not None and "docs_by_id" in precomputed:
+        doc = precomputed["docs_by_id"].get(doc_id)
+    else:
+        doc = find_document(project, doc_id)
     if not doc or not str(doc.get("text", "")).strip():
         errors.append("Tài liệu nguồn của dữ kiện không tồn tại hoặc rỗng.")
 
-    schema_info = inspect_edge_schema_status(project, edge)
+    schema_info = inspect_edge_schema_status(project, edge, precomputed=precomputed)
     if schema_info["issue"]:
         if allow_schema_bypass:
             warnings.append(f"Cảnh báo Lược đồ (chấp nhận duyệt ngoại lệ): {schema_info['issue']}")
@@ -290,6 +349,7 @@ def validate_edge_for_approval(
                 )
 
     quote_str = str(edge.get("evidence") or "").strip()
+    requires_override = False
     if not quote_str:
         if allow_schema_bypass:
             warnings.append("Quan hệ không có trích dẫn bằng chứng (duyệt ngoại lệ theo yêu cầu).")
@@ -297,8 +357,12 @@ def validate_edge_for_approval(
         else:
             errors.append("Không thể duyệt quan hệ không có câu trích dẫn bằng chứng.")
 
-    ev_ctx = evidence_context(project, edge)
-    requires_override = False
+    ev_ctx = evidence_context(
+        project,
+        edge,
+        precomputed=precomputed,
+        include_snippets=include_evidence_snippets,
+    )
     if quote_str and doc:
         if not ev_ctx["found"]:
             requires_override = True
@@ -334,7 +398,12 @@ def validate_edge_for_approval(
     }
 
 
-def is_edge_exportable(project: dict, edge: dict) -> bool:
+def is_edge_exportable(
+    project: dict,
+    edge: dict,
+    *,
+    precomputed: dict[str, Any] | None = None,
+) -> bool:
     """Điều kiện đủ để một cạnh được xuất sang Trang 6 / JSON / CSV / Neo4j."""
     if edge.get("status") != STATUS_APPROVED:
         return False
@@ -343,16 +412,28 @@ def is_edge_exportable(project: dict, edge: dict) -> bool:
         edge,
         is_batch=False,
         check_existing_override=True,
+        precomputed=precomputed,
+        include_evidence_snippets=False,
     )
     return bool(check["ok"])
 
 
 def approvable_edges(project: dict) -> list[str]:
     result: list[str] = []
-    for edge in project.get("edges", []):
+    edges = project.get("edges", [])
+    if not edges:
+        return result
+    ctx = build_curation_validation_context(project)
+    for edge in edges:
         if edge.get("status") not in (STATUS_PENDING, STATUS_CHECK):
             continue
-        val = validate_edge_for_approval(project, edge, is_batch=True)
+        val = validate_edge_for_approval(
+            project,
+            edge,
+            is_batch=True,
+            precomputed=ctx,
+            include_evidence_snippets=False,
+        )
         if val["ok"]:
             result.append(str(edge["id"]))
     return result

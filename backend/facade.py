@@ -5,7 +5,8 @@ import copy
 import json
 from pathlib import Path
 import threading
-from typing import Any
+from typing import Any, Callable
+import concurrent.futures
 
 from backend.domain.catalogs.service import (
      catalog_rows,
@@ -24,8 +25,10 @@ from backend.domain.curation.service import (
     apply_curation_decisions as domain_apply_curation_decisions,
     apply_entity_merge as domain_apply_entity_merge,
     apply_relation_merge as domain_apply_relation_merge,
+    apply_semantic_clusters as domain_apply_semantic_clusters,
     approvable_edges,
     bulk_apply_relation_merges as domain_bulk_apply_relation_merges,
+    collapse_duplicate_edges as domain_collapse_duplicate_edges,
     compute_apparent_duplicate_edge_groups,
     compute_curation_request_hash,
     duplicate_suggestions,
@@ -33,12 +36,16 @@ from backend.domain.curation.service import (
     inspect_edge_schema_status,
     is_edge_exportable,
     mark_pair_not_duplicate as domain_mark_pair_not_duplicate,
+    mark_pairs_not_duplicate_bulk as domain_mark_pairs_not_duplicate_bulk,
     mark_relation_pair_not_duplicate as domain_mark_relation_pair_not_duplicate,
+    mark_relation_pairs_not_duplicate_bulk as domain_mark_relation_pairs_not_duplicate_bulk,
     merge_nodes,
     preview_curation_decisions as domain_preview_curation_decisions,
+    preview_clustering_prompt as domain_preview_clustering_prompt,
     preview_entity_merge as domain_preview_entity_merge,
     relation_duplicate_suggestions as domain_relation_duplicate_suggestions,
     review_stats,
+    scan_semantic_clusters as domain_scan_semantic_clusters,
     select_edge_evidence_span,
     set_edge_status,
     set_edges_status,
@@ -52,11 +59,23 @@ from backend.domain.documents.processor import add_document, document_chunks
 from backend.domain.extraction.base_engine import ChunkContext, EngineOutput
 from backend.domain.extraction.registry import EngineRegistry, default_registry
 from backend.domain.extraction.validator import cache_key
+from backend.domain.graph.g_retriever import (
+    SubgraphRetrievalResult,
+    answer_question_with_graph,
+    evaluate_retrieval_methods,
+    load_project_from_export_bytes,
+    retrieve_subgraph,
+)
+from backend.domain.graph.qa_generator import (
+    generate_qa_benchmark,
+    generate_training_qa_dataset,
+    paraphrase_qa_questions_with_llm,
+)
 from backend.domain.graph.service import approved_graph, approved_json_bytes, csv_bytes, export_zip, validate_integrity
 from backend.domain.schema_intelligence.aligner import TargetAligner
 from backend.domain.schema_intelligence.retriever import SchemaRetriever
 from backend.integrations.embedder_gateway import default_embedder, list_registered_models
-from backend.integrations.llm_gateway import LLMGateway
+from backend.integrations.llm import LLMGateway
 from backend.integrations.neo4j_gateway import Neo4jGateway
 from backend.repositories.json_repo import JsonProjectRepository
 from backend.repositories.sqlite_repo import SQLiteProjectRepository
@@ -116,7 +135,45 @@ class KGStudioFacade:
         self._locks_guard = threading.Lock()
         self._project_locks: dict[str, threading.RLock] = {}
         self._last_committed_revision: dict[str, str] = {}
+        self._last_disk_stat: dict[str, tuple[int, int]] = {}
         self._idempotency_cache: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def _project_file_stat(self, proj_name: str) -> tuple[int, int] | None:
+        if not proj_name:
+            return None
+        try:
+            folder = self.json_repo.find_folder(proj_name)
+            if folder is None:
+                return None
+            p_file = folder / "project.json"
+            if not p_file.exists():
+                return None
+            st = p_file.stat()
+            return (st.st_mtime_ns, st.st_size)
+        except Exception:
+            return None
+
+    def _record_disk_stat(self, proj_id: str, proj_name: str) -> None:
+        st = self._project_file_stat(proj_name)
+        if st is not None:
+            self._last_disk_stat[proj_id] = st
+
+    def _disk_changed_externally(self, proj_id: str, proj_name: str) -> bool:
+        st = self._project_file_stat(proj_name)
+        if st is None:
+            return False
+        prev = self._last_disk_stat.get(proj_id)
+        return prev is None or prev != st
+
+    def _can_copy_disk_snapshot(self, proj_id: str, proj_name: str, mem_rev: str) -> bool:
+        if not proj_name or self._last_committed_revision.get(proj_id) != mem_rev:
+            return False
+        st = self._project_file_stat(proj_name)
+        return st is not None and self._last_disk_stat.get(proj_id) == st
+
+    def get_project_lock(self, project_key: str) -> threading.RLock:
+        """Lấy hoặc tạo re-entrant lock theo từng dự án phục vụ đa luồng."""
+        return self._get_lock(project_key)
 
     def _get_lock(self, project_key: str) -> threading.RLock:
         key = str(project_key or "default")
@@ -163,21 +220,21 @@ class KGStudioFacade:
         proj_name: str,
         project: dict,
         expected_revision: str,
-    ) -> None:
-        """Kiểm tra xung đột đa phiên: nếu một phiên khác đã commit lên đĩa sau expected_revision."""
-        if not expected_revision:
-            return
-        last_committed_rev = self._last_committed_revision.get(proj_id)
+    ) -> str:
+        """Kiểm tra xung đột đa phiên: nếu một phiên khác đã commit lên đĩa sau expected_revision. Trả về mem_rev hiện tại."""
         mem_rev = compute_project_revision(project)
+        if not expected_revision:
+            return mem_rev
+        last_committed_rev = self._last_committed_revision.get(proj_id)
         if last_committed_rev and last_committed_rev != mem_rev and expected_revision != last_committed_rev:
             raise ValueError(
                 "Dự án đã được cập nhật bởi một phiên làm việc khác (revision mismatch). Vui lòng tải lại và xem trước lại."
             )
-        if proj_name and self.json_repo.project_exists(proj_name):
+        if last_committed_rev and proj_name and self._disk_changed_externally(proj_id, proj_name):
             try:
                 disk_proj = self.json_repo.load_project(proj_name)
                 disk_rev = compute_project_revision(disk_proj)
-                if last_committed_rev and disk_rev == last_committed_rev and disk_rev != mem_rev:
+                if disk_rev == last_committed_rev and disk_rev != mem_rev:
                     raise ValueError(
                         "Dự án trên đĩa đã thay đổi bởi phiên khác kể từ lúc xem trước. Vui lòng xem trước lại."
                     )
@@ -185,6 +242,7 @@ class KGStudioFacade:
                 raise
             except Exception:
                 pass
+        return mem_rev
 
     # --- Quản lý Dự án ---
     def list_projects(self) -> list[str]:
@@ -198,6 +256,7 @@ class KGStudioFacade:
         project = self.json_repo.load_project(name)
         proj_id = str(project.get("project_id") or project.get("name") or name)
         self._last_committed_revision[proj_id] = compute_project_revision(project)
+        self._record_disk_stat(proj_id, str(project.get("name") or name))
         self._sync_sqlite_safe(project)
         return project
 
@@ -206,6 +265,7 @@ class KGStudioFacade:
         with self._get_lock(proj_id):
             path = self.json_repo.save_project(project)
             self._last_committed_revision[proj_id] = compute_project_revision(project)
+            self._record_disk_stat(proj_id, str(project.get("name") or ""))
             try:
                 self.vector_repo.invalidate_project_indices(
                     proj_id,
@@ -233,7 +293,11 @@ class KGStudioFacade:
             return {"status": "synced", "sync_pending": False, "project_id": proj_id}
 
     def create_snapshot(self, project: dict) -> Path:
-        return self.json_repo.create_snapshot(project)
+        proj_id = str(project.get("project_id") or project.get("name") or "default")
+        proj_name = str(project.get("name") or "")
+        mem_rev = compute_project_revision(project)
+        clean_disk = self._can_copy_disk_snapshot(proj_id, proj_name, mem_rev)
+        return self.json_repo.create_snapshot(project, copy_from_disk_if_clean=clean_disk)
 
     def list_snapshots(self, project: dict) -> list[Path]:
         return self.json_repo.list_snapshots(project)
@@ -243,6 +307,7 @@ class KGStudioFacade:
         with self._get_lock(proj_id):
             restored = self.json_repo.restore_snapshot(project, path)
             self._last_committed_revision[proj_id] = compute_project_revision(restored)
+            self._record_disk_stat(proj_id, str(restored.get("name") or project.get("name") or ""))
             try:
                 self.vector_repo.invalidate_project_indices(
                     proj_id,
@@ -562,7 +627,7 @@ class KGStudioFacade:
                 cached = self._idempotency_cache.get((proj_id, req.request_id))
                 if cached is None:
                     cached = project.get("edc_idempotency_store", {}).get(req.request_id)
-                if cached is None and proj_name and self.json_repo.project_exists(proj_name):
+                if cached is None and proj_name and self._disk_changed_externally(proj_id, proj_name):
                     try:
                         disk_p = self.json_repo.load_project(proj_name)
                         cached = disk_p.get("edc_idempotency_store", {}).get(req.request_id)
@@ -578,7 +643,7 @@ class KGStudioFacade:
                     return replayed
 
             # 2. Kiểm tra xung đột đa phiên (nếu một phiên khác đã commit lên đĩa sau expected_revision)
-            self._check_revision_conflict(proj_id, proj_name, project, req.expected_revision)
+            mem_rev = self._check_revision_conflict(proj_id, proj_name, project, req.expected_revision)
 
             # 3. Xác thực lại toàn bộ lô trên bản sao dự án
             model_fp = self._current_model_fingerprint(project)
@@ -592,7 +657,8 @@ class KGStudioFacade:
             )
 
             # 4. Tạo đúng 1 snapshot trước khi commit bộ file
-            snap_path = self.json_repo.create_snapshot(project)
+            clean_disk = self._can_copy_disk_snapshot(proj_id, proj_name, mem_rev)
+            snap_path = self.json_repo.create_snapshot(project, copy_from_disk_if_clean=clean_disk)
             snap_str = str(snap_path)
             result.snapshot_path = snap_str
             if candidate.get("schema_decision_batches"):
@@ -605,7 +671,8 @@ class KGStudioFacade:
                 "at": now_iso(),
                 "result": result.to_dict(),
             }
-            candidate.setdefault("edc_idempotency_store", {})[result.request_id] = idem_entry
+            candidate["edc_idempotency_store"] = dict(candidate.get("edc_idempotency_store") or {})
+            candidate["edc_idempotency_store"][result.request_id] = idem_entry
 
             # 6. Lưu atomic bundle (project.json + relations.json + entity_types.json); lỗi I/O sẽ rollback
             try:
@@ -615,9 +682,11 @@ class KGStudioFacade:
                 raise
 
             # 7. Chỉ cập nhật trạng thái dự án trong bộ nhớ sau khi JSON đã commit thành công
-            project.clear()
-            project.update(candidate)
+            if candidate is not project:
+                project.clear()
+                project.update(candidate)
             self._last_committed_revision[proj_id] = result.revision_after
+            self._record_disk_stat(proj_id, str(project.get("name") or proj_name))
 
             # 8. Vô hiệu hóa chỉ mục vector nếu danh mục thay đổi (không làm đảo quyết định nếu lỗi)
             new_cat_hash = compute_catalog_hash(project, req.kind if req.kind in ("relations", "entity_types") else None)
@@ -657,6 +726,7 @@ class KGStudioFacade:
         max_tokens: int = 8192,
         max_input_tokens: int = 12000,
         client: object | None = None,
+        lock: threading.Lock | threading.RLock | None = None,
     ) -> EngineOutput:
         mode = project.get("extraction_mode", "closed")
         engine = self.engine_registry.get(mode)
@@ -672,6 +742,7 @@ class KGStudioFacade:
             max_tokens=max_tokens,
             max_input_tokens=max_input_tokens,
             client=client,
+            lock=lock,
         )
         output = engine.process_chunk(ctx)
 
@@ -685,42 +756,152 @@ class KGStudioFacade:
         c_key = cache_key(document, chunk_record, p_id, rel_sig, provider, model, base_url, temperature, max_tokens)
 
         raw = output.raw_response or ""
-        project.setdefault("runs", []).append(
-            {
-                "at": now_iso(),
-                "doc_id": document["id"],
-                "doc_name": document.get("name", ""),
-                "chunk_number": chunk_record["chunk_number"],
-                "chunk_hash": chunk_record.get("chunk_hash", ""),
-                "cache_key": c_key,
-                "provider": provider,
-                "model": model,
-                "prompt_id": p_id,
-                "prompt_version_id": getattr(output, "prompt_version_id", ""),
-                "prompt_content_hash": getattr(output, "prompt_content_hash", ""),
-                "prepared_request_hash": getattr(output, "prepared_request_hash", ""),
-                "prepared_request": getattr(output, "prepared_request", {}),
-                "extraction_mode": mode,
-                "input_tokens": output.input_tokens,
-                "output_tokens": output.output_tokens,
-                "added_nodes": output.ingest_stats.get("added_nodes", 0),
-                "added_edges": output.ingest_stats.get("added_edges", 0),
-                "duplicates": output.ingest_stats.get("duplicates", 0),
-                "discarded": output.ingest_stats.get("discarded", 0),
-                "evidence_mismatch": output.ingest_stats.get("evidence_mismatch", 0),
-                "disallowed_relations": output.ingest_stats.get("disallowed_relations", []),
-                "rejected_items": output.ingest_stats.get("rejected_items", []),
-                "new_proposals": output.ingest_stats.get("new_proposals", 0),
-                "warnings": output.warnings,
-                "step_traces": output.step_traces,
-                "alignment_summary": output.alignment_summary,
-                "raw_response": raw[:100_000],
-                "raw_truncated": len(raw) > 100_000,
-                "status": "ok",
-            }
-        )
-        project.setdefault("processed_chunks", {})[c_key] = now_iso()
+        run_record = {
+            "at": now_iso(),
+            "doc_id": document["id"],
+            "doc_name": document.get("name", ""),
+            "chunk_number": chunk_record["chunk_number"],
+            "chunk_hash": chunk_record.get("chunk_hash", ""),
+            "cache_key": c_key,
+            "provider": provider,
+            "model": model,
+            "prompt_id": p_id,
+            "prompt_version_id": getattr(output, "prompt_version_id", ""),
+            "prompt_content_hash": getattr(output, "prompt_content_hash", ""),
+            "prepared_request_hash": getattr(output, "prepared_request_hash", ""),
+            "prepared_request": getattr(output, "prepared_request", {}),
+            "extraction_mode": mode,
+            "input_tokens": output.input_tokens,
+            "output_tokens": output.output_tokens,
+            "added_nodes": output.ingest_stats.get("added_nodes", 0),
+            "added_edges": output.ingest_stats.get("added_edges", 0),
+            "duplicates": output.ingest_stats.get("duplicates", 0),
+            "discarded": output.ingest_stats.get("discarded", 0),
+            "evidence_mismatch": output.ingest_stats.get("evidence_mismatch", 0),
+            "disallowed_relations": output.ingest_stats.get("disallowed_relations", []),
+            "rejected_items": output.ingest_stats.get("rejected_items", []),
+            "new_proposals": output.ingest_stats.get("new_proposals", 0),
+            "warnings": output.warnings,
+            "step_traces": output.step_traces,
+            "alignment_summary": output.alignment_summary,
+            "raw_response": raw[:100_000],
+            "raw_truncated": len(raw) > 100_000,
+            "status": "ok",
+        }
+
+        if lock:
+            with lock:
+                project.setdefault("runs", []).append(run_record)
+                project.setdefault("processed_chunks", {})[c_key] = now_iso()
+        else:
+            project.setdefault("runs", []).append(run_record)
+            project.setdefault("processed_chunks", {})[c_key] = now_iso()
+
         return output
+
+    def extract_chunks_parallel(
+        self,
+        project: dict,
+        tasks: list[tuple[dict, dict]],
+        *,
+        provider: str,
+        api_key: str,
+        model: str,
+        base_url: str = "",
+        temperature: float = 0.0,
+        max_tokens: int = 8192,
+        max_input_tokens: int = 12000,
+        max_workers: int = 3,
+        on_progress: Callable[[int, int, dict, dict, EngineOutput | None, Exception | None], None] | None = None,
+        save_after_chunk: bool = True,
+    ) -> dict[str, Any]:
+        """Trích xuất đồng thời nhiều đoạn văn bản qua LLM API sử dụng ThreadPoolExecutor an toàn đa luồng."""
+        proj_id = str(project.get("project_id") or project.get("name") or "default")
+        proj_lock = self.get_project_lock(proj_id)
+
+        workers = max(1, min(int(max_workers or 1), 32))
+        total_tasks = len(tasks)
+        success_count = 0
+        failed_tasks: list[dict] = []
+        completed_count = 0
+
+        if workers == 1:
+            for idx, (doc, rec) in enumerate(tasks, 1):
+                try:
+                    out = self.extract_chunk(
+                        project,
+                        doc,
+                        rec,
+                        provider=provider,
+                        api_key=api_key,
+                        model=model,
+                        base_url=base_url,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        max_input_tokens=max_input_tokens,
+                        lock=proj_lock,
+                    )
+                    if save_after_chunk:
+                        with proj_lock:
+                            self.save_project(project)
+                    success_count += 1
+                    if on_progress:
+                        on_progress(idx, total_tasks, doc, rec, out, None)
+                except Exception as exc:
+                    failed_tasks.append({"doc": doc, "rec": rec, "error": str(exc)})
+                    if on_progress:
+                        on_progress(idx, total_tasks, doc, rec, None, exc)
+            return {
+                "total": total_tasks,
+                "success_count": success_count,
+                "failed_count": len(failed_tasks),
+                "failed_tasks": failed_tasks,
+            }
+
+        def _worker(task_tuple: tuple[dict, dict]) -> EngineOutput:
+            d, r = task_tuple
+            out = self.extract_chunk(
+                project,
+                d,
+                r,
+                provider=provider,
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                max_input_tokens=max_input_tokens,
+                lock=proj_lock,
+            )
+            if save_after_chunk:
+                with proj_lock:
+                    self.save_project(project)
+            return out
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_task = {
+                executor.submit(_worker, task): task
+                for task in tasks
+            }
+            for future in concurrent.futures.as_completed(future_to_task):
+                completed_count += 1
+                doc, rec = future_to_task[future]
+                try:
+                    out = future.result()
+                    success_count += 1
+                    if on_progress:
+                        on_progress(completed_count, total_tasks, doc, rec, out, None)
+                except Exception as exc:
+                    failed_tasks.append({"doc": doc, "rec": rec, "error": str(exc)})
+                    if on_progress:
+                        on_progress(completed_count, total_tasks, doc, rec, None, exc)
+
+        return {
+            "total": total_tasks,
+            "success_count": success_count,
+            "failed_count": len(failed_tasks),
+            "failed_tasks": failed_tasks,
+        }
 
     # --- Kiểm duyệt & Gộp thực thể ---
     def _commit_curation_operation(
@@ -742,7 +923,7 @@ class KGStudioFacade:
                 cached = self._idempotency_cache.get(cache_key_id)
                 if cached is None:
                     cached = project.get("curation_idempotency_store", {}).get(request_id)
-                if cached is None and proj_name and self.json_repo.project_exists(proj_name):
+                if cached is None and proj_name and self._disk_changed_externally(proj_id, proj_name):
                     try:
                         disk_p = self.json_repo.load_project(proj_name)
                         cached = disk_p.get("curation_idempotency_store", {}).get(request_id)
@@ -757,17 +938,22 @@ class KGStudioFacade:
                     replayed.idempotent_replay = True
                     return replayed
 
-            self._check_revision_conflict(proj_id, proj_name, project, expected_revision)
+            mem_rev = self._check_revision_conflict(proj_id, proj_name, project, expected_revision)
 
             candidate, result = executor(project)
 
-            snap_path = self.json_repo.create_snapshot(project)
+            clean_disk = self._can_copy_disk_snapshot(proj_id, proj_name, mem_rev)
+            snap_path = self.json_repo.create_snapshot(project, copy_from_disk_if_clean=clean_disk)
             snap_str = str(snap_path)
             result.snapshot_path = snap_str
             if candidate.get("curation_decision_batches"):
                 candidate["curation_decision_batches"][-1]["snapshot_path"] = snap_str
-            if candidate.get("entity_merges") and result.operation == "entity_merge":
+            if candidate.get("entity_merges") and result.operation in ("entity_merge", "bulk_entity_merge"):
                 candidate["entity_merges"][-1]["snapshot_path"] = snap_str
+            if candidate.get("relation_merges") and result.operation in ("relation_merge", "bulk_relation_merge", "collapse_duplicate_edges"):
+                candidate["relation_merges"][-1]["snapshot_path"] = snap_str
+            if candidate.get("entity_type_merges") and result.operation in ("bulk_entity_type_merge", "entity_type_merge"):
+                candidate["entity_type_merges"][-1]["snapshot_path"] = snap_str
 
             idem_entry = {
                 "request_id": result.request_id,
@@ -775,7 +961,8 @@ class KGStudioFacade:
                 "at": now_iso(),
                 "result": result.to_dict(),
             }
-            candidate.setdefault("curation_idempotency_store", {})[result.request_id] = idem_entry
+            candidate["curation_idempotency_store"] = dict(candidate.get("curation_idempotency_store") or {})
+            candidate["curation_idempotency_store"][result.request_id] = idem_entry
 
             try:
                 self.json_repo.save_project(candidate)
@@ -783,9 +970,11 @@ class KGStudioFacade:
                 snap_path.unlink(missing_ok=True)
                 raise
 
-            project.clear()
-            project.update(candidate)
+            if candidate is not project:
+                project.clear()
+                project.update(candidate)
             self._last_committed_revision[proj_id] = result.revision_after
+            self._record_disk_stat(proj_id, str(project.get("name") or proj_name))
 
             self._sync_sqlite_safe(project, result)
 
@@ -855,13 +1044,16 @@ class KGStudioFacade:
         project: dict,
         pairs: list[dict | tuple[str, str]],
         *,
+        collapse_edges: bool = False,
         note: str = "",
         actor: str = "human_reviewer",
     ) -> CurationResultDTO:
-        req_hash = sha(json.dumps(pairs, sort_keys=True, default=str))[:16]
+        req_hash = sha(json.dumps({"pairs": pairs, "collapse": collapse_edges}, sort_keys=True, default=str))[:16]
 
         def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            return domain_apply_bulk_entity_merges(proj, pairs, note=note, actor=actor)
+            return domain_apply_bulk_entity_merges(
+                proj, pairs, collapse_edges=collapse_edges, note=note, actor=actor, mutate_in_place=False
+            )
 
         return self._commit_curation_operation(
             project,
@@ -890,13 +1082,16 @@ class KGStudioFacade:
         source_relations: list[str],
         target_relation: str,
         *,
+        collapse_edges: bool = False,
         note: str = "",
         actor: str = "human_reviewer",
     ) -> CurationResultDTO:
-        req_hash = sha(json.dumps({"src": sorted(source_relations), "tgt": target_relation}, sort_keys=True))[:16]
+        req_hash = sha(json.dumps({"src": sorted(source_relations), "tgt": target_relation, "collapse": collapse_edges}, sort_keys=True))[:16]
 
         def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            return domain_apply_relation_merge(proj, source_relations, target_relation, note=note, actor=actor)
+            return domain_apply_relation_merge(
+                proj, source_relations, target_relation, collapse_edges=collapse_edges, note=note, actor=actor, mutate_in_place=False
+            )
 
         return self._commit_curation_operation(
             project,
@@ -911,13 +1106,56 @@ class KGStudioFacade:
         project: dict,
         mappings: list[dict | tuple[str, str]],
         *,
+        collapse_edges: bool = False,
         note: str = "",
         actor: str = "human_reviewer",
     ) -> CurationResultDTO:
-        req_hash = sha(json.dumps(mappings, sort_keys=True, default=str))[:16]
+        req_hash = sha(json.dumps({"mappings": mappings, "collapse": collapse_edges}, sort_keys=True, default=str))[:16]
 
         def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            return domain_bulk_apply_relation_merges(proj, mappings, note=note, actor=actor)
+            return domain_bulk_apply_relation_merges(
+                proj, mappings, collapse_edges=collapse_edges, note=note, actor=actor, mutate_in_place=False
+            )
+
+        return self._commit_curation_operation(
+            project,
+            expected_revision="",
+            request_id=uid(),
+            request_hash=req_hash,
+            executor=_exec,
+        )
+
+    def collapse_duplicate_edges(
+        self,
+        project: dict,
+        *,
+        note: str = "",
+        actor: str = "human_reviewer",
+    ) -> CurationResultDTO:
+        req_hash = sha(f"collapse_{compute_project_revision(project)}")[:16]
+
+        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
+            rev_before = compute_project_revision(proj)
+            batch_id = uid()
+            req_id = uid()
+            candidate, dropped_count, records = domain_collapse_duplicate_edges(
+                proj, actor=actor, note=note, mutate_in_place=False
+            )
+            rev_after = compute_project_revision(candidate)
+            res = CurationResultDTO(
+                batch_id=batch_id,
+                request_id=req_id,
+                project_id=str(candidate.get("project_id") or candidate.get("name") or ""),
+                operation="collapse_duplicate_edges",
+                status="applied",
+                apply_mode="all_or_nothing",
+                revision_before=rev_before,
+                revision_after=rev_after,
+                applied_count=dropped_count,
+                merged_duplicate_edges=dropped_count,
+                item_results=records,
+            )
+            return candidate, res
 
         return self._commit_curation_operation(
             project,
@@ -937,6 +1175,84 @@ class KGStudioFacade:
         res = domain_mark_relation_pair_not_duplicate(project, rel_a, rel_b, note=note)
         self.json_repo.save_project(project)
         return res
+
+    def preview_clustering_prompt(
+        self,
+        project: dict,
+        kind: str = "relations",
+        custom_instructions: str = "",
+        scope: str = "top_60",
+    ) -> str:
+        """Tạo bản xem trước toàn bộ Prompt gom cụm gửi LLM cho quan hệ hoặc loại thực thể."""
+        return domain_preview_clustering_prompt(
+            project, kind=kind, custom_instructions=custom_instructions, scope=scope
+        )
+
+    def scan_semantic_clusters(
+        self,
+        project: dict,
+        kind: str = "relations",
+        *,
+        scope: str = "top_60",
+        provider: str = "DeepSeek",
+        api_key: str = "",
+        model: str = "",
+        base_url: str = "",
+        client: Any = None,
+        custom_instructions: str = "",
+        prompt_override: str = "",
+    ) -> dict[str, Any]:
+        """Quét và gom cụm ngữ nghĩa thông minh qua LLM (DeepSeek) cho quan hệ hoặc loại thực thể."""
+        return domain_scan_semantic_clusters(
+            project,
+            kind=kind,
+            scope=scope,
+            provider=provider,
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            client=client,
+            custom_instructions=custom_instructions,
+            prompt_override=prompt_override,
+        )
+
+    def apply_semantic_clusters(
+        self,
+        project: dict,
+        kind: str,
+        approved_clusters: list[dict],
+        *,
+        collapse_duplicate_edges: bool = True,
+        note: str = "",
+        actor: str = "human_reviewer",
+    ) -> CurationResultDTO:
+        """Áp dụng các cụm gom ngữ nghĩa AI vào đồ thị dự án (tạo snapshot, cập nhật cạnh/node, lưu aliases)."""
+        req_hash = sha(
+            json.dumps(
+                {"kind": kind, "clusters": approved_clusters, "collapse": collapse_duplicate_edges},
+                sort_keys=True,
+                default=str,
+            )
+        )[:16]
+
+        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
+            return domain_apply_semantic_clusters(
+                proj,
+                kind=kind,
+                approved_clusters=approved_clusters,
+                collapse_duplicate_edges=collapse_duplicate_edges,
+                actor=actor,
+                note=note or f"Gom cụm AI cho {len(approved_clusters)} cụm {kind}.",
+                mutate_in_place=False,
+            )
+
+        return self._commit_curation_operation(
+            project,
+            expected_revision="",
+            request_id=uid(),
+            request_hash=req_hash,
+            executor=_exec,
+        )
 
     def edit_edge_fact(
         self,
@@ -1102,6 +1418,33 @@ class KGStudioFacade:
             self.save_project(project)
         return res
 
+    def mark_pairs_not_duplicate_bulk(
+        self,
+        project: dict,
+        pairs: list[tuple[str, str] | list[str] | dict[str, Any]],
+        *,
+        note: str = "",
+        actor: str = "human_reviewer",
+        save: bool = True,
+    ) -> list[dict[str, Any]]:
+        res = domain_mark_pairs_not_duplicate_bulk(project, pairs, note=note, actor=actor)
+        if save and res and self.json_repo.project_exists(project.get("name", "")):
+            self.save_project(project)
+        return res
+
+    def mark_relation_pairs_not_duplicate_bulk(
+        self,
+        project: dict,
+        pairs: list[tuple[str, str] | list[str] | dict[str, Any]],
+        *,
+        note: str = "",
+        save: bool = True,
+    ) -> dict[str, Any]:
+        res = domain_mark_relation_pairs_not_duplicate_bulk(project, pairs, note=note)
+        if save and res.get("added_count", 0) > 0 and self.json_repo.project_exists(project.get("name", "")):
+            self.save_project(project)
+        return res
+
     def inspect_edge_schema_status(self, project: dict, edge: dict) -> dict[str, Any]:
         return inspect_edge_schema_status(project, edge)
 
@@ -1175,8 +1518,8 @@ class KGStudioFacade:
     def csv_bytes(self, records: list[dict], headers: list[str], list_fields: tuple[str, ...] = ()) -> bytes:
         return csv_bytes(records, headers, list_fields)
 
-    def export_zip(self, project: dict) -> bytes:
-        return export_zip(project)
+    def export_zip(self, project: dict, *, qa_max_samples: int = 2000) -> bytes:
+        return export_zip(project, qa_max_samples=qa_max_samples)
 
     def sync_neo4j(self, project: dict, uri: str, user: str, password: str, database: str = "neo4j", driver=None) -> dict:
         return Neo4jGateway.sync_project(project, uri, user, password, database, driver=driver)
@@ -1191,6 +1534,134 @@ class KGStudioFacade:
     # --- Active Learning Exporter ---
     def export_training_datasets(self, project: dict) -> dict:
         return self.exporter.export_project(project)
+
+    # --- G-Retriever & GraphRAG Lab ---
+    def retrieve_subgraph(
+        self,
+        project: dict,
+        query: str,
+        *,
+        method: str = "pcst",
+        max_edges: int = 20,
+        approved_only: bool = True,
+        base_edge_cost: float = 0.35,
+        hub_penalty_alpha: float = 0.45,
+        expand_leaf_attributes: bool = True,
+    ) -> SubgraphRetrievalResult:
+        return retrieve_subgraph(
+            project,
+            query,
+            method=method,
+            max_edges=max_edges,
+            approved_only=approved_only,
+            base_edge_cost=base_edge_cost,
+            hub_penalty_alpha=hub_penalty_alpha,
+            expand_leaf_attributes=expand_leaf_attributes,
+        )
+
+    def answer_question_with_graph(
+        self,
+        subgraph_or_project: SubgraphRetrievalResult | dict[str, Any],
+        query: str = "",
+        *,
+        method: str = "pcst",
+        approved_only: bool = True,
+        max_edges: int = 18,
+        provider: str = "DeepSeek",
+        api_key: str = "",
+        model: str = "deepseek-chat",
+        base_url: str = "",
+        temperature: float = 0.1,
+        max_tokens: int = 2048,
+        max_input_tokens: int = 16000,
+        max_output_tokens: int = 2048,
+        client: Any = None,
+        llm_client: Any = None,
+    ) -> dict[str, Any]:
+        effective_key = (api_key or "").strip() or get_api_key(provider)
+        return answer_question_with_graph(
+            subgraph_or_project,
+            query,
+            method=method,
+            approved_only=approved_only,
+            max_edges=max_edges,
+            provider=provider,
+            api_key=effective_key,
+            model=model,
+            base_url=base_url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
+            client=client,
+            llm_client=llm_client,
+        )
+
+    def generate_qa_benchmark(
+        self,
+        project: dict,
+        *,
+        num_questions: int = 18,
+        approved_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        return generate_qa_benchmark(project, num_questions=num_questions, approved_only=approved_only)
+
+    def generate_training_qa_dataset(
+        self,
+        project: dict,
+        *,
+        max_samples: int = 2000,
+        train_ratio: float = 0.80,
+        val_ratio: float = 0.10,
+        approved_only: bool = True,
+    ) -> dict[str, Any]:
+        return generate_training_qa_dataset(
+            project,
+            max_samples=max_samples,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            approved_only=approved_only,
+        )
+
+    def paraphrase_qa_questions_with_llm(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        provider: str = "DeepSeek",
+        api_key: str = "",
+        model: str = "deepseek-chat",
+        base_url: str = "",
+        client: Any = None,
+        batch_size: int = 10,
+    ) -> list[dict[str, Any]]:
+        effective_key = (api_key or "").strip() or get_api_key(provider)
+        return paraphrase_qa_questions_with_llm(
+            items,
+            provider=provider,
+            api_key=effective_key,
+            model=model,
+            base_url=base_url,
+            client=client,
+            batch_size=batch_size,
+        )
+
+    def evaluate_retrieval_methods(
+        self,
+        project: dict,
+        benchmark_items: list[dict[str, Any]] | None = None,
+        *,
+        max_edges: int = 15,
+        approved_only: bool = True,
+    ) -> dict[str, Any]:
+        return evaluate_retrieval_methods(
+            project,
+            benchmark_items=benchmark_items,
+            max_edges=max_edges,
+            approved_only=approved_only,
+        )
+
+    def load_project_from_export_bytes(self, raw_bytes: bytes, filename: str = "") -> dict[str, Any]:
+        return load_project_from_export_bytes(raw_bytes, filename=filename)
 
 
 _SINGLETON: KGStudioFacade | None = None

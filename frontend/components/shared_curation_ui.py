@@ -54,6 +54,130 @@ def compute_filter_hash(payload: dict[str, Any]) -> str:
     return sha(json.dumps(normalized_payload, ensure_ascii=False, sort_keys=True))[:16]
 
 
+def render_pagination_controls(
+    current_page: int,
+    total_pages: int,
+    page_size: int = 50,
+    page_size_options: list[int] = [10, 25, 50, 100],
+    key_prefix: str = "shared",
+) -> tuple[int, int]:
+    """Thành phần phân trang dùng chung cho các bảng kiểm duyệt."""
+    col_size, col_page = st.columns([1, 1.2])
+    new_size = col_size.selectbox(
+        "Số dòng/trang",
+        page_size_options,
+        index=page_size_options.index(page_size) if page_size in page_size_options else 1,
+        key=f"{key_prefix}_page_size",
+    )
+    new_page = col_page.number_input(
+        f"Trang (1..{total_pages})",
+        min_value=1,
+        max_value=max(1, total_pages),
+        value=max(1, min(current_page, max(1, total_pages))),
+        step=1,
+        key=f"{key_prefix}_page_num",
+    )
+    return int(new_page), int(new_size)
+
+
+def render_selection_action_bar(
+    *,
+    selected_count: int,
+    page_eligible_count: int,
+    filtered_eligible_count: int,
+    total_count: int,
+    key_prefix: str,
+    item_noun: str = "mục",
+    on_select_page: Callable[[], None] | None = None,
+    on_select_all_filtered: Callable[[], None] | None = None,
+    on_clear: Callable[[], None] | None = None,
+    page_size: int | None = None,
+    current_page: int | None = None,
+    total_pages: int | None = None,
+    page_size_options: list[int] = [10, 25, 50, 100],
+    summary_text: str = "",
+) -> tuple[int, int] | int | None:
+    """Thanh công cụ thao tác chọn theo lô và tích hợp điều khiển phân trang dùng chung."""
+    has_full_pagination = page_size is not None and current_page is not None and total_pages is not None
+    has_page_only = page_size is None and current_page is not None and total_pages is not None
+
+    if has_full_pagination:
+        c1, c2, c3, c4, c5 = st.columns([1.2, 1.4, 1.0, 1.1, 1.3])
+    elif has_page_only:
+        c1, c2, c3, c4, c5 = st.columns([1.2, 1.5, 1.0, 1.2, 2.2])
+    else:
+        c1, c2, c3 = st.columns([1.2, 1.4, 1.0])
+
+    if c1.button(
+        f"☑️ Chọn trang này ({page_eligible_count})",
+        disabled=(page_eligible_count == 0),
+        width="stretch",
+        key=f"{key_prefix}_btn_sel_page",
+    ):
+        if on_select_page:
+            on_select_page()
+            st.rerun()
+
+    if c2.button(
+        f"📑 Chọn tất cả lọc ({filtered_eligible_count})",
+        disabled=(filtered_eligible_count == 0),
+        width="stretch",
+        key=f"{key_prefix}_btn_sel_all",
+    ):
+        if on_select_all_filtered:
+            on_select_all_filtered()
+            st.rerun()
+
+    if c3.button(
+        "✖️ Bỏ chọn" if has_page_only else "✖️ Bỏ chọn tất cả",
+        disabled=(selected_count == 0),
+        width="stretch",
+        key=f"{key_prefix}_btn_clear_sel",
+    ):
+        if on_clear:
+            on_clear()
+            st.rerun()
+
+    if has_full_pagination:
+        new_size = c4.selectbox(
+            "Số dòng/trang",
+            page_size_options,
+            index=page_size_options.index(page_size) if page_size in page_size_options else 1,
+            key=f"{key_prefix}_page_size",
+        )
+        new_page = c5.number_input(
+            f"Trang (1..{total_pages})",
+            min_value=1,
+            max_value=max(1, total_pages),
+            value=max(1, min(current_page, max(1, total_pages))),
+            step=1,
+            key=f"{key_prefix}_page_num",
+        )
+        return int(new_page), int(new_size)
+
+    if has_page_only:
+        new_page = current_page
+        if total_pages > 1:
+            new_page = c4.number_input(
+                f"Trang (1..{total_pages})",
+                min_value=1,
+                max_value=max(1, total_pages),
+                value=max(1, min(current_page, max(1, total_pages))),
+                step=1,
+                key=f"{key_prefix}_page_num",
+            )
+        else:
+            c4.write("")
+
+        text = summary_text or (
+            f"**Đã chọn `{selected_count}`** / `{filtered_eligible_count}` kết quả lọc / `{total_count}` tổng số {item_noun}"
+        )
+        c5.markdown(text)
+        return int(new_page)
+
+    return None
+
+
 def render_decision_batch_history(
     project: dict,
     batch_key: str,

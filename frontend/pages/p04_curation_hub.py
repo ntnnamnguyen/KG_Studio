@@ -12,7 +12,6 @@ from typing import Any
 import streamlit as st
 
 from backend.facade import get_facade
-from frontend.client import get_client
 from frontend.components.curation_table import (
     render_edge_curation_table_and_batch_bar,
     render_entity_table,
@@ -71,7 +70,6 @@ def compute_curation_overview_counts(project: dict) -> dict[str, int]:
 def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None:
     """Hiển thị Trung tâm Kiểm duyệt & Chuẩn hóa Tri thức Hợp nhất."""
     facade = get_facade()
-    client = get_client()
 
     reset_edc_state_if_project_changed(project)
     reset_curation_state_if_project_changed(project)
@@ -272,7 +270,7 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
                 key="btn_hub_auto_align_types",
             ):
                 facade.create_snapshot(project)
-                summary = client.run_target_alignment_on_pending(project, proposal_ids=sel_types, kind="entity_types")
+                summary = facade.run_target_alignment_on_pending(project, proposal_ids=sel_types, kind="entity_types")
                 facade.save_project(project)
                 st.success(
                     f"Chuẩn hóa tự động (Loại thực thể): Hợp nhất {summary['auto_aligned']} mục, "
@@ -287,7 +285,7 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
                 key="btn_hub_auto_align_rels",
             ):
                 facade.create_snapshot(project)
-                summary = client.run_target_alignment_on_pending(project, proposal_ids=sel_rels, kind="relations")
+                summary = facade.run_target_alignment_on_pending(project, proposal_ids=sel_rels, kind="relations")
                 facade.save_project(project)
                 st.success(
                     f"Chuẩn hóa tự động (Quan hệ): Hợp nhất {summary['auto_aligned']} mục, "

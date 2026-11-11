@@ -53,16 +53,30 @@ def safe_filename(name: str, max_chars: int = 200) -> str:
 
 
 def scrubbed(obj: Any) -> Any:
-    """Bản sao đã loại bỏ khóa nhạy cảm trước khi lưu đĩa hoặc xuất file."""
+    """Bản sao đã loại bỏ khóa nhạy cảm trước khi lưu đĩa hoặc xuất file (copy-on-change tránh cấp phát thừa)."""
     if isinstance(obj, dict):
-        out = {}
+        changed = False
+        out: dict[Any, Any] = {}
         for key, value in obj.items():
-            if str(key).lower() in SECRET_KEYS or key == "_storage_revision":
+            if (isinstance(key, str) and (key == "_storage_revision" or key.lower() in SECRET_KEYS)) or (
+                not isinstance(key, str) and str(key).lower() in SECRET_KEYS
+            ):
+                changed = True
                 continue
-            out[key] = scrubbed(value)
-        return out
+            new_val = scrubbed(value)
+            if new_val is not value:
+                changed = True
+            out[key] = new_val
+        return out if changed else obj
     if isinstance(obj, list):
-        return [scrubbed(x) for x in obj]
+        changed = False
+        out_list: list[Any] = []
+        for x in obj:
+            nx = scrubbed(x)
+            if nx is not x:
+                changed = True
+            out_list.append(nx)
+        return out_list if changed else obj
     return obj
 
 
@@ -76,4 +90,33 @@ def tokenize_vn(text: str, *, include_bigrams: bool = True) -> list[str]:
         return words
     bigrams = [f"{words[i]}_{words[i + 1]}" for i in range(len(words) - 1)]
     return words + bigrams
+
+
+def clean_relation_name(raw_rel: str) -> str:
+    """Chuẩn hóa tên quan hệ: bỏ snake_case (_/ -), gộp khoảng trắng, chuyển chữ thường tiếng Việt,
+    và lược bỏ các từ nối / giới từ rườm rà ở cuối (của, về, là, cho).
+    Ví dụ:
+        'cần_sự_đồng_ý_của' -> 'cần sự đồng ý'
+        'dự_kiến_ban_đầu_là' -> 'dự kiến ban đầu'
+        'giảm giá cho' -> 'giảm giá'
+        'giới_thiệu_về' -> 'giới thiệu'
+        'có_tầng_2_diện_tích' -> 'có tầng 2 diện tích'
+    """
+    if not raw_rel:
+        return ""
+    text = re.sub(r"[_\-]+", " ", str(raw_rel)).strip()
+    text = re.sub(r"\s+", " ", unicodedata.normalize("NFC", text)).casefold()
+
+    protected = {"thuộc về", "trở về", "quay về", "hướng về"}
+    if text in protected:
+        return text
+
+    for p in (" của", " về", " là", " cho"):
+        if text.endswith(p):
+            stem = text[: -len(p)].strip()
+            if stem and stem not in ("là", "của", "về", "cho"):
+                text = stem
+                break
+    return text
+
 

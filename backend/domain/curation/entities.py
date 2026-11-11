@@ -20,7 +20,7 @@ from shared.constants import (
 from shared.text_utils import normal, now_iso, sha, uid
 
 from .common import clean_aliases, clean_display_text, find_node
-from .validation import inspect_edge_schema_status
+from .validation import build_schema_precomputed, inspect_edge_schema_status
 
 # Bộ nhớ đệm gợi ý trùng lặp theo (project_id, revision, fuzzy_threshold) tránh tính lại O(n^2) mỗi lần rerun
 _DUPLICATE_SUGGESTIONS_CACHE: dict[tuple[str, str, float], list[dict[str, Any]]] = {}
@@ -167,6 +167,79 @@ def mark_pair_not_duplicate(
     return entry
 
 
+def mark_pairs_not_duplicate_bulk(
+    project: dict,
+    pairs: list[tuple[str, str] | list[str] | dict[str, Any]],
+    note: str = "",
+    *,
+    actor: str = "human_reviewer",
+) -> list[dict[str, Any]]:
+    """Đánh dấu hàng loạt cặp thực thể là 'Khác đối tượng' trong một lần quét O(V + K)."""
+    if not pairs:
+        return []
+    nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", []) if n.get("id")}
+    existing_records = project.get("not_duplicate_pairs", [])
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    ordered_keys: list[tuple[str, str]] = []
+    for r in existing_records:
+        rk = tuple(sorted([str(r.get("node_a_id", "")), str(r.get("node_b_id", ""))]))
+        if rk not in by_key:
+            ordered_keys.append(rk)  # type: ignore[arg-type]
+        by_key[rk] = r  # type: ignore[index]
+
+    clean_note = str(note or "").strip()
+    ts = now_iso()
+    history = project.setdefault("curation_history", [])
+    created: list[dict[str, Any]] = []
+
+    for item in pairs:
+        if isinstance(item, dict):
+            a_id = str(item.get("keep_id") or item.get("node_a_id") or "").strip()
+            b_id = str(item.get("drop_id") or item.get("node_b_id") or "").strip()
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            a_id, b_id = str(item[0]).strip(), str(item[1]).strip()
+        else:
+            continue
+        if not a_id or not b_id or a_id == b_id:
+            continue
+        node_a = nodes_by_id.get(a_id)
+        node_b = nodes_by_id.get(b_id)
+        if not node_a or not node_b:
+            continue
+
+        pk = tuple(sorted([a_id, b_id]))
+        fp = _node_pair_fingerprint(node_a, node_b)
+        entry = {
+            "id": uid(),
+            "node_a_id": pk[0],
+            "node_b_id": pk[1],
+            "pair_fingerprint": fp,
+            "note": clean_note,
+            "actor": actor,
+            "at": ts,
+        }
+        if pk not in by_key:
+            ordered_keys.append(pk)  # type: ignore[arg-type]
+        by_key[pk] = entry  # type: ignore[index]
+        created.append(entry)
+        history.append(
+            {
+                "id": entry["id"],
+                "at": ts,
+                "actor": actor,
+                "decision_origin": "human",
+                "action": "mark_not_duplicate",
+                "target_id": f"{pk[0]}:{pk[1]}",
+                "note": clean_note,
+                "before": None,
+                "after": entry,
+            }
+        )
+
+    project["not_duplicate_pairs"] = [by_key[k] for k in ordered_keys]
+    return created
+
+
 def node_degrees(project: dict) -> dict[str, dict[str, int]]:
     """Tính bậc kết nối vào (in), ra (out) và tổng (total) cho từng thực thể trong dự án."""
     degrees: dict[str, dict[str, int]] = {
@@ -292,9 +365,13 @@ def duplicate_suggestions(
             max_len = max(len_a, len_b)
             score = 0.0
             if max_len > 0 and (abs(len_a - len_b) <= max_len * (1.0 - fuzzy_threshold + 0.05) or reasons):
-                score = SequenceMatcher(None, name_a, name_b).ratio()
-                if fuzzy_threshold and score >= fuzzy_threshold and not reasons:
-                    reasons.append(f"Độ giống tên cao ({score:.2f})")
+                sm = SequenceMatcher(None, name_a, name_b)
+                if reasons:
+                    score = sm.ratio()
+                elif fuzzy_threshold and sm.real_quick_ratio() >= fuzzy_threshold and sm.quick_ratio() >= fuzzy_threshold:
+                    score = sm.ratio()
+                    if score >= fuzzy_threshold:
+                        reasons.append(f"Độ giống tên cao ({score:.2f})")
 
             if reasons:
                 pair_fp = _node_pair_fingerprint(first, second)
@@ -404,13 +481,7 @@ def review_stats(project: dict, include_duplicates: bool = False) -> dict[str, i
     - Chunks được đếm bằng pointer arithmetic nhanh từ processor.
     - Cặp nghi trùng lặp chỉ chạy khi include_duplicates=True hoặc đã có trong cache."""
     edges = project.get("edges", [])
-
-    precomputed = {
-        "proposals": {str(p.get("id", "")): p for p in project.get("schema_proposals", [])},
-        "nodes": {str(n.get("id", "")): n for n in project.get("nodes", [])},
-        "rel_norms": {normal(r["name"]) for r in catalog_rows(project, "relations")},
-        "type_norms": {normal(t["name"]) for t in catalog_rows(project, "entity_types")},
-    }
+    precomputed = build_schema_precomputed(project)
 
     schema_blocked = sum(
         1

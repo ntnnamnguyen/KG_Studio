@@ -30,7 +30,7 @@ from shared.text_utils import normal, now_iso, sha, uid
 
 from .common import clean_display_text, find_document, find_edge
 from .evidence import recheck_edge_evidence
-from .validation import validate_edge_for_approval
+from .validation import build_curation_validation_context, validate_edge_for_approval
 
 
 def _normalize_review_action(action: str) -> str:
@@ -50,7 +50,12 @@ def _normalize_review_action(action: str) -> str:
     return mapping[act]
 
 
-def sync_edge_schema_to_catalog(project: dict, edge: dict) -> dict[str, Any]:
+def sync_edge_schema_to_catalog(
+    project: dict,
+    edge: dict,
+    *,
+    precomputed: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Tự động đồng bộ quan hệ và loại thực thể của cạnh vào danh mục chính thức, đồng thời un-reject/chuyển đề xuất liên quan thành approved."""
     rel_name = str(edge.get("relation") or "").strip()
     if not rel_name:
@@ -63,37 +68,80 @@ def sync_edge_schema_to_catalog(project: dict, edge: dict) -> dict[str, Any]:
         project["relation_types"] = rel_rows
     raw_relations = project.setdefault("relations", [])
     relation_notes = project.setdefault("relation_notes", {})
+    ent_types = project.setdefault("entity_types", [])
+
+    if precomputed is not None:
+        rel_rows_norms = precomputed.get("sync_rel_rows_norms")
+        if rel_rows_norms is None:
+            rel_rows_norms = {normal(r.get("name", "")) for r in rel_rows if isinstance(r, dict)}
+            precomputed["sync_rel_rows_norms"] = rel_rows_norms
+        raw_relations_set = precomputed.get("sync_raw_relations_set")
+        if raw_relations_set is None:
+            raw_relations_set = set(raw_relations)
+            precomputed["sync_raw_relations_set"] = raw_relations_set
+        ent_type_norms = precomputed.get("sync_ent_type_norms")
+        if ent_type_norms is None:
+            ent_type_norms = {normal(k.get("name", "")) for k in ent_types if isinstance(k, dict)}
+            precomputed["sync_ent_type_norms"] = ent_type_norms
+        nodes_by_id = precomputed.get("nodes") or {str(n.get("id", "")): n for n in project.get("nodes", [])}
+        proposals_by_kind_norm = precomputed.get("proposals_by_kind_norm")
+        proposals_map = precomputed.get("proposals", {})
+        prop_idx_by_id = precomputed.get("prop_idx_by_id")
+    else:
+        rel_rows_norms = {normal(r.get("name", "")) for r in rel_rows if isinstance(r, dict)}
+        raw_relations_set = set(raw_relations)
+        ent_type_norms = {normal(k.get("name", "")) for k in ent_types if isinstance(k, dict)}
+        nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", [])}
+        proposals_by_kind_norm = None
+        proposals_map = {}
+        prop_idx_by_id = None
+
+    sync_ts = now_iso()
 
     # 1. Đồng bộ Quan hệ
     rel_norm = normal(rel_name)
-    existing_rel = next((r for r in rel_rows if normal(r.get("name", "")) == rel_norm), None)
-    if not existing_rel:
+    if rel_norm not in rel_rows_norms:
         rel_entry = {
             "name": rel_name,
             "description": f"Tự động nạp vào danh mục khi duyệt cạnh '{rel_name}'",
             "definition": f"Quan hệ '{rel_name}' được phê duyệt từ kiểm duyệt dữ kiện.",
         }
         rel_rows.append(rel_entry)
-    if rel_name not in raw_relations:
+        rel_rows_norms.add(rel_norm)
+    if rel_name not in raw_relations_set:
         raw_relations.append(rel_name)
+        raw_relations_set.add(rel_name)
     if rel_name not in relation_notes:
         relation_notes[rel_name] = {
             "definition": f"Quan hệ '{rel_name}' được phê duyệt từ kiểm duyệt dữ kiện.",
             "description": f"Tự động nạp vào danh mục khi duyệt cạnh '{rel_name}'",
         }
+    if precomputed is not None and "rel_norms" in precomputed:
+        precomputed["rel_norms"].add(rel_norm)
 
-    # Cập nhật đề xuất quan hệ (nếu có proposal liên quan đang rejected/pending thì mở khóa thành approved)
-    for p in proposals:
-        if p.get("kind") == "relations" and normal(p.get("name", "")) == rel_norm:
-            if p.get("status") in ("rejected", "pending"):
+    # Cập nhật đề xuất quan hệ (O(1) khi có proposals_by_kind_norm)
+    if proposals_by_kind_norm is not None:
+        for pid in proposals_by_kind_norm.get(("relations", rel_norm), ()):
+            p = proposals_map.get(pid)
+            if p and p.get("status") in ("rejected", "pending"):
+                if prop_idx_by_id is not None and pid in prop_idx_by_id:
+                    p = copy.deepcopy(p)
+                    proposals[prop_idx_by_id[pid]] = p
+                    proposals_map[pid] = p
                 p["status"] = "approved"
                 p["canonical_name"] = rel_name
-                p["reviewed_at"] = now_iso()
+                p["reviewed_at"] = sync_ts
                 p["review_note"] = (str(p.get("review_note") or "") + " [Tự động duyệt qua kiểm duyệt cạnh]").strip()
+    else:
+        for p in proposals:
+            if p.get("kind") == "relations" and normal(p.get("name", "")) == rel_norm:
+                if p.get("status") in ("rejected", "pending"):
+                    p["status"] = "approved"
+                    p["canonical_name"] = rel_name
+                    p["reviewed_at"] = sync_ts
+                    p["review_note"] = (str(p.get("review_note") or "") + " [Tự động duyệt qua kiểm duyệt cạnh]").strip()
 
     # 2. Đồng bộ Loại thực thể Nguồn & Đích
-    nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", [])}
-    ent_types = project.setdefault("entity_types", [])
     for nid_key in ("source", "target"):
         nid = str(edge.get(nid_key) or "")
         node = nodes_by_id.get(nid)
@@ -103,22 +151,37 @@ def sync_edge_schema_to_catalog(project: dict, edge: dict) -> dict[str, Any]:
         if not k_name:
             continue
         k_norm = normal(k_name)
-        existing_kind = next((k for k in ent_types if normal(k.get("name", "")) == k_norm), None)
-        if not existing_kind:
+        if k_norm not in ent_type_norms:
             kind_entry = {
                 "name": k_name,
                 "description": f"Tự động nạp loại thực thể '{k_name}' khi duyệt cạnh",
                 "definition": f"Loại thực thể '{k_name}' được kích hoạt từ kiểm duyệt dữ kiện.",
             }
             ent_types.append(kind_entry)
+            ent_type_norms.add(k_norm)
+        if precomputed is not None and "type_norms" in precomputed:
+            precomputed["type_norms"].add(k_norm)
 
-        for p in proposals:
-            if p.get("kind") == "entity_types" and normal(p.get("name", "")) == k_norm:
-                if p.get("status") in ("rejected", "pending"):
+        if proposals_by_kind_norm is not None:
+            for pid in proposals_by_kind_norm.get(("entity_types", k_norm), ()):
+                p = proposals_map.get(pid)
+                if p and p.get("status") in ("rejected", "pending"):
+                    if prop_idx_by_id is not None and pid in prop_idx_by_id:
+                        p = copy.deepcopy(p)
+                        proposals[prop_idx_by_id[pid]] = p
+                        proposals_map[pid] = p
                     p["status"] = "approved"
                     p["canonical_name"] = k_name
-                    p["reviewed_at"] = now_iso()
+                    p["reviewed_at"] = sync_ts
                     p["review_note"] = (str(p.get("review_note") or "") + " [Tự động duyệt qua kiểm duyệt cạnh]").strip()
+        else:
+            for p in proposals:
+                if p.get("kind") == "entity_types" and normal(p.get("name", "")) == k_norm:
+                    if p.get("status") in ("rejected", "pending"):
+                        p["status"] = "approved"
+                        p["canonical_name"] = k_name
+                        p["reviewed_at"] = sync_ts
+                        p["review_note"] = (str(p.get("review_note") or "") + " [Tự động duyệt qua kiểm duyệt cạnh]").strip()
 
     return {"synced": True, "relation": rel_name}
 
@@ -138,11 +201,14 @@ def set_edge_status(
     request_id: str = "",
     allow_schema_bypass: bool = False,
     auto_sync_catalog: bool = True,
+    edge_obj: dict | None = None,
+    precomputed: dict[str, Any] | None = None,
+    include_evidence_snippets: bool = True,
 ) -> dict:
     target_status = _normalize_review_action(status)
     if target_status not in STATUSES:
         raise ValueError(f"Trạng thái không hợp lệ: {status}")
-    edge = find_edge(project, edge_id)
+    edge = edge_obj if edge_obj is not None else find_edge(project, edge_id)
     if not edge:
         raise ValueError("Không tìm thấy quan hệ")
 
@@ -157,6 +223,8 @@ def set_edge_status(
             self_loop_confirmed=self_loop_confirmed or bool(edge.get("self_loop_confirmed")) or allow_schema_bypass,
             note=note or override_reason,
             allow_schema_bypass=allow_schema_bypass,
+            precomputed=precomputed,
+            include_evidence_snippets=include_evidence_snippets,
         )
         if not val["ok"]:
             raise ValueError(val["errors"][0])
@@ -191,7 +259,7 @@ def set_edge_status(
             edge["review_note"] = note.strip()
 
         if auto_sync_catalog:
-            sync_edge_schema_to_catalog(project, edge)
+            sync_edge_schema_to_catalog(project, edge, precomputed=precomputed)
 
     elif target_status == STATUS_REJECTED:
         eff_code = str(reason_code or "").strip()
@@ -241,13 +309,21 @@ def set_edges_status(project: dict, edge_ids: list[str], status: str, *, note: s
     changed = 0
     skipped: list[dict] = []
     batch_id = uid()
+    edges_by_id = {str(e.get("id", "")): e for e in project.get("edges", [])}
+    val_ctx = build_curation_validation_context(project) if edge_ids else None
     for edge_id in edge_ids:
         try:
-            edge = find_edge(project, edge_id)
+            edge = edges_by_id.get(str(edge_id))
             if edge is None:
                 raise ValueError("Không tìm thấy quan hệ")
             if status == STATUS_APPROVED:
-                val = validate_edge_for_approval(project, edge, is_batch=True)
+                val = validate_edge_for_approval(
+                    project,
+                    edge,
+                    is_batch=True,
+                    precomputed=val_ctx,
+                    include_evidence_snippets=False,
+                )
                 if not val["ok"]:
                     raise ValueError(val["errors"][0])
             set_edge_status(
@@ -257,6 +333,9 @@ def set_edges_status(project: dict, edge_ids: list[str], status: str, *, note: s
                 reason_code=reason_code,
                 note=note,
                 batch_id=batch_id,
+                edge_obj=edge,
+                precomputed=val_ctx,
+                include_evidence_snippets=False,
             )
             changed += 1
         except ValueError as exc:
@@ -293,13 +372,28 @@ def compute_curation_request_hash(req: Any) -> str:
     return sha(json.dumps(raw, ensure_ascii=False, sort_keys=True))[:16]
 
 
+def _clone_project_for_curation_mutation(project: dict) -> dict:
+    """Bản sao có mục tiêu cho thao tác duyệt cạnh hàng loạt (tránh copy.deepcopy văn bản tài liệu 65+ MB)."""
+    candidate = dict(project)
+    candidate["edges"] = list(project.get("edges", []))
+    candidate["relations"] = list(project.get("relations", []))
+    candidate["relation_notes"] = copy.deepcopy(project.get("relation_notes", {}))
+    if project.get("relation_types") is not None:
+        candidate["relation_types"] = [copy.deepcopy(r) for r in project.get("relation_types", [])]
+    candidate["entity_types"] = [copy.deepcopy(r) for r in project.get("entity_types", [])]
+    candidate["schema_proposals"] = list(project.get("schema_proposals", []))
+    candidate["curation_history"] = list(project.get("curation_history", []))
+    candidate["curation_decision_batches"] = list(project.get("curation_decision_batches", []))
+    return candidate
+
+
 def preview_curation_decisions(
     project: dict,
     request: CurationReviewRequestDTO | dict,
 ) -> CurationPreviewDTO:
     """Xem trước lô kiểm duyệt dữ kiện (không ghi dự án, không đổi trạng thái)."""
     req = CurationReviewRequestDTO.from_dict(request)
-    work_project = copy.deepcopy(project)
+    work_project = project
     proj_id = str(work_project.get("project_id") or "")
     proj_name = str(work_project.get("name") or "")
     revision = compute_project_revision(work_project)
@@ -314,7 +408,8 @@ def preview_curation_decisions(
         batch_errors.append("Danh sách quyết định kiểm duyệt trống.")
 
     edges_by_id = {str(e.get("id", "")): e for e in work_project.get("edges", [])}
-    nodes_by_id = {str(n.get("id", "")): n for n in work_project.get("nodes", [])}
+    val_ctx = build_curation_validation_context(work_project)
+    nodes_by_id = val_ctx["nodes"]
 
     by_eid: dict[str, list[EdgeReviewDecisionDTO]] = {}
     ordered_eids: list[str] = []
@@ -385,6 +480,8 @@ def preview_curation_decisions(
                     self_loop_confirmed=dec.self_loop_confirmed or req.allow_schema_bypass,
                     note=dec.note,
                     allow_schema_bypass=req.allow_schema_bypass,
+                    precomputed=val_ctx,
+                    include_evidence_snippets=False,
                 )
                 errors.extend(val["errors"])
                 warnings.extend(val["warnings"])
@@ -489,16 +586,28 @@ def apply_curation_decisions(
     else:
         raise ValueError(f"Chế độ áp dụng không hợp lệ: {req.apply_mode}")
 
-    candidate = copy.deepcopy(project)
+    candidate = _clone_project_for_curation_mutation(project)
     batch_id = uid()
     request_id = req.request_id or uid()
     applied_ids: list[str] = []
     skipped_ids: list[str] = []
     item_results: list[dict[str, Any]] = []
 
+    edges_list = candidate["edges"]
+    edge_idx_by_id = {str(e.get("id", "")): idx for idx, e in enumerate(edges_list)}
+    val_ctx = build_curation_validation_context(candidate)
+    val_ctx["prop_idx_by_id"] = {
+        str(p.get("id", "")): idx for idx, p in enumerate(candidate["schema_proposals"])
+    }
+
     for item in fresh_preview.item_previews:
         eid = item["edge_id"]
         if item["valid"]:
+            e_idx = edge_idx_by_id.get(eid)
+            if e_idx is None:
+                raise ValueError("Không tìm thấy quan hệ")
+            edge_copy = copy.deepcopy(edges_list[e_idx])
+            edges_list[e_idx] = edge_copy
             set_edge_status(
                 candidate,
                 eid,
@@ -512,6 +621,9 @@ def apply_curation_decisions(
                 request_id=request_id,
                 allow_schema_bypass=req.allow_schema_bypass,
                 auto_sync_catalog=req.auto_sync_catalog,
+                edge_obj=edge_copy,
+                precomputed=val_ctx,
+                include_evidence_snippets=False,
             )
             applied_ids.append(eid)
             item_results.append(

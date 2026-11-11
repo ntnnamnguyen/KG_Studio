@@ -6,7 +6,7 @@ from backend.domain.curation.service import doc_fingerprint, evidence_in_chunk
 from shared.catalog_utils import validate_edc_payload
 from shared.config_loader import CONFIG
 from shared.constants import MODE_EDC, MODE_EDC_PLUS_R, STATUS_CHECK, STATUS_PENDING
-from shared.text_utils import normal, now_iso, sha, uid
+from shared.text_utils import clean_relation_name, normal, now_iso, sha, uid
 
 UNKNOWN_KIND = CONFIG["knowledge"]["unknown_entity_kind"]
 
@@ -74,15 +74,20 @@ def validate_extraction(
             report["invalid_relations"] += 1
             report["rejected_items"].append({"index": index, "reason": "Thiếu nguồn, đích, tên quan hệ hoặc trích dẫn", "item": item})
             continue
-        canonical = allowed.get(normal(relation))
+        cleaned_rel = clean_relation_name(relation) if open_mode else relation
+        canonical = allowed.get(normal(relation)) or (allowed.get(normal(cleaned_rel)) if open_mode else None)
         if canonical is None:
             if open_mode:
-                canonical = relation
+                canonical = cleaned_rel
             else:
                 report["disallowed_relations"].append(relation)
                 report["invalid_relations"] += 1
                 report["rejected_items"].append({"index": index, "reason": "Ngoài danh mục quan hệ", "item": item})
                 continue
+        if not canonical:
+            report["invalid_relations"] += 1
+            report["rejected_items"].append({"index": index, "reason": "Tên quan hệ rỗng sau chuẩn hóa", "item": item})
+            continue
         for endpoint in (source, target):
             key = normal(endpoint)
             if key not in known:
