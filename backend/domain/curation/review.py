@@ -692,11 +692,17 @@ def apply_curation_decisions(
     return candidate, result
 
 
-def update_edge(project: dict, edge_id: str, **fields) -> dict:
+def update_edge(project: dict, edge_id: str, req: Any = None, **fields) -> dict:
     """Cập nhật dữ kiện theo đúng Ma trận ảnh hưởng mục 8.2:
     Đổi nguồn, đích, quan hệ, bằng chứng hoặc nguồn/vị trí dẫn chứng -> cạnh chuyển về Cần kiểm tra (trừ cạnh đã Loại bỏ)
     và xóa hiệu lực phê duyệt/ngoại lệ cũ, ngay cả khi câu bằng chứng vẫn khớp.
+    Hỗ trợ nhận trực tiếp EdgeEditRequestDTO (Pydantic v2) hoặc kwargs.
     """
+    if req is not None:
+        req_data = req.to_dict() if hasattr(req, "to_dict") else dict(req)
+        for k, v in req_data.items():
+            if v is not None and k not in fields and k not in ("edge_id", "project_id", "expected_revision"):
+                fields[k] = v
     edge = find_edge(project, edge_id)
     if not edge:
         raise ValueError("Không tìm thấy quan hệ")

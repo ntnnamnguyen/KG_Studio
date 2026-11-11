@@ -32,6 +32,26 @@ class PageDTO(SchemaModel, Generic[T]):
     source_revision: str = ""
     next_cursor: str | None = None
 
+    @classmethod
+    def from_items(
+        cls,
+        items: list[T],
+        total_count: int,
+        page: int = 1,
+        page_size: int = 20,
+        source_revision: str = "",
+    ) -> PageDTO[T]:
+        ps = max(1, page_size)
+        tp = max(1, (total_count + ps - 1) // ps)
+        return cls(
+            items=items,
+            total_count=total_count,
+            page=max(1, page),
+            page_size=ps,
+            total_pages=tp,
+            source_revision=source_revision,
+        )
+
 
 class EdgeRowDTO(SchemaModel):
     """Bản ghi nhẹ của một cạnh quan hệ hiển thị trong bảng kiểm duyệt (Tab 4)."""

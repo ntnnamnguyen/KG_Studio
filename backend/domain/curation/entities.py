@@ -26,11 +26,17 @@ from .validation import build_schema_precomputed, inspect_edge_schema_status
 _DUPLICATE_SUGGESTIONS_CACHE: dict[tuple[str, str, float], list[dict[str, Any]]] = {}
 
 
-def update_node(project: dict, node_id: str, **fields) -> dict:
+def update_node(project: dict, node_id: str, req: Any = None, **fields) -> dict:
     """Cập nhật hồ sơ thực thể theo đúng Ma trận ảnh hưởng mục 8.2:
     - Sửa tên hiển thị, bí danh hoặc mô tả (không đổi loại) -> giữ ID, lưu audit, KHÔNG tự thay đổi trạng thái cạnh.
     - Đổi loại node (chỉ cho phép chọn từ catalog đã duyệt) -> các cạnh nối node chuyển về Cần kiểm tra (trừ cạnh Loại bỏ).
+    Hỗ trợ nhận trực tiếp EntityEditRequestDTO (Pydantic v2) hoặc các tham số kwargs.
     """
+    if req is not None:
+        req_data = req.to_dict() if hasattr(req, "to_dict") else dict(req)
+        for k, v in req_data.items():
+            if v is not None and k not in fields and k not in ("node_id", "project_id", "expected_revision"):
+                fields[k] = v
     node = find_node(project, node_id)
     if not node:
         raise ValueError("Không tìm thấy thực thể")

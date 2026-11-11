@@ -1338,15 +1338,7 @@ class KGStudioFacade:
                     f"Phiên bản dự án đã thay đổi ({req.expected_revision} != {rev_before}). Vui lòng tải lại trước khi sửa cạnh."
                 )
             candidate = copy.deepcopy(proj)
-            kwargs: dict[str, Any] = {"note": req.note, "actor": req.actor}
-            for fld in ("source", "target", "relation", "evidence", "doc_id"):
-                val = getattr(req, fld)
-                if val is not None:
-                    kwargs[fld] = val
-            if req.start_char is not None or req.end_char is not None:
-                kwargs["start_char"] = req.start_char
-                kwargs["end_char"] = req.end_char
-            updated = update_edge(candidate, req.edge_id, **kwargs)
+            updated = update_edge(candidate, req.edge_id, req=req)
             rev_after = compute_project_revision(candidate)
             batch_id = uid()
             request_id = req.request_id or uid()
@@ -1405,12 +1397,7 @@ class KGStudioFacade:
                     f"Phiên bản dự án đã thay đổi ({req.expected_revision} != {rev_before}). Vui lòng tải lại trước khi sửa thực thể."
                 )
             candidate = copy.deepcopy(proj)
-            kwargs: dict[str, Any] = {"note": req.note, "actor": req.actor}
-            for fld in ("name", "kind", "description", "aliases"):
-                val = getattr(req, fld)
-                if val is not None:
-                    kwargs[fld] = val
-            updated = update_node(candidate, req.node_id, **kwargs)
+            updated = update_node(candidate, req.node_id, req=req)
             last_hist = candidate.get("curation_history", [])[-1] if candidate.get("curation_history") else {}
             inv_edges = list(last_hist.get("affected_edge_ids") or last_hist.get("invalidated_edge_ids") or [])
             rev_after = compute_project_revision(candidate)
