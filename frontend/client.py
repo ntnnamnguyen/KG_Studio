@@ -32,6 +32,23 @@ class FrontendClient:
             self.api_base_url = (api_base_url or "").rstrip("/")
             self.facade = facade or get_facade()
 
+    def _post_api(self, path: str, payload: dict) -> dict[str, Any] | None:
+        if not self.api_base_url:
+            return None
+        url = f"{self.api_base_url}{path}"
+        data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = request.Request(
+            url,
+            data=data_bytes,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            return None
+
     def get_embedding_models(self) -> list[dict]:
         if self.api_base_url:
             try:
@@ -494,5 +511,7 @@ _CLIENT: FrontendClient | None = None
 def get_client() -> FrontendClient:
     global _CLIENT
     if _CLIENT is None:
-        _CLIENT = FrontendClient()
+        import os
+        api_url = os.environ.get("KG_STUDIO_API_URL", "").strip()
+        _CLIENT = FrontendClient(api_base_url=api_url)
     return _CLIENT
