@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from typing import Any
 
 import streamlit as st
+from shared.text_utils import sha
 
 
 def format_benchmark_markdown(summary_rows: list[dict[str, Any]]) -> str:
@@ -40,6 +42,8 @@ def render_benchmark_tab(facade: Any, active_graph_project: dict, proj_id: str) 
         "Tự động trích lập bộ câu hỏi kiểm thử đa cấu trúc (**1-Hop Factoid**, **2-Hop Bridge**, **Multi-Attribute Star**) "
         "từ đồ thị thực tế và đo lường định lượng 3 phương pháp: **Baseline (Naive Top-K)** vs **HippoRAG (PPR)** vs **G-Retriever (PCST)**."
     )
+    st.info("Câu hỏi tự sinh chỉ dùng đối sánh thuật toán trên cùng graph. Để so các phương pháp dựng KG, nạp cùng một tập gold độc lập.")
+    gold_upload = st.file_uploader("Bộ câu hỏi và gold facts chung (JSON)", type=["json"], key=f"_graph_gold_{proj_id}")
 
     b_col1, b_col2, b_col3 = st.columns([1.2, 1.2, 1.6], vertical_alignment="bottom")
     num_q = int(
@@ -70,15 +74,24 @@ def render_benchmark_tab(facade: Any, active_graph_project: dict, proj_id: str) 
     )
 
     bench_state_key = f"_gret_bench_result_{proj_id}"
+    request_sig = (num_q, bench_max_edges, sha(gold_upload.getvalue()) if gold_upload else "generated")
+    if st.session_state.get(bench_state_key + "_request") != request_sig:
+        st.session_state.pop(bench_state_key, None)
     if run_bench:
         with st.spinner("Đang chạy thực nghiệm đối sánh Naive Top-K vs HippoRAG (PPR) vs G-Retriever (PCST)..."):
-            q_items = facade.generate_qa_benchmark(active_graph_project, num_questions=num_q)
-            eval_res = facade.evaluate_retrieval_methods(
-                active_graph_project,
-                q_items,
-                max_edges=bench_max_edges,
-            )
-            st.session_state[bench_state_key] = eval_res
+            try:
+                if gold_upload is not None:
+                    q_items = json.loads(gold_upload.getvalue().decode("utf-8-sig"))
+                    eval_res = facade.evaluate_graph_benchmark(active_graph_project, q_items, max_edges=bench_max_edges)
+                else:
+                    q_items = facade.generate_qa_benchmark(active_graph_project, num_questions=num_q)
+                    eval_res = facade.evaluate_retrieval_methods(active_graph_project, q_items, max_edges=bench_max_edges)
+                    eval_res["evaluation_scope"] = "same-graph generated questions; not cross-KG quality"
+                st.session_state[bench_state_key] = eval_res
+                st.session_state[bench_state_key + "_request"] = request_sig
+            except (ValueError, TypeError) as exc:
+                st.session_state.pop(bench_state_key, None)
+                st.error(str(exc))
 
     eval_data = st.session_state.get(bench_state_key)
     if not eval_data:
@@ -94,7 +107,7 @@ def render_benchmark_tab(facade: Any, active_graph_project: dict, proj_id: str) 
     st.markdown("##### 🏆 Bảng 1: Kết quả Thực nghiệm Tổng hợp (Summary Comparison Table)")
     st.dataframe(summary_table, width="stretch", hide_index=True)
 
-    if len(summary_table) >= 3:
+    if len(summary_table) >= 3 and eval_data.get("format") != "kg-studio.graph-benchmark.v1":
         naive_row = summary_table[0]
         ppr_row = summary_table[1]
         pcst_row = summary_table[2]
@@ -103,11 +116,15 @@ def render_benchmark_tab(facade: Any, active_graph_project: dict, proj_id: str) 
             f"Trên tập kiểm thử **{pcst_row.get('Số câu hỏi', 0)}** câu hỏi đa cấu trúc (ngân sách `{bench_max_edges}` cạnh/truy vấn), "
             f"**G-Retriever (PCST)** đạt tỷ lệ thu hồi đáp án đích **{pcst_row.get('Thu hồi Đáp án Đích (%)')}%** "
             f"và tỷ lệ nối mạch 2-Hop Bridge **{pcst_row.get('Nối mạch 2-Hop Bridge (%)')}%**, "
-            f"vượt trội rõ rệt so với **Baseline Naive Top-K** ({naive_row.get('Thu hồi Đáp án Đích (%)')}% / "
+            f"Đối chiếu **Naive Top-K** ({naive_row.get('Thu hồi Đáp án Đích (%)')}% / "
             f"2-Hop: {naive_row.get('Nối mạch 2-Hop Bridge (%)')}%) và **HippoRAG PPR** "
             f"({ppr_row.get('Thu hồi Đáp án Đích (%)')}% / 2-Hop: {ppr_row.get('Nối mạch 2-Hop Bridge (%)')}%), "
             f"trong khi thời gian phản hồi trung bình chỉ **{pcst_row.get('Thời gian Truy xuất TB (ms)')} ms/truy vấn**."
         )
+
+    st.download_button("⬇️ Tải kết quả đầy đủ và metadata (JSON)",
+                       data=json.dumps(eval_data, ensure_ascii=False, indent=2).encode("utf-8"),
+                       file_name="graph_benchmark.json", mime="application/json", key=f"_graph_benchmark_json_{proj_id}")
 
     dl_c1, dl_c2 = st.columns(2)
     md_text = format_benchmark_markdown(summary_table)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from backend.domain.catalogs.service import prepare_edc
+from backend.domain.curation.common import resolve_active_node_id
 from backend.domain.curation.service import doc_fingerprint, evidence_in_chunk
 from shared.catalog_utils import validate_edc_payload
 from shared.config_loader import CONFIG
@@ -9,6 +10,45 @@ from shared.constants import MODE_EDC, MODE_EDC_PLUS_R, STATUS_CHECK, STATUS_PEN
 from shared.text_utils import clean_relation_name, normal, now_iso, sha, uid
 
 UNKNOWN_KIND = CONFIG["knowledge"]["unknown_entity_kind"]
+UNKNOWN_KINDS: set[str] = {normal(UNKNOWN_KIND), normal("Chưa xác định"), normal("Chưa phân loại"), "unknown", ""}
+
+# Danh mục các danh từ bộ phận kiến trúc, hiện vật và thực thể yếu (Weak Entities)
+# Cần áp dụng Document Scoping để chống gộp nhầm giữa các di tích khác nhau (vd: 'cổng' Đình A vs 'cổng' Đình B).
+GENERIC_COMPONENT_TERMS: frozenset[str] = frozenset(
+    normal(term)
+    for term in (
+        "cổng", "cổng đình", "cổng chùa", "cổng đền", "cổng làng",
+        "tam quan", "nghi môn", "hậu cung", "tiền đường", "trung đường", "đại đình",
+        "tòa tiền tế", "nhà tiền tế", "nhà đại bái", "tòa đại bái", "phương đình", "nhà phương đình",
+        "chuông", "chuông đồng", "đại hồng chung", "khánh", "khánh đồng",
+        "bia", "bia đá", "nhà bia", "nhà bia tiến sĩ",
+        "tượng", "tượng phật", "tượng thánh", "tượng mẫu", "tượng thần",
+        "giếng", "giếng ngọc", "giếng làng", "giếng rồng", "ao", "ao làng", "ao chùa", "ao đình",
+        "hồ", "hồ bán nguyệt", "sân", "sân đình", "sân chùa", "sân đền",
+        "gác chuông", "gác trống", "nhà tổ", "tổ đường", "nhà thờ tổ", "nhà tăng",
+        "hương án", "ngai thờ", "bàn thờ", "sắc phong", "hoành phi", "câu đối",
+        "tháp", "tháp mộ", "tháp phật", "lăng", "lăng mộ", "mộ", "mộ phần",
+    )
+)
+
+
+def is_generic_component_entity(name: str) -> bool:
+    """Kiểm tra xem tên thực thể có phải danh từ bộ phận chung / thực thể yếu (Weak Entity) hay không.
+
+    Các thực thể như 'cổng', 'chuông', 'tam quan', 'hậu cung' không mang danh tính độc lập toàn cục
+    mà phụ thuộc vào di tích cha trong tài liệu cụ thể.
+    """
+    clean = normal(name)
+    if not clean:
+        return False
+    if clean in GENERIC_COMPONENT_TERMS:
+        return True
+    words = clean.split()
+    if len(words) == 1 and words[0] in {
+        "cong", "chuong", "bia", "tuong", "gieng", "ao", "san", "thap", "mo", "lang", "khanh", "ngai",
+    }:
+        return True
+    return False
 
 
 def validate_extraction(
@@ -122,34 +162,106 @@ def ensure_node(
 ) -> str:
     name = str(name or "").strip()
     kind = str(kind or "").strip() or UNKNOWN_KIND
+    description = str(description or "").strip()
+    doc_id = str(doc_id or "").strip()
     if not name:
         return ""
 
-    for node in project.setdefault("nodes", []):
-        same_name = normal(node.get("name", "")) == normal(name)
-        node_kind = str(node.get("kind") or UNKNOWN_KIND)
-        compatible = normal(node_kind) == normal(kind) or (not strict_kind and UNKNOWN_KIND in (node_kind, kind))
-        if same_name and compatible:
-            if kind != UNKNOWN_KIND and node_kind == UNKNOWN_KIND:
-                node["kind"] = kind
-            if doc_id and doc_id not in node["documents"]:
-                node["documents"].append(doc_id)
-            if description and not node.get("description"):
-                node["description"] = description
-            return node["id"]
+    n_name = normal(name)
+    n_kind = normal(kind)
+    is_generic = is_generic_component_entity(name)
 
+    nodes = project.setdefault("nodes", [])
+
+    for node in nodes:
+        # 1. So khớp danh tính qua Tên chính hoặc bất kỳ Bí danh (alias) nào
+        node_name_norm = normal(node.get("name", ""))
+        alias_norms = {normal(a) for a in node.get("aliases", []) if a}
+        same_identity = (n_name == node_name_norm) or (n_name in alias_norms)
+        if not same_identity:
+            continue
+
+        # Với thực thể bộ phận chung (Weak Entity như 'cổng', 'chuông', 'tam quan'):
+        # Áp dụng Document Scoping: CHỈ khớp nếu cùng xuất hiện trong một tài liệu nguồn (doc_id).
+        # Ngăn chặn việc gộp nhầm 'cổng' của Đình A sang 'cổng' của Đình B giữa các tài liệu khác nhau.
+        if is_generic and doc_id:
+            node_docs = node.get("documents", [])
+            if node_docs and doc_id not in node_docs:
+                continue
+
+        # 2. Xử lý tính tương thích Loại thực thể (Kind Compatibility):
+        # - Khớp nếu cùng loại (normalized)
+        # - Khớp nếu một trong hai bên là UNKNOWN_KIND (cho phép liên kết và nâng cấp loại)
+        # - Khớp nếu strict_kind = False (chế độ nới lỏng)
+        # - CHỈ coi là xung đột khi cả 2 bên ĐỀU có loại cụ thể nhưng khác nhau trong strict_kind
+        node_kind = str(node.get("kind") or UNKNOWN_KIND)
+        node_kind_norm = normal(node_kind)
+
+        has_unknown = (node_kind == UNKNOWN_KIND) or (kind == UNKNOWN_KIND) or (node_kind_norm in UNKNOWN_KINDS) or (n_kind in UNKNOWN_KINDS)
+        compatible = (node_kind_norm == n_kind) or has_unknown or (not strict_kind)
+        if not compatible:
+            continue
+
+        # 3. Phân giải Canonical Node nếu node này đã được redirect trong node_redirects
+        active_id = resolve_active_node_id(project, node.get("id", ""))
+        target_node = node
+        if active_id != node.get("id"):
+            canonical = next((n for n in nodes if n.get("id") == active_id), None)
+            if canonical is not None:
+                target_node = canonical
+
+        # 4. Nâng cấp Loại nếu node cũ là UNKNOWN mà lần này trích xuất được loại cụ thể
+        target_kind = str(target_node.get("kind") or UNKNOWN_KIND)
+        if (target_kind == UNKNOWN_KIND or normal(target_kind) in UNKNOWN_KINDS) and (kind != UNKNOWN_KIND and n_kind not in UNKNOWN_KINDS):
+            target_node["kind"] = kind
+
+        # 5. Chuẩn hóa Casing: Ưu tiên tên bắt đầu bằng chữ hoa nếu tên cũ viết thường
+        cur_name = str(target_node.get("name") or "")
+        if name and name[0].isupper() and cur_name and not cur_name[0].isupper():
+            target_node["name"] = name
+            if cur_name and normal(cur_name) != normal(name):
+                aliases = target_node.setdefault("aliases", [])
+                if cur_name not in aliases:
+                    aliases.append(cur_name)
+
+        # 6. Làm giàu Bí danh: Nếu tên mới khác tên chính nhưng match qua alias/casing, lưu vào aliases
+        if name and cur_name and normal(name) != normal(cur_name):
+            aliases = target_node.setdefault("aliases", [])
+            if name not in aliases:
+                aliases.append(name)
+
+        # 7. Ghi nhận tài liệu xuất hiện
+        if doc_id:
+            docs = target_node.setdefault("documents", [])
+            if doc_id not in docs:
+                docs.append(doc_id)
+
+        # 8. Làm giàu Mô tả (Enrichment): Cập nhật nếu chưa có hoặc mô tả mới chi tiết hơn
+        if description:
+            old_desc = str(target_node.get("description") or "").strip()
+            if not old_desc:
+                target_node["description"] = description
+            elif len(description) > len(old_desc) and (
+                normal(old_desc) in normal(description) or len(old_desc) < 30
+            ):
+                target_node["description"] = description
+
+        return str(target_node.get("id") or active_id)
+
+    # Không tìm thấy thực thể tương ứng: Tạo node mới
     node_id = uid()
-    project["nodes"].append(
-        {
-            "id": node_id,
-            "name": name,
-            "kind": kind,
-            "description": description,
-            "aliases": [],
-            "documents": [doc_id] if doc_id else [],
-            "created_at": now_iso(),
-        }
-    )
+    new_node = {
+        "id": node_id,
+        "name": name,
+        "kind": kind,
+        "description": description,
+        "aliases": [],
+        "documents": [doc_id] if doc_id else [],
+        "created_at": now_iso(),
+    }
+    if is_generic:
+        new_node["is_component"] = True
+    nodes.append(new_node)
     return node_id
 
 

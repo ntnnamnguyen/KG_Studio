@@ -19,7 +19,13 @@ from shared.constants import (
 )
 from shared.text_utils import normal, now_iso, sha, uid
 
-from .merge_core import group_edges_by_triplet, normalize_pair_key
+from .merge_core import (
+    filter_dismissed_pairs,
+    generate_candidate_index_pairs,
+    group_edges_by_triplet,
+    normalize_pair_key,
+    score_text_pair_similarity,
+)
 from .common import clean_aliases, clean_display_text, find_node
 from .validation import build_schema_precomputed, inspect_edge_schema_status
 
@@ -288,97 +294,28 @@ def duplicate_suggestions(
         norm_names = [normal(n.get("name", "")) for n in nodes]
         norm_aliases = [{normal(x) for x in n.get("aliases", []) if normal(x)} for n in nodes]
 
-        # 2. Xây dựng Blocking Keys / Inverted Index để gom ứng viên nhanh
-        name_to_indices: dict[str, list[int]] = {}
-        alias_to_indices: dict[str, list[int]] = {}
-        token_to_indices: dict[str, list[int]] = {}
-        prefix_to_indices: dict[str, list[int]] = {}
-
-        for idx, n_name in enumerate(norm_names):
-            if n_name:
-                name_to_indices.setdefault(n_name, []).append(idx)
-                if len(n_name) >= 3:
-                    prefix_to_indices.setdefault(n_name[:3], []).append(idx)
-                for tok in set(n_name.split()):
-                    if len(tok) >= 3:
-                        token_to_indices.setdefault(tok, []).append(idx)
-            for a_name in norm_aliases[idx]:
-                alias_to_indices.setdefault(a_name, []).append(idx)
-
-        # 3. Tập hợp các cặp ứng viên nghi ngờ (Candidate Blocking)
-        candidate_pairs: set[tuple[int, int]] = set()
-
-        def _add_pair(a_idx: int, b_idx: int) -> None:
-            if a_idx != b_idx and nodes[a_idx].get("id") != nodes[b_idx].get("id"):
-                candidate_pairs.add((min(a_idx, b_idx), max(a_idx, b_idx)))
-
-        # Ứng viên trùng tên hoặc bí danh
-        for idx_list in name_to_indices.values():
-            if len(idx_list) > 1:
-                for i_pos in range(len(idx_list)):
-                    for j_pos in range(i_pos + 1, len(idx_list)):
-                        _add_pair(idx_list[i_pos], idx_list[j_pos])
-
-        for a_name, a_indices in alias_to_indices.items():
-            if a_name in name_to_indices:
-                for n_idx in name_to_indices[a_name]:
-                    for a_idx in a_indices:
-                        _add_pair(n_idx, a_idx)
-            if len(a_indices) > 1:
-                for i_pos in range(len(a_indices)):
-                    for j_pos in range(i_pos + 1, len(a_indices)):
-                        _add_pair(a_indices[i_pos], a_indices[j_pos])
-
-        # Ứng viên qua token chung hoặc tiền tố (chỉ xét khi có fuzzy_threshold)
-        if fuzzy_threshold:
-            for tok, tok_indices in token_to_indices.items():
-                if 1 < len(tok_indices) <= 60:
-                    for i_pos in range(len(tok_indices)):
-                        for j_pos in range(i_pos + 1, len(tok_indices)):
-                            _add_pair(tok_indices[i_pos], tok_indices[j_pos])
-            for pref, pref_indices in prefix_to_indices.items():
-                if 1 < len(pref_indices) <= 60:
-                    for i_pos in range(len(pref_indices)):
-                        for j_pos in range(i_pos + 1, len(pref_indices)):
-                            _add_pair(pref_indices[i_pos], pref_indices[j_pos])
-
-        # Khi số node nhỏ (< 80), fallback kiểm tra toàn diện mọi cặp
-        if len(nodes) < 80:
-            for i in range(len(nodes)):
-                for j in range(i + 1, len(nodes)):
-                    _add_pair(i, j)
+        # 2. Gom ứng viên nhanh bằng Inverted Index & Token Blocking dùng chung
+        candidate_pairs = generate_candidate_index_pairs(
+            norm_names,
+            norm_aliases,
+            fuzzy_threshold=fuzzy_threshold,
+            force_all_threshold=80,
+            max_bucket_size=60,
+        )
 
         for (i, j) in candidate_pairs:
-            if i == j:
-                continue
             first = nodes[i]
             second = nodes[j]
             if first.get("id") == second.get("id"):
                 continue
-            name_a = norm_names[i]
-            name_b = norm_names[j]
-            aliases_a = norm_aliases[i]
-            aliases_b = norm_aliases[j]
 
-            reasons: list[str] = []
-            if name_a and name_a == name_b:
-                reasons.append("Trùng tên chuẩn hóa")
-            if name_b in aliases_a or name_a in aliases_b:
-                reasons.append("Tên này là bí danh của tên kia")
-            if aliases_a & aliases_b:
-                reasons.append("Có bí danh chung")
-
-            len_a, len_b = len(name_a), len(name_b)
-            max_len = max(len_a, len_b)
-            score = 0.0
-            if max_len > 0 and (abs(len_a - len_b) <= max_len * (1.0 - fuzzy_threshold + 0.05) or reasons):
-                sm = SequenceMatcher(None, name_a, name_b)
-                if reasons:
-                    score = sm.ratio()
-                elif fuzzy_threshold and sm.real_quick_ratio() >= fuzzy_threshold and sm.quick_ratio() >= fuzzy_threshold:
-                    score = sm.ratio()
-                    if score >= fuzzy_threshold:
-                        reasons.append(f"Độ giống tên cao ({score:.2f})")
+            score, reasons = score_text_pair_similarity(
+                norm_names[i],
+                norm_names[j],
+                norm_aliases[i],
+                norm_aliases[j],
+                fuzzy_threshold=fuzzy_threshold,
+            )
 
             if reasons:
                 pair_fp = _node_pair_fingerprint(first, second)
@@ -400,8 +337,8 @@ def duplicate_suggestions(
                         "degree_a": deg_a,
                         "degree_b": deg_b,
                         "kind_conflict": kind_conflict,
-                        "score": round(score, 2),
-                        "name_similarity": round(score, 2),
+                        "score": score,
+                        "name_similarity": score,
                         "reason": "; ".join(reasons),
                         "pair_fingerprint": pair_fp,
                     }
@@ -413,28 +350,14 @@ def duplicate_suggestions(
         _DUPLICATE_SUGGESTIONS_CACHE[cache_key] = pairs
 
     all_pairs = [dict(p) for p in _DUPLICATE_SUGGESTIONS_CACHE[cache_key]]
-    dismissed_map: dict[tuple[str, str], dict[str, Any]] = {}
-    for rec in project.get("not_duplicate_pairs", []):
-        k = normalize_pair_key(str(rec.get("node_a_id", "")), str(rec.get("node_b_id", "")), use_normal=False)
-        dismissed_map[k] = rec  # type: ignore[index]
-
-    filtered: list[dict[str, Any]] = []
-    for p in all_pairs:
-        kid = str(p.get("keep_id", "")).strip()
-        did = str(p.get("drop_id", "")).strip()
-        na_id = str((p.get("node_a") or {}).get("id", "")).strip()
-        nb_id = str((p.get("node_b") or {}).get("id", "")).strip()
-        if not kid or not did or kid == did or (na_id and nb_id and na_id == nb_id):
-            continue
-        k = normalize_pair_key(kid, did, use_normal=False)
-        dis = dismissed_map.get(k)  # type: ignore[arg-type]
-        is_dismissed = bool(dis and dis.get("pair_fingerprint") == p["pair_fingerprint"])
-        p["dismissed"] = is_dismissed
-        p["dismissed_note"] = str(dis.get("note", "")) if is_dismissed and dis else ""
-        if is_dismissed and not include_dismissed:
-            continue
-        filtered.append(p)
-    return filtered
+    return filter_dismissed_pairs(
+        all_pairs,
+        project.get("not_duplicate_pairs", []),
+        id_a_key="keep_id",
+        id_b_key="drop_id",
+        fp_key="pair_fingerprint",
+        include_dismissed=include_dismissed,
+    )
 
 
 def clear_duplicate_suggestions_cache() -> None:

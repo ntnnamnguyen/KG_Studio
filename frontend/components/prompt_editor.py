@@ -1,7 +1,7 @@
 """Component Quản lý Phiên bản Prompt, Xem trước Request & Lịch sử theo Cấu hình.
 
 Tuân thủ kiến trúc thiết kế trong KG_Studio/AI/features/prompt-versioning.md:
-- Mỗi cấu hình (closed, edc, edc_plus_r) sở hữu editor, draft và lịch sử độc lập.
+- Mỗi cấu hình sở hữu editor, draft và lịch sử độc lập, gồm baseline bộ ba tự do.
 - Xem trước (Preview) request thực tế phản ánh chính xác token budget, user message và schema contract.
 - Lịch sử bất biến, so sánh diff trực quan và khôi phục an toàn (tạo version mới, không sửa version cũ).
 """
@@ -17,6 +17,7 @@ from shared.constants import (
     MODE_EDC,
     MODE_EDC_PLUS_R,
     MODE_FIXED,
+    MODE_FREE_TRIPLES,
 )
 from shared.schemas.project import EDCPlusRSettingsDTO
 
@@ -24,6 +25,7 @@ MODE_LABELS = {
     MODE_FIXED: "1. Danh mục cố định (Closed Catalog)",
     MODE_EDC: "2. EDC mở — Đề xuất định nghĩa (1 lượt)",
     MODE_EDC_PLUS_R: "3. EDC + R — Truy xuất quan hệ & Chuẩn hóa tự động",
+    MODE_FREE_TRIPLES: "B. Bộ ba tự do — baseline (không chuẩn hóa ngữ nghĩa)",
 }
 
 
@@ -51,6 +53,13 @@ def render_prompt_management_panel(project: dict) -> None:
         horizontal=True,
         key="p02_radio_extraction_mode",
     )
+
+    if selected_mode == MODE_FREE_TRIPLES:
+        st.info(
+            "Baseline B chỉ trích xuất chủ thể, quan hệ, đối tượng và bằng chứng vào JSON. "
+            "Không dùng danh mục miền, định nghĩa, schema retrieval hoặc chuẩn hóa. "
+            "Kết quả được lưu riêng để đánh giá, không nhập vào đồ thị đã duyệt."
+        )
 
     if selected_mode != current_applied_mode:
         col_apply.warning(f"⚠️ Chế độ dự án đang áp dụng: **{current_applied_mode}**")
@@ -89,7 +98,12 @@ def render_prompt_management_panel(project: dict) -> None:
             value=current_draft,
             height=160,
             key=f"txt_prompt_editor_{proj_id}_{selected_mode}",
-            help="Chỉ chứa phần hướng dẫn cốt lõi. Hợp đồng JSON, danh mục quan hệ và Top-K retrieval sẽ được hệ thống ghép tự động khi gửi LLM.",
+            help=(
+                "Chỉ chứa hướng dẫn trích xuất mở. Hệ thống chỉ bổ sung cấu trúc JSON bộ ba; "
+                "không ghép danh mục miền, định nghĩa hoặc Top-K retrieval."
+                if selected_mode == MODE_FREE_TRIPLES
+                else "Chỉ chứa phần hướng dẫn cốt lõi. Hợp đồng JSON, danh mục quan hệ và Top-K retrieval sẽ được hệ thống ghép tự động khi gửi LLM."
+            ),
         )
         st.session_state[draft_key] = new_text
 
@@ -137,8 +151,12 @@ def render_prompt_management_panel(project: dict) -> None:
     docs = project.get("documents", [])
     with st.expander("👁️ Xem trước Request gửi tới LLM (Prompt Preview)", expanded=False):
         st.caption(
-            "Xem trước nội dung thực tế sau khi ghép base instructions với catalog/retrieval, "
-            "hợp đồng JSON, fit token budget và dựng user message."
+            "Xem trước request thực tế sau khi ghép cấu trúc JSON, fit token budget và dựng user message. "
+            + (
+                "Baseline không sử dụng catalog hoặc retrieval."
+                if selected_mode == MODE_FREE_TRIPLES
+                else "Catalog/retrieval được bổ sung theo chế độ đang chọn."
+            )
         )
         if not docs:
             st.info("Hãy tải tài liệu ở Bước 1 để xem trước prompt với văn bản thực tế.")
@@ -183,7 +201,9 @@ def render_prompt_management_panel(project: dict) -> None:
                 m4.metric("Loại Prompt", "Bản nháp ⚠️" if prepared_req.is_draft else f"Đã lưu (v{ver_seq})")
 
                 if prepared_req.warnings:
-                    st.warning("Cảnh báo khi chuẩn bị payload:\n- " + "\n- ".join(prepared_req.warnings))
+                    with st.expander(f"⚠️ Cảnh báo khi chuẩn bị payload ({len(prepared_req.warnings)})", expanded=False):
+                        for w in prepared_req.warnings:
+                            st.markdown(f"- {w}")
 
                 p_tab1, p_tab2, p_tab3, p_tab4, p_tab5 = st.tabs([
                     "1. Base Instructions",
@@ -195,7 +215,11 @@ def render_prompt_management_panel(project: dict) -> None:
                 with p_tab1:
                     st.code(prepared_req.base_instructions, language="markdown")
                 with p_tab2:
-                    st.caption("Danh mục quan hệ, hợp đồng JSON hoặc Top-K Schema được tự động ghép:")
+                    st.caption(
+                        "Cấu trúc JSON bộ ba được bổ sung; không có schema miền hoặc retrieval:"
+                        if selected_mode == MODE_FREE_TRIPLES
+                        else "Danh mục quan hệ, hợp đồng JSON hoặc Top-K Schema được tự động ghép:"
+                    )
                     st.code(prepared_req.appended_content or "(Không có phần bổ sung)", language="markdown")
                 with p_tab3:
                     st.code(prepared_req.system_prompt, language="markdown")

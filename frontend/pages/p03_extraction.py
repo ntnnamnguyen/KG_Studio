@@ -10,9 +10,22 @@ from backend.facade import get_facade
 from backend.integrations.llm import LLMGateway
 from frontend.components.pipeline_banner import render_step_next_action
 from frontend.components.step_traces_viewer import render_step_traces
+from frontend.composition import get_ui_composition
 from frontend.state.session import navigate_to_step
 from shared.config_loader import CONFIG, save_llm_token_config_to_toml
+from shared.constants import MODE_FREE_TRIPLES
 from shared.secrets_manager import get_api_key, mask_api_key
+
+
+def _extraction_result_summary(stats: dict, mode: str) -> str:
+    if mode == MODE_FREE_TRIPLES:
+        return (
+            f"Bộ ba trích xuất: {stats.get('extracted_triples', 0)}, "
+            f"không hợp lệ: {stats.get('invalid_triples', 0)}, "
+            f"bằng chứng không khớp: {stats.get('evidence_mismatch', 0)}. "
+            "Không thêm thực thể hoặc cạnh vào đồ thị."
+        )
+    return f"Thực thể thêm: {stats.get('added_nodes', 0)}, Quan hệ thêm: {stats.get('added_edges', 0)}."
 
 
 def render_extraction_page(project: dict) -> None:
@@ -22,6 +35,12 @@ def render_extraction_page(project: dict) -> None:
 
     st.subheader(f"🚀 3. Trích xuất Tri thức (Chế độ: `{mode}`)")
     render_step_next_action("extraction", project)
+    if mode == MODE_FREE_TRIPLES:
+        st.info(
+            "Baseline B giữ bộ ba thô và bằng chứng để đánh giá độc lập. Không cần danh mục, "
+            "không sinh định nghĩa, truy xuất schema hay chuẩn hóa ngữ nghĩa. "
+            "Tải kết quả gốc ở nhật ký; dựng KG thô và chạy thuật toán dùng chung tại Bước 5."
+        )
 
     provider = st.session_state.get("llm_provider", LLMGateway.DEFAULT_PROVIDER)
     model = st.session_state.get("llm_model", LLMGateway.DEFAULT_MODELS.get(provider, "deepseek-chat"))
@@ -94,6 +113,10 @@ def render_extraction_page(project: dict) -> None:
     # Tính toán lượt trích xuất trước đó theo từng tài liệu
     runs_by_doc: dict[str, list[dict]] = {}
     for r in project.get("runs", []):
+        if mode == MODE_FREE_TRIPLES and (
+            r.get("extraction_mode") != MODE_FREE_TRIPLES or r.get("status") != "ok"
+        ):
+            continue
         did = r.get("doc_id")
         if did:
             runs_by_doc.setdefault(did, []).append(r)
@@ -281,15 +304,19 @@ def render_extraction_page(project: dict) -> None:
                                 max_tokens=int(st.session_state["llm_max_output_tokens"]),
                                 max_input_tokens=int(st.session_state["llm_max_input_tokens"]),
                             )
-                            facade.save_project(project)
+                            if mode != MODE_FREE_TRIPLES:
+                                facade.save_project(project)
                             st.success(
                                 f"✅ Chạy thử thành công đoạn #{target_rec['chunk_number']}! "
-                                f"Thực thể thêm: {out.ingest_stats.get('added_nodes', 0)}, "
-                                f"Quan hệ thêm: {out.ingest_stats.get('added_edges', 0)}."
+                                + _extraction_result_summary(out.ingest_stats, mode)
                             )
                             st.rerun()
                         except Exception as exc:
-                            st.error(f"Lỗi khi chạy thử nghiệm: {exc}")
+                            st.error(
+                                "Lượt baseline gặp lỗi. Xem metadata và trạng thái lượt chạy trong nhật ký."
+                                if mode == MODE_FREE_TRIPLES
+                                else f"Lỗi khi chạy thử nghiệm: {exc}"
+                            )
 
         # NÚT 2: BẮT ĐẦU TRÍCH XUẤT TOÀN BỘ PHẦN ĐÃ CHỌN
         if btn_col_run.button(
@@ -315,10 +342,15 @@ def render_extraction_page(project: dict) -> None:
                 def update_progress(done_idx, total_cnt, doc, rec, out, err):
                     pct = done_idx / max(1, total_cnt)
                     if err:
-                        msg = f"⚠️ ({done_idx}/{total_cnt}) Lỗi tại {doc.get('name', '')} đoạn #{rec.get('chunk_number', '?')}: {err}"
+                        msg = f"⚠️ ({done_idx}/{total_cnt}) Lỗi tại {doc.get('name', '')} đoạn #{rec.get('chunk_number', '?')}"
+                        if mode != MODE_FREE_TRIPLES:
+                            msg += f": {err}"
                     else:
                         stats = getattr(out, "ingest_stats", {}) if out else {}
-                        msg = f"⚡ ({done_idx}/{total_cnt}) Đã xử lý {doc.get('name', '')} đoạn #{rec.get('chunk_number', '?')} [+{stats.get('added_nodes', 0)} thực thể, +{stats.get('added_edges', 0)} quan hệ]"
+                        msg = (
+                            f"⚡ ({done_idx}/{total_cnt}) Đã xử lý {doc.get('name', '')} đoạn #{rec.get('chunk_number', '?')} "
+                            + _extraction_result_summary(stats, mode)
+                        )
                     progress.progress(pct, text=f"Tiến độ: {done_idx}/{total_cnt} đoạn ({int(pct*100)}%) · {workers} luồng đang chạy...")
                     status_box.caption(msg)
 
@@ -357,7 +389,10 @@ def render_extraction_page(project: dict) -> None:
                     pct = done_idx / max(1, total_cnt)
                     retry_progress.progress(pct, text=f"Đang thử lại: {done_idx}/{total_cnt} đoạn...")
                     if err:
-                        retry_status.caption(f"❌ Thất bại đoạn #{rec.get('chunk_number')}: {err}")
+                        message = f"❌ Thất bại đoạn #{rec.get('chunk_number')}"
+                        if mode != MODE_FREE_TRIPLES:
+                            message += f": {err}"
+                        retry_status.caption(message)
                     else:
                         retry_status.caption(f"✅ Thành công đoạn #{rec.get('chunk_number')}")
 
@@ -393,17 +428,60 @@ def render_extraction_page(project: dict) -> None:
         )
         run = runs[selected_idx]
         render_step_traces(run)
+        if run.get("extraction_mode") == MODE_FREE_TRIPLES:
+            st.caption("Kết quả baseline độc lập; các số liệu dưới đây không phải số cạnh đồ thị đã duyệt.")
+            if run.get("status") == "error":
+                st.warning("Lượt baseline gặp lỗi. Metadata dưới đây giúp đối chiếu request; lượt lỗi vẫn được giữ trong bản xuất đánh giá.")
+            payload = run.get("extraction_payload")
+            report = run.get("validation_report")
+            if isinstance(payload, dict):
+                st.markdown("##### Bộ ba thô")
+                st.json(payload)
+            if isinstance(report, dict):
+                st.markdown("##### Chẩn đoán cấu trúc và bằng chứng")
+                st.json(report)
+            with st.expander("Metadata đối chứng baseline"):
+                st.json({
+                    key: run.get(key, "")
+                    for key in (
+                        "run_id", "doc_id", "chunk_number", "chunk_hash", "status",
+                        "provider", "model", "prompt_version_id", "prompt_content_hash",
+                        "prepared_request_hash", "input_tokens", "output_tokens",
+                    )
+                })
         with st.expander("Phản hồi JSON gốc từ LLM"):
             st.code(run.get("raw_response", ""), language="json")
+        if any(r.get("extraction_mode") == MODE_FREE_TRIPLES for r in runs):
+            baseline_data = get_ui_composition().extraction_service.export_free_triples_results(project)
+            st.download_button(
+                "⬇️ Tải toàn bộ kết quả baseline B (JSON)",
+                data=baseline_data,
+                file_name="free_triples_baseline.json",
+                mime="application/json",
+                key="p03_download_free_triples_results",
+                help="Gồm kết quả thô, chẩn đoán và provenance của các lượt baseline; không lọc theo trạng thái duyệt schema.",
+            )
 
     # 5. ĐIỀU HƯỚNG SANG BƯỚC TIẾP THEO
     st.divider()
     with st.container(border=True):
         col_msg, col_btn = st.columns([3.5, 1.5])
-        col_msg.markdown(
-            "➡️ **Sẵn sàng chuẩn hóa dữ liệu?** "
-            "Chuyển sang Bước 4 để duyệt các quan hệ, kiểm tra bằng chứng, và giải quyết trùng lặp thực thể."
-        )
-        if col_btn.button("➡️ Chuyển sang Bước 4: Rà soát & Chuẩn hóa", type="primary", width="stretch", key="p03_btn_goto_review"):
-            navigate_to_step("review")
-            st.rerun()
+        if mode == MODE_FREE_TRIPLES:
+            col_msg.markdown(
+                "Kết quả baseline B được tải trực tiếp ở nhật ký, không qua bước duyệt hoặc chuẩn hóa schema. "
+                "Chuyển sang Bước 5 để chọn runs, dựng KG thô và đối sánh thuật toán."
+            )
+            if col_btn.button("➡️ Xem KG baseline ở Bước 5", type="primary", width="stretch", key="p03_btn_baseline_graph"):
+                navigate_to_step("explore")
+                st.rerun()
+            if col_btn.button("➡️ Về Bước 2: Thiết lập", width="stretch", key="p03_btn_baseline_setup"):
+                navigate_to_step("setup")
+                st.rerun()
+        else:
+            col_msg.markdown(
+                "➡️ **Sẵn sàng chuẩn hóa dữ liệu?** "
+                "Chuyển sang Bước 4 để duyệt các quan hệ, kiểm tra bằng chứng, và giải quyết trùng lặp thực thể."
+            )
+            if col_btn.button("➡️ Chuyển sang Bước 4: Rà soát & Chuẩn hóa", type="primary", width="stretch", key="p03_btn_goto_review"):
+                navigate_to_step("review")
+                st.rerun()

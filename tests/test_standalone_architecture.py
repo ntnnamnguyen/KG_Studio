@@ -19,7 +19,7 @@ from backend.domain.schema_intelligence.aligner import TargetAligner
 from backend.domain.schema_intelligence.retriever import SchemaRetriever
 from backend.facade import KGStudioFacade
 from backend.integrations.embedder_gateway import EmbedderGateway
-from backend.integrations.llm_gateway import LLMGateway, PROVIDER_DEEPSEEK, PROVIDER_OLLAMA
+from backend.integrations.llm import LLMGateway, PROVIDER_DEEPSEEK, PROVIDER_OLLAMA
 from backend.repositories.json_repo import JsonProjectRepository, empty_project
 from backend.repositories.sqlite_repo import SQLiteProjectRepository
 from backend.repositories.vector_repo import VectorIndexRepository
@@ -29,7 +29,7 @@ from ml_lab.trainers.train_canonicalizer import train_canonicalizer_model
 from ml_lab.trainers.train_schema_retriever import train_schema_retriever_model
 from shared.catalog_utils import apply_relations
 from shared.config_loader import APP_ROOT, CONFIG_PATH, load_config, save_llm_token_config_to_toml
-from shared.constants import MODE_EDC_PLUS_R, STATUS_APPROVED, STATUS_REJECTED
+from shared.constants import EXTRACTION_MODES, MODE_EDC_PLUS_R, STATUS_APPROVED, STATUS_REJECTED
 
 
 FORBIDDEN_LEGACY_MODULES = {
@@ -366,7 +366,7 @@ class StandaloneArchitectureTests(unittest.TestCase):
 
             status, health = handle_api_request("GET", "/api/v1/health", facade=facade)
             self.assertEqual(status, 200)
-            self.assertEqual(len(health["modes"]), 3)
+            self.assertEqual({m["mode_id"] for m in health["modes"]}, set(EXTRACTION_MODES))
 
     def test_migrated_projects_exist_and_load_in_standalone_app(self) -> None:
         facade = KGStudioFacade()

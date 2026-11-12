@@ -13,6 +13,7 @@ Triển khai thuật toán cốt lõi của G-Retriever (He et al., NeurIPS 2024
 from __future__ import annotations
 
 import collections
+import copy
 from dataclasses import dataclass, field
 import io
 import json
@@ -24,6 +25,7 @@ import zipfile
 from backend.domain.graph.service import approved_graph
 from backend.integrations.llm import LLMGateway, make_adapter, providers
 from shared.text_utils import normal, tokenize_vn
+from shared.schemas.graph_input import GRAPH_FORMAT, GraphSnapshotDTO, graph_fingerprint
 
 # Các quan hệ thuộc tính lá (mốc thời gian, số đo, tên gọi khác, vị trí) được ưu tiên mở rộng 1-hop quanh thực thể hạt giống
 ATTRIBUTE_RELATIONS_NORM: set[str] = {
@@ -175,8 +177,8 @@ class GraphRAGIndex:
     def __init__(self, nodes: list[dict[str, Any]], edges: list[dict[str, Any]], source_label: str = "") -> None:
         t0 = time.perf_counter()
         self.source_label = source_label
-        self.nodes: list[dict[str, Any]] = list(nodes)
-        self.edges: list[dict[str, Any]] = list(edges)
+        self.nodes: list[dict[str, Any]] = copy.deepcopy(nodes)
+        self.edges: list[dict[str, Any]] = copy.deepcopy(edges)
 
         self.nodes_by_id: dict[str, dict[str, Any]] = {}
         for n in self.nodes:
@@ -341,18 +343,18 @@ def get_or_build_graph_index(
     *,
     approved_only: bool = True,
 ) -> GraphRAGIndex:
-    """Lấy hoặc xây dựng chỉ mục GraphRAGIndex có bộ nhớ đệm RAM theo trạng thái dự án (tránh gọi lại approved_graph)."""
+    """Cache GraphRAGIndex theo nội dung graph đã chọn; snapshot không lọc approved lần nữa."""
     proj_id = str(project.get("project_id") or project.get("name") or "default")
     all_nodes = project.get("nodes", [])
     all_edges = project.get("edges", [])
-    saved_at = str(project.get("saved_at") or "")
-
-    fast_cache_key = f"{proj_id}|{'approved' if approved_only else 'all'}|{len(all_nodes)}|{len(all_edges)}|{saved_at}"
-    cached = _INDEX_CACHE.get(fast_cache_key)
-    if cached is not None:
-        return cached
-
-    if approved_only:
+    if project.get("graph_format") == GRAPH_FORMAT:
+        # A validated application snapshot already selected its source. Do not
+        # relabel unreviewed baseline facts as approved or silently change source.
+        mode_tag = project.get("graph_source")
+        if mode_tag not in ("approved", "baseline", "all"):
+            raise ValueError("Nguồn graph snapshot không hợp lệ")
+        nodes, edges = all_nodes, all_edges
+    elif approved_only:
         nodes, edges = approved_graph(project)
         mode_tag = "approved"
         if not edges and all_edges:
@@ -362,6 +364,12 @@ def get_or_build_graph_index(
         nodes, edges = all_nodes, all_edges
         mode_tag = "all"
 
+    # Counts/saved_at cannot distinguish methods, edits or approval changes.
+    # Hash the actual selected input, even when callers mutate a dict in place.
+    fast_cache_key = graph_fingerprint([proj_id, mode_tag, nodes, edges])
+    cached = _INDEX_CACHE.get(fast_cache_key)
+    if cached is not None:
+        return cached
     idx = GraphRAGIndex(nodes, edges, source_label=f"{project.get('name', proj_id)} ({mode_tag})")
     if len(_INDEX_CACHE) >= 8:
         _INDEX_CACHE.clear()
@@ -400,6 +408,10 @@ def load_project_from_export_bytes(raw_bytes: bytes, filename: str = "") -> dict
     obj = json.loads(raw_bytes.decode("utf-8-sig"))
     if not isinstance(obj, dict):
         raise ValueError("Tệp JSON tải lên không phải là đối tượng hợp lệ.")
+    if obj.get("format") == GRAPH_FORMAT:
+        return GraphSnapshotDTO.from_dict(obj).as_project()
+    if obj.get("format") == "kg-studio.free-triples.v1":
+        raise ValueError("Đây là raw runs; hãy dựng và xuất KG baseline ở nguồn Baseline B trước khi nạp graph")
     if "thuc_the" in obj and "quan_he" in obj:
         return {
             "project_id": obj.get("project_id") or "json_export",
@@ -772,8 +784,7 @@ def _count_connected_components(nodes: list[dict[str, Any]], edges: list[dict[st
     node_ids = {str(n["id"]) for n in nodes}
     adj: dict[str, set[str]] = {nid: set() for nid in node_ids}
     for e in edges:
-        u = str(e.get("source", ""))
-        v = str(e.get("target", ""))
+        u, v = str(e.get("source", "")), str(e.get("target", ""))
         if u in adj and v in adj and u != v:
             adj[u].add(v)
             adj[v].add(u)
@@ -783,11 +794,11 @@ def _count_connected_components(nodes: list[dict[str, Any]], edges: list[dict[st
     for nid in node_ids:
         if nid in visited:
             continue
-        q = [nid]
+        q = collections.deque([nid])
         visited.add(nid)
         sz = 0
         while q:
-            cur = q.pop()
+            cur = q.popleft()
             sz += 1
             for nxt in adj[cur]:
                 if nxt not in visited:

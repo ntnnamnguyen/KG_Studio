@@ -1,8 +1,15 @@
 """Unit tests cho Trung tâm Kiểm duyệt & Chuẩn hóa Tri thức Hợp nhất (Knowledge Curation Hub)."""
 from __future__ import annotations
 
+from pathlib import Path
+import tempfile
 import unittest
 
+from backend.facade import KGStudioFacade, reset_facade
+from backend.repositories.json_repo import JsonProjectRepository
+from backend.repositories.sqlite_repo import SQLiteProjectRepository
+from backend.repositories.vector_repo import VectorIndexRepository
+from frontend.client import FrontendClient
 from frontend.state.session import PAGE_LABELS
 from frontend.components.shared_curation_ui import compute_filter_hash, paginate_items
 from frontend.pages.p04_curation_hub import (
@@ -14,6 +21,19 @@ from frontend.pages.p04_curation_hub import (
 
 class TestKnowledgeCurationHub(unittest.TestCase):
     def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.temp_path = Path(self.tmp.name)
+        self.json_repo = JsonProjectRepository(self.temp_path / "projects")
+        self.sqlite_repo = SQLiteProjectRepository(self.temp_path / "test.db")
+        self.vector_repo = VectorIndexRepository(self.temp_path / "vectors")
+        self.facade = KGStudioFacade(
+            json_repo=self.json_repo,
+            sqlite_repo=self.sqlite_repo,
+            vector_repo=self.vector_repo,
+        )
+        self.client = FrontendClient(facade=self.facade)
+        self._prev_facade = reset_facade(self.facade)
+
         self.project = {
             "name": "Test_Project",
             "documents": [{"id": "d1", "name": "doc1.txt", "text": "Hà Nội là thủ đô."}],
@@ -30,6 +50,10 @@ class TestKnowledgeCurationHub(unittest.TestCase):
             ],
             "runs": [],
         }
+
+    def tearDown(self) -> None:
+        reset_facade(self._prev_facade)
+        self.tmp.cleanup()
 
     def test_shared_pagination(self) -> None:
         items = list(range(100))
@@ -173,7 +197,7 @@ class TestKnowledgeCurationHub(unittest.TestCase):
             "schema_proposals": [],
         }
         state: dict = {}
-        client = FrontendClient()
+        client = self.client
         # Duyệt nhanh cả 2 cạnh đã chọn trong 1 thao tác duy nhất
         res = quick_apply_edge_batch(project, ["e1", "e2"], "approve", client=client, state_store=state)
         self.assertEqual(res.applied_count, 2)
@@ -241,7 +265,7 @@ class TestKnowledgeCurationHub(unittest.TestCase):
             ],
         }
         state: dict = {}
-        client = FrontendClient()
+        client = self.client
         res = quick_apply_proposal_batch(project, "entity_types", ["p1", "p2"], "approve", client=client, state_store=state)
         self.assertEqual(res.applied_count, 2)
         # Cả 2 đề xuất chuyển sang approved và được nạp vào entity_types catalog
@@ -295,7 +319,7 @@ class TestKnowledgeCurationHub(unittest.TestCase):
 
         # Duyệt nhanh với allow_schema_bypass=True
         state: dict = {}
-        client = FrontendClient()
+        client = self.client
         res = quick_apply_edge_batch(
             project,
             ["e_bypass"],

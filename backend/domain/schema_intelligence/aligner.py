@@ -5,7 +5,7 @@ from typing import Any
 
 from backend.domain.catalogs.service import compute_catalog_hash
 from backend.integrations.embedder_gateway import EmbedderGateway, default_embedder
-from backend.integrations.llm_gateway import LLMGateway
+from backend.integrations.llm import LLMGateway
 from backend.repositories.vector_repo import VectorIndexRepository
 from shared.catalog_utils import relation_catalog
 from shared.schemas.edc import AlignmentCandidateDTO

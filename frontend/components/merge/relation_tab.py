@@ -13,6 +13,7 @@ from backend.domain.curation.service import (
 )
 from backend.integrations.llm.providers import DEFAULT_MODELS, PROVIDERS
 from frontend.client import FrontendClient
+from frontend.components.merge.provenance_view import render_relation_provenance_panel
 from frontend.state.session import (
     reset_curation_state_if_project_changed,
     reset_edc_state_if_project_changed,
@@ -34,31 +35,11 @@ def render_relation_merge_tab(
             "Giải quyết triệt để lỗi phân mảnh schema mà thuật toán so khớp ký tự bề mặt không phát hiện được."
         )
 
-        c_prov, c_mod, c_key = st.columns([1.5, 1.5, 3.0])
-        default_prov = st.session_state.get("llm_provider", "DeepSeek")
-        if default_prov not in PROVIDERS:
-            default_prov = "DeepSeek" if "DeepSeek" in PROVIDERS else PROVIDERS[0]
-        sel_prov = c_prov.selectbox(
-            "Nhà cung cấp LLM",
-            PROVIDERS,
-            index=PROVIDERS.index(default_prov),
-            key=f"ai_rel_prov_{project.get('project_id', 'curr')}",
-        )
-        def_model = DEFAULT_MODELS.get(sel_prov, "deepseek-chat")
-        curr_model = st.session_state.get("llm_model") or def_model
-        sel_model = c_mod.text_input(
-            "Mô hình",
-            value=curr_model,
-            key=f"ai_rel_mod_{project.get('project_id', 'curr')}",
-        )
-        curr_key = st.session_state.get("llm_api_key", "")
-        sel_key = c_key.text_input(
-            "API Key",
-            value=curr_key,
-            type="password",
-            key=f"ai_rel_key_{project.get('project_id', 'curr')}",
-            help="API Key của DeepSeek hoặc nhà cung cấp đã chọn.",
-        )
+        llm_prov = st.session_state.get("llm_provider", "DeepSeek")
+        llm_mod = st.session_state.get("llm_model") or DEFAULT_MODELS.get(llm_prov, "deepseek-chat")
+        llm_k = st.session_state.get("llm_api_key", "")
+        key_label = "✅ Đã nạp API Key" if llm_k else "⚠️ Chưa có API Key (Vui lòng thiết lập tại Bước 2 hoặc thanh bên)"
+        st.caption(f"🤖 Đang sử dụng kết nối LLM hệ thống: **{llm_prov}** (`{llm_mod}`) · {key_label}")
 
         scope_col1, _ = st.columns([3.0, 3.0])
         scope_choices = {
@@ -118,24 +99,27 @@ def render_relation_merge_tab(
             key=f"btn_scan_rel_ai_{project.get('project_id', 'curr')}",
             type="primary",
         ):
-            with st.spinner("Đang gửi yêu cầu tới DeepSeek API để phân tích ngữ nghĩa và gom cụm quan hệ..."):
-                try:
-                    custom_i = st.session_state.get(f"ai_rel_custom_inst_{project.get('project_id', 'curr')}", "")
-                    scan_res = client.scan_semantic_clusters(
-                        project,
-                        kind="relations",
-                        scope=chosen_rel_scope,
-                        provider=sel_prov,
-                        api_key=sel_key,
-                        model=sel_model,
-                        custom_instructions=custom_i,
-                    )
-                    st.session_state[f"ai_rel_clusters_{project.get('project_id', 'curr')}"] = scan_res
-                    if scan_res.get("clusters_count", 0) > 0:
-                        st.success(f"Đã phát hiện {scan_res['clusters_count']} cụm quan hệ tương đương từ {scan_res['scanned_items_count']} quan hệ!")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Lỗi khi quét gom cụm: {exc}")
+            if not llm_k and llm_prov != "Ollama (Local)":
+                st.error(f"❌ Chưa có API Key cho `{llm_prov}`. Vui lòng thiết lập API Key tại thanh bên (Sidebar) hoặc Bước 2.")
+            else:
+                with st.spinner(f"Đang gửi yêu cầu tới {llm_prov} API để phân tích ngữ nghĩa và gom cụm quan hệ..."):
+                    try:
+                        custom_i = st.session_state.get(f"ai_rel_custom_inst_{project.get('project_id', 'curr')}", "")
+                        scan_res = client.scan_semantic_clusters(
+                            project,
+                            kind="relations",
+                            scope=chosen_rel_scope,
+                            provider=llm_prov,
+                            api_key=llm_k,
+                            model=llm_mod,
+                            custom_instructions=custom_i,
+                        )
+                        st.session_state[f"ai_rel_clusters_{project.get('project_id', 'curr')}"] = scan_res
+                        if scan_res.get("clusters_count", 0) > 0:
+                            st.success(f"Đã phát hiện {scan_res['clusters_count']} cụm quan hệ tương đương từ {scan_res['scanned_items_count']} quan hệ!")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Lỗi khi quét gom cụm: {exc}")
 
         ai_res = st.session_state.get(f"ai_rel_clusters_{project.get('project_id', 'curr')}")
         if ai_res:
@@ -311,6 +295,13 @@ def render_relation_merge_tab(
             if selected_rel_items:
                 with st.container(border=True):
                     st.markdown(f"##### ⚡ Thao tác Nhanh cho **{len(selected_rel_items)}** Cặp Quan hệ Đang Chọn")
+
+                    with st.expander("🔍 Đối chiếu Ngữ cảnh Văn bản của các Quan hệ Đang Chọn", expanded=False):
+                        sel_rel_names = list(dict.fromkeys(
+                            [s["relation_a"] for s in selected_rel_items] + [s["relation_b"] for s in selected_rel_items]
+                        ))
+                        render_relation_provenance_panel(project, sel_rel_names)
+
                     cb_bulk_collapse = st.checkbox(
                         "Tự động hợp nhất các cạnh trùng bộ ba (dồn bằng chứng đầy đủ)",
                         value=False,
@@ -379,6 +370,9 @@ def render_relation_merge_tab(
                 options=all_rels,
                 key="manual_rel_merge_sources",
             )
+            if m_rel_sources:
+                with st.expander("🔍 Xem Ngữ cảnh & Bằng chứng của các Quan hệ Nguồn Đã Chọn", expanded=False):
+                    render_relation_provenance_panel(project, m_rel_sources)
             m_rel_col1, m_rel_col2 = st.columns([1.5, 1.5])
             m_target_choice = m_rel_col1.selectbox(
                 "Chọn quan hệ đích từ danh sách hiện có",

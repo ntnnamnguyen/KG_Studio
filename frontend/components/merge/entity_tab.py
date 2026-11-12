@@ -9,6 +9,7 @@ import streamlit as st
 from backend.domain.catalogs.service import catalog_rows, compute_project_revision
 from backend.domain.curation.service import duplicate_suggestions
 from frontend.client import FrontendClient, get_client
+from frontend.components.merge.provenance_view import render_entity_provenance_panel
 from frontend.state.session import (
     get_curation_section_state,
     reset_curation_state_if_project_changed,
@@ -348,6 +349,9 @@ def render_entity_merge_tab(
                 width='stretch',
                 hide_index=True,
             )
+
+            with st.expander("🔍 Đối chiếu Ngữ cảnh Văn bản & Đoạn trích Gốc (Data Provenance)", expanded=True):
+                render_entity_provenance_panel(project, selected_members)
 
             # BƯỚC 2: GIẢI QUYẾT XUNG ĐỘT TRƯỜNG DỮ LIỆU
             st.markdown("##### Bước 2 — Giải quyết xung đột trường dữ liệu & Chọn hồ sơ chuẩn")

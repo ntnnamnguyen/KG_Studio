@@ -8,7 +8,19 @@ from backend.facade import KGStudioFacade
 
 class TestParallelExtraction(unittest.TestCase):
     def setUp(self):
-        self.facade = KGStudioFacade()
+        import tempfile
+        from pathlib import Path
+        from backend.repositories.json_repo import JsonProjectRepository
+        from backend.repositories.sqlite_repo import SQLiteProjectRepository
+        from backend.repositories.vector_repo import VectorIndexRepository
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.temp_path = Path(self.tmp.name)
+        self.facade = KGStudioFacade(
+            json_repo=JsonProjectRepository(self.temp_path / "projects"),
+            sqlite_repo=SQLiteProjectRepository(self.temp_path / "test.db"),
+            vector_repo=VectorIndexRepository(self.temp_path / "vectors"),
+        )
         self.sample_project = {
             "name": "TestParallelProj",
             "project_id": "test_parallel_p1",
@@ -25,6 +37,9 @@ class TestParallelExtraction(unittest.TestCase):
                 }
             ],
         }
+
+    def tearDown(self):
+        self.tmp.cleanup()
 
     def test_extract_chunks_parallel_sequential(self):
         """Kiểm tra chế độ 1 luồng (sequential) chạy mượt mà."""

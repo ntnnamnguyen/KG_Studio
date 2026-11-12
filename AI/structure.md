@@ -157,7 +157,7 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
 | File / Module | Trách nhiệm & Tác dụng |
 | :--- | :--- |
 | `shared/__init__.py` | Re-export các hằng số, hàm chuẩn hóa văn bản và hàm sinh ID cốt lõi. |
-| `shared/constants.py` | Định nghĩa hằng số bất biến của hệ thống: chế độ trích xuất (`MODE_FIXED = "closed"`, `MODE_EDC = "edc"`, `MODE_EDC_PLUS_R = "edc_plus_r"`), trạng thái kiểm duyệt (`STATUS_PENDING`, `STATUS_CHECK`, `STATUS_APPROVED`, `STATUS_REJECTED`), schema version (v2), prompt EDC cơ sở (`DEFAULT_EDC_PROMPT`), và bộ cấu hình EDC+R mặc định (`DEFAULT_EDC_PLUS_R_SETTINGS`). |
+| `shared/constants.py` | Định nghĩa bốn chế độ trích xuất (`closed`, `edc`, `edc_plus_r`, `free_triples`), trạng thái kiểm duyệt, schema version (v2), prompt EDC và prompt baseline tự do riêng, cùng bộ cấu hình EDC+R mặc định. |
 | `shared/text_utils.py` | Bộ công cụ xử lý văn bản: `normal()` (chuẩn hóa Unicode NFC, gộp khoảng trắng, lowercase), `tokenize_vn()` (tách từ đơn và từ ghép đôi bigram tiếng Việt bằng Regex Unicode), `sha()` (băm SHA-256 xác định), `uid()` (sinh ID ngắn 14 ký tự hex ngẫu nhiên), `slug()` (chuyển tên tiếng Việt sang slug ASCII an toàn), `safe_filename()` (lọc tên tệp upload chống path traversal), `scrubbed()` (đệ quy xóa API key và secret trước khi ghi đĩa). |
 | `shared/catalog_utils.py` | Xử lý danh mục Catalog v2 và hợp đồng JSON EDC: `validate_catalog()`, `parse_catalog()`, `catalog_bytes()`, `atomic_write()` (ghi file tạm `.tmp` rồi replace atomic chống hỏng đĩa khi crash), `edc_prompt()`, `validate_edc_payload()`. |
 | `shared/config_loader.py` | Nạp cấu hình từ `config/default.toml` (hoặc biến môi trường `KG_STUDIO_CONFIG`), giải quyết đường dẫn tuyệt đối (`resolve_path`), hàm `save_llm_token_config_to_toml()` lưu cấu hình token động từ giao diện vào file toml. |
@@ -194,7 +194,11 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
 
 #### C. Nghiệp vụ cốt lõi Domain (`backend/domain/`)
 - `documents/processor.py`: Đọc nội dung DOCX, PDF, TXT; hàm `chunk_records()` chia nhỏ văn bản theo ranh giới đoạn/câu, gán vị trí ký tự `start_char`, `end_char` và hash đoạn để truy vết bằng chứng.
-- `catalogs/service.py`: Quản lý danh mục quan hệ và loại thực thể; quản lý đề xuất EDC; xử lý quyết định kiểm duyệt đơn và duyệt hàng loạt theo lô.
+- `catalogs/` (**Phân hệ Quản lý Danh mục & Đề xuất EDC**):
+  - `catalogs/core.py`: Quản lý danh mục quan hệ và loại thực thể; băm xác định `compute_catalog_hash`, `compute_project_revision` (streaming SHA-256 $O(V+E+P)$), `compute_decisions_hash`, `compute_full_request_hash`, quản lý prompt settings.
+  - `catalogs/proposals.py`: Tiếp nhận đề xuất (`propose_term`, `prepare_edc`), phát hiện ứng viên cũ `is_proposal_candidates_stale`, tính phạm vi ảnh hưởng đa đề xuất `batch_proposal_impacts` qua reverse-index $O(N+E)$.
+  - `catalogs/review.py`: Chính sách và thực thi duyệt đề xuất schema (`decide_proposal`, `preview_proposal_decisions`, `apply_proposal_decisions`), đảm bảo preview không ghi đĩa và apply kiểm tra xung đột revision/catalog hash.
+  - `catalogs/service.py`: Barrel re-export công khai toàn bộ API của phân hệ Catalogs tương thích ngược 100%.
 - `prompts/service.py`: Quản lý phiên bản prompt theo cấu hình (`closed`, `edc`, `edc_plus_r`) độc lập cho từng dự án, quản lý version bất biến kèm content hash SHA-256.
 - `extraction/`:
   - `extraction/validator.py`: Làm sạch JSON, kiểm tra bằng chứng xuất hiện nguyên văn (`evidence_in_chunk`), hàm `ingest_extraction()` tiếp nhận kết quả trích xuất từ LLM.
@@ -202,6 +206,10 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
   - `extraction/registry.py`: Lớp `EngineRegistry` quản lý các engine theo mô hình Singleton / Factory.
   - `extraction/engines/fixed_catalog.py`: Engine 1 (Chế độ Danh mục cố định `closed`).
   - `extraction/engines/edc_one_pass.py`: Engine 2 (Chế độ EDC mở 1 lượt `edc`).
+  - `backend/modules/extraction/application/free_triples_engine.py`: Baseline B (`free_triples`), nhận LLM port được inject, xuất triples thô mà không sinh định nghĩa/chuẩn hóa hoặc nhập đồ thị. `free_triples_runs.py` ghi artifacts qua commit coordinator và xuất JSON độc lập; xem [hợp đồng baseline](report/free-triples-baseline-implementation.md).
+  - `backend/modules/graph_qa/domain/baseline_graph.py`: Dựng KG baseline chỉ đọc từ public run source của extraction. Dùng `normal()` cho khóa node; giữ predicate, surface forms, cạnh lặp, self-loop và nguồn từng triple. `GraphQAApplicationService` điều phối qua `BaselineRunSourcePort` được inject tại bootstrap, không ghi graph vào project.
+  - `shared/schemas/graph_input.py`: `GraphSnapshotDTO`, request dựng baseline và contracts gold facts độc lập. Snapshot dùng chung cho graph approved, baseline và file ngoài; JSON `kg-studio.graph.v1` round-trip kèm manifest, diagnostics, fingerprint. Index cache lấy fingerprint nội dung thực thay vì chỉ đếm nodes/edges. Legacy project API còn fallback tương thích; snapshot route không fallback.
+  - `backend/modules/graph_qa/application/graph_benchmark.py`: Chạy cùng PCST/PPR/Naive Top-K với gold facts do người chấm cung cấp variants; đo fact coverage và retrieval recall không phụ thuộc ID giữa các KG. Không phải bộ chấm precision/F1 ngữ nghĩa tự động.
   - `extraction/engines/edc_plus_r.py`: Engine 3 (**EDC + R** - Vòng lặp tinh chỉnh + Schema Retriever + Target Alignment).
 - `schema_intelligence/`:
   - `schema_intelligence/retriever.py`: Lớp `SchemaRetriever` (`+R`) tìm kiếm tương đồng Cosine giữa đoạn văn bản và danh mục.
@@ -209,12 +217,19 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
 - `curation/` (**Phân khu Kiểm duyệt & Gộp Tri thức**):
   - `curation/merge_core.py`: **Module Thuật toán Gộp Dùng Chung**:
     - `DisjointSetUnion`: DSU với path compression $O(\alpha(N))$ phân cụm thành phần liên thông.
-    - `flatten_redirects`: Phẳng hóa chuỗi chuyển hướng nhiều bậc ($A \to B \to C \Rightarrow A \to C$) và ngắt chu trình lặp vô tận.
+    - `flatten_redirects` & `update_redirect_map`: Phẳng hóa chuỗi chuyển hướng nhiều bậc ($A \to B \to C \Rightarrow A \to C$), cập nhật map chuyển hướng không tạo vòng lặp và tự động loại bỏ self-redirection của `keep_id`. Dùng chung cho node, relation và edge redirects.
     - `normalize_pair_key`: Chuẩn hóa khóa của cặp đối xứng $(A, B) \equiv (B, A)$.
     - `group_edges_by_triplet`: Gom nhóm cạnh theo bộ ba `(source, normal(relation), target)`.
     - `sort_edges_by_priority` & `rank_representative_edge`: Xếp hạng cạnh đại diện ưu tiên `APPROVED (3)` > `CHECK (2)` > `PENDING (1)`, ưu tiên bằng chứng dài hơn.
     - `consolidate_edge_evidences`: Dồn 100% bằng chứng, chunk, quote và original relation vào cạnh đại diện không trùng ID.
-  - `curation/merge.py`: Quy trình 3 bước gộp an toàn: Gộp thực thể (`apply_entity_merge`, `apply_bulk_entity_merges`), gộp quan hệ (`bulk_apply_relation_merges`), và thu gọn cạnh trùng bộ ba (`collapse_duplicate_edges`).
+    - `generate_candidate_index_pairs`: Thuật toán Inverted Index & Token Blocking gom cặp ứng viên nghi trùng lặp $O(N \log N)$ dùng chung cho cả thực thể và quan hệ.
+    - `score_text_pair_similarity`: Chấm điểm tương đồng xâu ký tự và trích xuất lý do trùng lặp bằng `difflib.SequenceMatcher`.
+    - `filter_dismissed_pairs`: Lọc bỏ danh sách cặp đã đánh dấu không trùng lặp (blacklist đối xứng) linh hoạt cho cả thực thể và quan hệ.
+    - `consolidate_node_attributes`: Gom toàn bộ bí danh (`aliases`), tài liệu (`documents`), mã đề xuất (`schema_proposal_ids`), quan sát EDC (`edc_observations`) và lịch sử `merged_from` từ các thực thể bị gộp vào thực thể giữ lại. Dùng chung cho cả preview, single merge và bulk merge.
+    - `remap_graph_edges_endpoints`: Cập nhật hoặc mô phỏng đầu mút cạnh khi gộp thực thể. Thống nhất logic đổi source/target, phát hiện cạnh tự nối (`self-loop`), hạ cấp về `CHECK` khi phát sinh tự nối hoặc đổi kind, lưu `endpoint_history` và `curation_history`.
+    - `_clone_project_for_merge_mutation`: Tạo bản sao nông có chọn lọc tối ưu $O(V+E)$ khi gộp thực thể và quan hệ.
+  - `curation/merge.py`: Quy trình gộp thực thể (`preview_entity_merge`, `apply_entity_merge`, `apply_bulk_entity_merges`, `merge_nodes`), tái sử dụng 100% các hàm từ `merge_core.py` và re-export các hàm gộp quan hệ từ `relation_merge.py`.
+  - `curation/relation_merge.py`: Gợi ý quan hệ nghi trùng (`relation_duplicate_suggestions`), lõi thực thi gộp quan hệ thống nhất `_execute_relation_merge_core` phục vụ cho cả gộp đơn (`apply_relation_merge`) và gộp hàng loạt (`bulk_apply_relation_merges`), thu gọn cạnh trùng bộ ba (`collapse_duplicate_edges`), và đánh dấu không trùng (`mark_relation_pair_not_duplicate`, `mark_relation_pairs_not_duplicate_bulk`).
   - `curation/semantic_clustering.py`: Phân cụm ngữ nghĩa thực thể và quan hệ dựa trên TF-IDF, N-gram và vector embeddings.
   - `curation/common.py`: Tiện ích tra cứu thực thể, quan hệ, tài liệu (`clean_display_text`, `clean_aliases`, `find_node`, `find_edge`, `resolve_active_node_id`).
   - `curation/evidence.py`: Đối chiếu câu trích dẫn bằng chứng trên văn bản gốc, định vị span ký tự (`evidence_context`, `select_edge_evidence_span`, `recheck_edge_evidence`).
@@ -228,11 +243,45 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
   - `graph/qa_generator.py`: **Benchmark QA Generator**: Sinh tự động các cặp câu hỏi - đáp (Multi-hop QA, Factoid QA) dựa trên đồ thị đã duyệt để phục vụ đánh giá năng lực suy luận của Graph RAG.
 - `dataset_exporter/exporter.py`: Lớp `ActiveLearningExporter` xuất dữ liệu con người đã duyệt thành 3 tập JSONL chuẩn: `sr_triplets.jsonl`, `canonicalization_pairs.jsonl`, `sft_extractions.jsonl`.
 
-#### D. Lớp Điều phối Facade & Máy chủ API
-- `facade.py`: Lớp `KGStudioFacade` (và hàm singleton `get_facade()`). Đóng gói toàn bộ use-case của hệ thống thành một giao diện duy nhất, quản lý khóa dự án (`RLock`), kiểm tra `expected_revision`, tạo snapshot trước commit, lưu bundle JSON có rollback và đồng bộ SQLite/Vector.
-- `api/v1.py`: Hàm `handle_api_request(method, path, body)` xử lý định tuyến REST API độc lập.
+#### D. Các Phân Hệ Modular Monolith (`backend/modules/`)
+Kiến trúc đích Modular Monolith theo nghiệp vụ với Ports & Adapters có chọn lọc, được điều phối bởi Composition Root (`backend/bootstrap.py`):
+
+1. **Phân hệ Quản lý Dự án & Điều phối Commit (`backend/modules/projects/`)**:
+   - `ports.py`: Định nghĩa Port trừu tượng `ProjectStorePort` (lưu trữ bundle JSON authoritative) và `ReadProjectionPort` (truy vấn đọc nhanh SQLite SSOT).
+   - `application/service.py`: `ProjectsApplicationService` điều phối tác vụ dự án: tạo, nạp, lưu, snapshot, khôi phục, thống kê tóm tắt và phân trang SQLite.
+   - `application/commit_coordinator.py`: `ProjectCommitCoordinator` - Trọng tài điều phối Transactional Commit 8 bước duy nhất cho toàn hệ thống (kiểm tra RLock, idempotency replay/conflict, revision validation, atomic JSON save kèm snapshot rollback, an toàn SQLite sync và vector invalidation).
+   - `public.py`: Hợp đồng API công khai của phân hệ Projects.
+
+2. **Phân hệ Schema Intelligence & EDC Review (`backend/modules/schema_intelligence/`)**:
+   - `ports.py`: Port `SchemaVectorIndexPort` và `SchemaEmbedderPort`.
+   - `application/service.py`: `SchemaIntelligenceApplicationService` điều phối quản lý danh mục, tiếp nhận đề xuất mở, tính phạm vi ảnh hưởng, xem trước (preview) và áp dụng (apply) quyết định duyệt EDC hàng loạt/đơn lẻ qua `ProjectCommitCoordinator`, cùng tác vụ Target Alignment và Schema Retrieval (+R).
+   - `public.py`: Hợp đồng API công khai của phân hệ Schema Intelligence.
+
+3. **Phân hệ Trích Xuất & Quản Lý Prompt (`backend/modules/extraction/`)**:
+   - `ports.py`: Port `DocumentParserPort` và `LLMExtractionPort`.
+   - `application/service.py`: `ExtractionApplicationService` điều phối nạp tài liệu, chia đoạn (chunking), quản lý phiên bản prompt bất biến theo chế độ trích xuất (`closed`, `edc`, `edc_plus_r`), chuẩn bị và xem trước prepared extraction requests, và trích xuất tri thức song song qua ThreadPool an toàn đa luồng.
+   - `public.py`: Hợp đồng API công khai của phân hệ Extraction.
+
+4. **Phân hệ Kiểm Duyệt & Gộp Tri Thức (`backend/modules/curation/`)**:
+   - `ports.py`: Port `CurationLLMPort` phục vụ gom cụm ngữ nghĩa AI.
+   - `application/service.py`: `CurationApplicationService` điều phối duyệt cạnh, chỉnh sửa sự thật fact, gộp thực thể/quan hệ/bộ ba 3 tầng, đối chiếu bằng chứng span ký tự, gom cụm ngữ nghĩa, và cam kết transactional qua `ProjectCommitCoordinator`.
+   - `public.py`: Hợp đồng API công khai của phân hệ Curation.
+
+5. **Phân hệ Đồ Thị Con & Graph QA (`backend/modules/graph_qa/`)**:
+   - `ports.py`: Port `Neo4jPort`.
+   - `application/service.py`: `GraphQAApplicationService` điều phối kiểm tra toàn vẹn đồ thị, trích xuất đồ thị con qua G-Retriever (PCST / HippoRAG), sinh câu hỏi benchmark QA tự động, đồng bộ Cypher sang Neo4j, và xuất tệp JSON/CSV/ZIP.
+   - `public.py`: Hợp đồng API công khai của phân hệ Graph QA.
+
+6. **Phân hệ Huấn Luyện & Active Learning (`backend/modules/training/`)**:
+   - `ports.py`: Port `TrainingDatasetExporterPort`.
+   - `application/service.py`: `TrainingApplicationService` điều phối trích xuất 3 tập dữ liệu huấn luyện chuẩn từ các quyết định con người đã duyệt (SR Triplets, Canonicalization Pairs, SFT Extractions), đóng vai trò ranh giới an toàn kết nối với `ml_lab/`.
+   - `public.py`: Hợp đồng API công khai của phân hệ Training.
+
+#### E. Composition Root, Facade & Máy chủ API
+- `bootstrap.py`: **Composition Root** duy nhất (`AppContainer`, `get_container()`). Khởi tạo các adapter hạ tầng (JSON repo, SQLite repo, Vector repo, Embedder gateway, Neo4j gateway) và inject vào 6 application services. Không chứa logic nghiệp vụ và không thực hiện I/O nặng khi import.
+- `facade.py`: Lớp `KGStudioFacade` (và hàm singleton `get_facade()`). Compatibility boundary cho UI và API, ủy quyền toàn bộ tác vụ sang 6 Application Services trong `backend/modules/` tương ứng.
+- `api/v1.py`: Hàm `handle_api_request(method, path, body)` xử lý định tuyến REST API độc lập, gọi use cases qua module application services thay vì truy cập trực tiếp repository.
 - `main.py`: Entrypoint máy chủ REST API chuẩn sử dụng thư viện `http.server.HTTPServer` của Python (cổng 8000), không phụ thuộc bất kỳ framework ngoài nào.
-- `workers/job_manager.py`: Lớp `JobManager` quản lý các tác vụ xử lý đồng bộ và bất đồng bộ có theo dõi tiến độ.
 
 ---
 
@@ -243,6 +292,7 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
 | File / Module | Trách nhiệm & Tác dụng |
 | :--- | :--- |
 | `frontend/app.py` | Entrypoint Streamlit. Quản lý Sidebar (chọn dự án, tạo dự án mới, cấu hình LLM Provider / Model ID / Base URL / API Key / Sliders token / Nút auto theo model / Nút lưu default.toml), điều hướng 5 Màn hình chính. |
+| `frontend/composition.py` | **Composition Root cho Frontend**: Cung cấp Application Services (`ProjectsApplicationService`) và Facade cho UI components, bảo đảm components không tự khởi tạo repositories/facade hoặc can thiệp trực tiếp vào storage/transactions. |
 | `frontend/client.py` | Lớp `FrontendClient` (và hàm `get_client()`). Bọc lời gọi sang Facade chạy trực tiếp trong cùng tiến trình (In-Process) hoặc qua HTTP REST API nếu có cấu hình `KG_STUDIO_API_URL`. |
 | `frontend/state/selection_core.py` | Thao tác danh sách ID thuần cho việc lựa chọn dòng trên giao diện (`toggle_id_in_list`, `append_unique_ids`, `reconcile_id_selection`). |
 | `frontend/state/session.py` | Quản lý `st.session_state` tập trung. Khai báo `PAGE_LABELS` (5 nhãn trang), quản lý trạng thái bảng (`_edc_tables`), trạng thái phân khu (`_curation_sections`), ngữ cảnh điều hướng quay lại (`_curation_return_context`). |
@@ -257,19 +307,19 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
 | `components/merge/relation_tab.py` | Tab gộp quan hệ: phát hiện nhãn quan hệ tương đương, gộp nhãn quan hệ và rewire các cạnh liên quan. |
 | `components/merge/entity_type_tab.py` | Tab gộp loại thực thể: chuẩn hóa phân loại thực thể về nhãn đại diện. |
 | `components/merge/triple_dedup_tab.py` | Tab thu gọn bộ ba: phát hiện các cạnh trùng `(source, relation, target)`, dồn bằng chứng và hợp nhất về 1 cạnh đại diện duy nhất. |
-| `frontend/components/prompt_editor.py` | Component quản lý phiên bản prompt độc lập theo 3 chế độ (`closed`, `edc`, `edc_plus_r`), xem trước request hoàn chỉnh (Preview Parity) và lịch sử khôi phục. |
+| `frontend/components/prompt_editor.py` | Component quản lý phiên bản prompt độc lập theo bốn chế độ (`closed`, `edc`, `edc_plus_r`, `free_triples`), xem trước request hoàn chỉnh (Preview Parity) và lịch sử khôi phục. Baseline không kế thừa prompt EDC hoặc yêu cầu danh mục. |
 | `frontend/components/ml_lab_panel.py` | Widget ML Lab: xuất dataset Active Learning, huấn luyện Schema Retriever, huấn luyện Target Aligner, chạy benchmark. |
 | `frontend/components/pipeline_banner.py` | Banner trực quan hóa trạng thái và tiến độ của pipeline. |
 | `frontend/components/step_traces_viewer.py` | Widget trực quan hóa chi tiết từng bước thực thi của EDC+R kèm thẻ provenance. |
 | **Phân hệ Xuất & Graph RAG (`frontend/components/export_tabs/`)** | |
 | `components/export_tabs/g_retriever_tab.py` | Giao diện tương tác **G-Retriever Graph RAG**: Đặt câu hỏi, truy xuất đồ thị con liên quan, hiển thị câu trả lời từ LLM kèm danh sách bằng chứng và trực quan hóa subgraph. |
-| `components/export_tabs/benchmark_tab.py` | Giao diện sinh bộ dữ liệu benchmark QA tổng hợp từ đồ thị đã duyệt và chạy đánh giá hiệu năng tự động. |
+| `components/export_tabs/benchmark_tab.py` | Dùng chung cho mọi nguồn graph: demo câu hỏi tự sinh trên cùng graph hoặc nạp JSON gold facts độc lập để đối sánh giữa KG; export metadata và invalidation khi graph/gold/budget đổi. |
 | `components/export_tabs/training_dataset_tab.py` | Giao diện xuất tập dữ liệu huấn luyện Active Learning (`sr_triplets`, `canonicalization_pairs`, `sft_extractions`). |
 | `frontend/pages/p01_projects_docs.py` | **Màn hình 1: Tổng quan Dự án & Tài liệu**. Thống kê KPIs và Upload / Quản lý tài liệu nguồn (.txt, .docx, .pdf). |
 | `frontend/pages/p02_catalogs_prompts.py` | **Màn hình 2: Thiết lập Phương pháp & Danh mục**. Cấu hình LLM, Prompt Management Panel, quản lý danh mục toàn màn hình (`relations.json`, `entity_types.json`), và ML Lab. |
 | `frontend/pages/p03_extraction.py` | **Màn hình 3: Trích xuất & Trace**. Danh sách chọn tài liệu trực quan, cấu hình chunk/overlap, thanh tiến trình thời gian thực, nhật ký trích xuất và Step Traces. |
 | `frontend/pages/p04_curation_hub.py` | **Màn hình 4: Trung tâm Kiểm duyệt & Chuẩn hóa Tri thức (Knowledge Curation Hub)**. Gồm 6 chỉ số sức khỏe, tháo gỡ quan hệ vướng danh mục, và 3 phân khu nghiệp vụ:<br>- *Phân khu 1: Chuẩn hóa Lược đồ (Schema EDC)*<br>- *Phân khu 2: Duyệt Quan hệ & Bằng chứng*<br>- *Phân khu 3: Quản lý & Gộp thực thể* |
-| `frontend/pages/p05_graph_export.py` | **Màn hình 5: Đồ thị Tri thức Đã duyệt, Graph RAG & Xuất Dữ liệu**. Tích hợp 4 tab chuyên sâu: (1) Graphviz & Xuất Neo4j / ZIP / JSON / CSV; (2) G-Retriever Graph RAG QA; (3) Benchmark Sinh & Đánh giá QA; (4) Xuất dữ liệu huấn luyện Active Learning. |
+| `frontend/pages/p05_graph_export.py` | **Màn hình 5: Graph RAG & Xuất Dữ liệu**. Chọn nguồn approved / Baseline B / graph từ file qua `components/graph_source.py`; dùng chung renderer theo node ID tại `components/graph_view.py`, truy xuất và benchmark. JSON snapshot/CSV observations dùng chung; training/ZIP dự án/Neo4j legacy chỉ dành nguồn approved của project hiện tại. |
 
 ---
 
@@ -310,12 +360,12 @@ Phân hệ nghiên cứu và huấn luyện mô hình độc lập, hoạt độ
 
 ### 2.9. Tầng Kiểm Thử (`tests/`)
 
-Hệ thống sở hữu bộ kiểm thử tự động toàn diện với **15 test files - 117 bài test (100% PASS)** bao phủ toàn bộ kiến trúc từ backend đến frontend:
+Kiểm thử được thu bằng unittest discovery; số lượng và kết quả phải lấy từ lần chạy thực tế, không suy ra từ báo cáo cũ. Bộ mới gồm kiểm thử baseline, fake-provider gateway và Streamlit AppTest; kết quả của đợt bổ sung baseline được ghi tại [báo cáo triển khai](report/free-triples-baseline-implementation.md). Chạy trong workspace tạm bằng `tools/run_isolated_tests.py` để không chạm dữ liệu thật.
 
 | Đường dẫn file | Trách nhiệm kiểm thử |
 | :--- | :--- |
 | `tests/test_code_cleanup.py` | Kiểm thử tính tương đương logic sau dọn dẹp mã nguồn: `load_jsonl`, `selection_core`, re-export parity giữa `service.py` và các module curation con, an toàn đồng bộ SQLite `_sync_sqlite_safe`. |
-| `tests/test_prompt_versions.py` | Kiểm thử quản lý phiên bản prompt độc lập 3 mode, lưu đơn điệu, no-op khi trùng hash, khôi phục tạo version mới, so sánh diff, preview-execution parity, và lưu vết provenance trong runs. |
+| `tests/test_prompt_versions.py` | Kiểm thử quản lý phiên bản prompt độc lập theo mode, lưu đơn điệu, no-op khi trùng hash, khôi phục tạo version mới, so sánh diff, preview-execution parity, và lưu vết provenance trong runs. |
 | `tests/test_performance_optimizations.py` | Kiểm thử tối ưu hiệu năng: manifest `project.meta.json`, in-memory registry cache, fast `review_stats` counters, direct-slice `evidence_context`, reverse-index `batch_proposal_impacts`, vector repo RAM cache, và phân trang SQLite có chỉ mục. |
 | `tests/test_curation_hub.py` | Kiểm thử Trung tâm Kiểm duyệt Hợp nhất: kiểm tra thuật toán phân trang dùng chung (`paginate_items`), băm chữ ký bộ lọc (`compute_filter_hash`), tổng hợp số liệu đề xuất EDC, kiểm tra cơ cấu 5 nhãn trang `PAGE_LABELS`, và khả năng render không lỗi cả 3 phân khu của Hub. |
 | `tests/test_standalone_architecture.py` | Bộ kiểm thử kiến trúc độc lập: Quét AST toàn bộ mã nguồn xác nhận 0% dependency vào module cũ; kiểm thử Schema Retriever và Target Aligner; kiểm thử trích xuất đa vòng lặp EDC+R; kiểm thử luồng xuất dữ liệu Active Learning; kiểm tra nạp dữ liệu dự án thực tế. |
@@ -690,9 +740,9 @@ Khi bổ sung tính năng gộp hoặc khử trùng mới, **bắt buộc tái s
    ```
 
 ### 5.6. Các Lệnh Kiểm Thử & Vận Hành Chuẩn
-- **Chạy toàn bộ 117 bài test tự động (100% PASS)**:
+- **Chạy toàn bộ test offline trên bản sao nguồn và dữ liệu synthetic trong thư mục tạm**:
   ```powershell
-  & "..\KG_Studio_MVP\.venv-win\Scripts\python.exe" -m unittest discover tests
+   & ".\.venv-win\Scripts\python.exe" tools/run_isolated_tests.py
   ```
 - **Khởi chạy ứng dụng Web Streamlit**:
   ```powershell

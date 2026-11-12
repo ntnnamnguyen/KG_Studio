@@ -30,31 +30,11 @@ def render_entity_type_merge_tab(
             "Hệ thống sẽ chuẩn hóa trường `kind` của toàn bộ node trên đồ thị và lưu các biến thể vào `aliases` của lược đồ loại thực thể."
         )
 
-        c_prov, c_mod, c_key = st.columns([1.5, 1.5, 3.0])
-        default_prov = st.session_state.get("llm_provider", "DeepSeek")
-        if default_prov not in PROVIDERS:
-            default_prov = "DeepSeek" if "DeepSeek" in PROVIDERS else PROVIDERS[0]
-        sel_prov = c_prov.selectbox(
-            "Nhà cung cấp LLM",
-            PROVIDERS,
-            index=PROVIDERS.index(default_prov),
-            key=f"ai_type_prov_{project.get('project_id', 'curr')}",
-        )
-        def_model = DEFAULT_MODELS.get(sel_prov, "deepseek-chat")
-        curr_model = st.session_state.get("llm_model") or def_model
-        sel_model = c_mod.text_input(
-            "Mô hình",
-            value=curr_model,
-            key=f"ai_type_mod_{project.get('project_id', 'curr')}",
-        )
-        curr_key = st.session_state.get("llm_api_key", "")
-        sel_key = c_key.text_input(
-            "API Key",
-            value=curr_key,
-            type="password",
-            key=f"ai_type_key_{project.get('project_id', 'curr')}",
-            help="API Key của DeepSeek hoặc nhà cung cấp đã chọn.",
-        )
+        llm_prov = st.session_state.get("llm_provider", "DeepSeek")
+        llm_mod = st.session_state.get("llm_model") or DEFAULT_MODELS.get(llm_prov, "deepseek-chat")
+        llm_k = st.session_state.get("llm_api_key", "")
+        key_label = "✅ Đã nạp API Key" if llm_k else "⚠️ Chưa có API Key (Vui lòng thiết lập tại Bước 2 hoặc thanh bên)"
+        st.caption(f"🤖 Đang sử dụng kết nối LLM hệ thống: **{llm_prov}** (`{llm_mod}`) · {key_label}")
 
         scope_tcol1, _ = st.columns([3.0, 3.0])
         type_scope_choices = {
@@ -114,24 +94,27 @@ def render_entity_type_merge_tab(
             key=f"btn_scan_type_ai_{project.get('project_id', 'curr')}",
             type="primary",
         ):
-            with st.spinner("Đang gửi yêu cầu tới DeepSeek API để phân tích ngữ nghĩa và gom cụm loại thực thể..."):
-                try:
-                    custom_ti = st.session_state.get(f"ai_type_custom_inst_{project.get('project_id', 'curr')}", "")
-                    scan_res = client.scan_semantic_clusters(
-                        project,
-                        kind="entity_types",
-                        scope=chosen_type_scope,
-                        provider=sel_prov,
-                        api_key=sel_key,
-                        model=sel_model,
-                        custom_instructions=custom_ti,
-                    )
-                    st.session_state[f"ai_type_clusters_{project.get('project_id', 'curr')}"] = scan_res
-                    if scan_res.get("clusters_count", 0) > 0:
-                        st.success(f"Đã phát hiện {scan_res['clusters_count']} cụm loại thực thể tương đương từ {scan_res['scanned_items_count']} loại!")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Lỗi khi quét gom cụm: {exc}")
+            if not llm_k and llm_prov != "Ollama (Local)":
+                st.error(f"❌ Chưa có API Key cho `{llm_prov}`. Vui lòng thiết lập API Key tại thanh bên (Sidebar) hoặc Bước 2.")
+            else:
+                with st.spinner(f"Đang gửi yêu cầu tới {llm_prov} API để phân tích ngữ nghĩa và gom cụm loại thực thể..."):
+                    try:
+                        custom_ti = st.session_state.get(f"ai_type_custom_inst_{project.get('project_id', 'curr')}", "")
+                        scan_res = client.scan_semantic_clusters(
+                            project,
+                            kind="entity_types",
+                            scope=chosen_type_scope,
+                            provider=llm_prov,
+                            api_key=llm_k,
+                            model=llm_mod,
+                            custom_instructions=custom_ti,
+                        )
+                        st.session_state[f"ai_type_clusters_{project.get('project_id', 'curr')}"] = scan_res
+                        if scan_res.get("clusters_count", 0) > 0:
+                            st.success(f"Đã phát hiện {scan_res['clusters_count']} cụm loại thực thể tương đương từ {scan_res['scanned_items_count']} loại!")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Lỗi khi quét gom cụm: {exc}")
 
         ai_res = st.session_state.get(f"ai_type_clusters_{project.get('project_id', 'curr')}")
         if ai_res:

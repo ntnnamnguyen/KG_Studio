@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .embedder_gateway import EmbedderGateway, default_embedder, list_registered_models
-from .llm_gateway import ExtractionResult, LLMError, LLMGateway
+from .llm import ExtractionResult, LLMError, LLMGateway
 from .neo4j_gateway import Neo4jGateway, Neo4jSyncError
 
 __all__ = [

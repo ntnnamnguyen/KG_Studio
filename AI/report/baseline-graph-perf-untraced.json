@@ -1,0 +1,11 @@
+﻿{
+  "python": "3.13.2",
+  "nodes": 400,
+  "edges": 800,
+  "samples": 41,
+  "tracemalloc": false,
+  "cold_ms": 15.843699999095406,
+  "warm_median_ms": 0.7327999992412515,
+  "warm_p95_ms": 0.7605999999213964,
+  "peak_bytes": null
+}

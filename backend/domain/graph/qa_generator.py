@@ -23,8 +23,7 @@ import re
 import time
 from typing import Any
 
-from backend.integrations.llm_gateway import LLMGateway
-from backend.integrations.llm import make_adapter, providers
+from backend.integrations.llm import LLMGateway, make_adapter, providers
 from shared.text_utils import normal, tokenize_vn
 
 
@@ -52,116 +51,78 @@ def clean_rel_name(rel: str) -> str:
     return re.sub(r"\s+", " ", raw)
 
 
-def classify_relation_semantic(rel: str) -> str:
-    """Phân loại vị từ quan hệ vào nhóm ngữ nghĩa tiếng Việt chuẩn (dùng word-boundary padding)."""
-    r_padded = f" {normal(rel)} "
-
-    # 1. TEMPORAL (Thời gian / Niên đại / Năm) xét trước để ưu tiên các quan hệ 'sinh tại', 'khởi dựng vào'
-    temporal_keys = (
+RELATION_SEMANTIC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("TEMPORAL", (
         "xay dung vao", "xây dựng vào", "khoi dung", "khởi dựng", "khanh thanh", "khánh thành",
         "thanh lap vao", "thành lập vào", "ra doi", "ra đời", "khoi cong", "khởi công", "dien ra", "diễn ra",
         "sinh nam", "sinh năm", "mat nam", "mất năm", "nien dai", "niên đại", "thoi gian", "thời gian",
         "vao ngay", "vào ngày", "vao nam", "vào năm", "nam bat dau", "năm bắt đầu", "nam ket thuc", "năm kết thúc",
         "la ngay", "là ngày",
-    )
-    if any(k in r_padded for k in temporal_keys):
-        return "TEMPORAL"
-
-    # 2. DYNASTY_ORG (Triều đại / Vương triều / Nhà Lý, Trần, Lê...) ưu tiên trước LOCATION để bắt 'thuộc vương triều'
-    dynasty_keys = (
+    )),
+    ("DYNASTY_ORG", (
         "vuong trieu", "vương triều", "trieu dai", "triều đại",
         "nha ly", "nhà lý", "nha tran", "nhà trần", "nha le", "nhà lê", "nha nguyen", "nhà nguyễn",
         "to chuc", "tổ chức",
-    )
-    if any(k in r_padded for k in dynasty_keys):
-        return "DYNASTY_ORG"
-
-    # 3. AGENT_CREATOR (Người sáng lập / Triều vua / Trụ trì / Thiết kế)
-    agent_keys = (
+    )),
+    ("AGENT_CREATOR", (
         "trieu vua", "triều vua", "sang lap", "sáng lập", "thiet ke", "thiết kế",
         "chi huy", "chỉ huy", "khoi xuong", "khởi xướng", "lanh dao", "lãnh đạo",
         "tru tri", "trụ trì", "tac gia", "tác giả", "chi dao", "chỉ đạo", "xay dung boi", "xây dựng bởi",
         "kien truc su", "kiến trúc sư", "do ai", "được thiết kế bởi", "thiet ke boi",
-    )
-    if any(k in r_padded for k in agent_keys):
-        return "AGENT_CREATOR"
-
-    # 4. WORSHIP (Thờ phụng / Tôn vinh / Tưởng niệm)
-    worship_keys = (
+    )),
+    ("WORSHIP", (
         "tho phung", "thờ phụng", "tho tu", "thờ tự", "tho cung", "thờ cúng",
         "ton vinh", "tôn vinh", "tuong niem", "tưởng niệm", " tho ", " thờ ",
-    )
-    if any(k in r_padded for k in worship_keys):
-        return "WORSHIP"
-
-    # 5. MEASUREMENT (Diện tích / Kích thước / Quy mô)
-    measure_keys = (
+    )),
+    ("MEASUREMENT", (
         "dien tich", "diện tích", "chieu dai", "chiều dài", "chieu cao", "chiều cao",
         "chieu rong", "chiều rộng", "quy mo", "quy mô", "so do", "số đo", "kich thuoc", "kích thước",
         " dai ", " dài ", " cao ", " rong ", " rộng ", "so luong", "số lượng", "suc chua", "sức chứa",
         "so ho", "số hộ", "so khan gia", "số khán giả",
-    )
-    if any(k in r_padded for k in measure_keys):
-        return "MEASUREMENT"
-
-    # 6. CONNECTION (Bắc qua / Nối / Chảy qua / Giao thông)
-    conn_keys = (
+    )),
+    ("CONNECTION", (
         "bac qua", "bắc qua", "chay qua", "chảy qua", " tiep giap ", " tiếp giáp ",
         "dan den", "dẫn đến", "thong qua", "thông qua", "chuyen bay", "chuyến bay", "duong bay", "đường bay",
         " noi ", " nối ", "phu luu", "phụ lưu",
-    )
-    if any(k in r_padded for k in conn_keys):
-        return "CONNECTION"
-
-    # 7. NAMING_IDENTITY (Tên gọi / Đổi tên / Danh hiệu / Bí danh)
-    naming_keys = (
+    )),
+    ("NAMING_IDENTITY", (
         "con goi", "còn gọi", "con duoc goi", "còn được gọi", "mang ten", "mang tên",
         "ten goi khac", "tên gọi khác", "ten khac", "tên khác", "ten cu", "tên cũ",
         "doi ten thanh", "đổi tên thành", "dat ten la", "đặt tên là", "bi danh", "bí danh",
         "hieu la", "hiệu là", "ten chu", "tên chữ",
-    )
-    if any(k in r_padded for k in naming_keys):
-        return "NAMING_IDENTITY"
-
-    # 8. ORGANIZATION (Hợp nhất / Sáp nhập / Quản lý / Chức vụ)
-    org_keys = (
+    )),
+    ("ORGANIZATION", (
         "hop nhat", "hợp nhất", "sap nhap", "sáp nhập", "thanh lap", "thành lập",
         "truc thuoc", "trực thuộc", "quan ly", "quản lý", "giam doc", "giám đốc",
         "pho chu tich", "phó chủ tịch", "chu tich", "chủ tịch", "chuc vu", "chức vụ",
         "phu trach", "phụ trách", "bo nhiem", "bổ nhiệm",
-    )
-    if any(k in r_padded for k in org_keys):
-        return "ORGANIZATION"
-
-    # 9. AWARD_RECOGNITION (Vinh danh / Xếp hạng di tích / Giải thưởng)
-    award_keys = (
+    )),
+    ("AWARD_RECOGNITION", (
         "cong nhan", "công nhận", "xep hang", "xếp hạng", "tang thuong", "tặng thưởng",
         "trao tang", "trao tặng", "khen thuong", "khen thưởng", "giai thuong", "giải thưởng",
         "bang khen", "bằng khen", "danh hieu", "danh hiệu",
-    )
-    if any(k in r_padded for k in award_keys):
-        return "AWARD_RECOGNITION"
-
-    # 10. LOCATION (Vị trí / Nơi chốn / Địa bàn)
-    loc_keys = (
+    )),
+    ("LOCATION", (
         "toa lac", "tọa lạc", "nam tai", "nằm tại", "nam o", "nằm ở",
         "thuoc dia phan", "thuộc địa phận", "dat tai", "đặt tại",
         "thuoc quan", "thuộc quận", "thuoc huyen", "thuộc huyện", "thuoc tinh", "thuộc tỉnh",
         " tai ", " tại ", " o ", " ở ", " thuoc ", " thuộc ", "dia ban", "địa bàn",
         "gan ", "gần ", "cach ", "cách ", "giap ", "giáp ", "doi dien", "đối diện",
-    )
-    if any(k in r_padded for k in loc_keys):
-        return "LOCATION"
-
-    # 11. CONTENT_CONTAINER (Lưu giữ / Trưng bày / Bao gồm)
-    content_keys = (
+    )),
+    ("CONTENT_CONTAINER", (
         "trung bay", "trưng bày", "luu giu", "lưu giữ", "bao gom", "bao gồm",
         "chua", "chứa", "su dung", "sử dụng", "so huu", "sở hữu", "co cong trinh", "có công trình",
         "co cua", "có cửa", "co bo suu tap", "có bộ sưu tập",
-    )
-    if any(k in r_padded for k in content_keys):
-        return "CONTENT_CONTAINER"
+    )),
+)
 
+
+def classify_relation_semantic(rel: str) -> str:
+    """Phân loại vị từ quan hệ vào nhóm ngữ nghĩa tiếng Việt chuẩn (dùng word-boundary padding)."""
+    r_padded = f" {normal(rel)} "
+    for category, keys in RELATION_SEMANTIC_RULES:
+        if any(k in r_padded for k in keys):
+            return category
     return "GENERAL"
 
 
@@ -176,6 +137,125 @@ def _clean_natural_question_text(q: str) -> str:
     return q
 
 
+_FIXED_1HOP_TEMPLATES: dict[str, list[str]] = {
+    "DYNASTY_ORG": [
+        "{u} thuộc triều đại hoặc vương triều nào trong lịch sử?",
+        "{u} trực thuộc cơ quan hay đơn vị nào?",
+        "{u} gắn liền với triều đại nào?",
+    ],
+    "WORSHIP": [
+        "{u} thờ phụng vị anh hùng hay danh nhân nào?",
+        "Ai là người được thờ phụng tại {u}?",
+        "{u} là nơi thờ tự của ai?",
+        "{u} thờ vị thần hay nhân vật nào?",
+    ],
+    "AWARD_RECOGNITION": [
+        "{u} được trao tặng giải thưởng hay nhận danh hiệu gì?",
+        "{u} được công nhận hoặc xếp hạng di tích như thế nào?",
+    ],
+    "CONTENT_CONTAINER": [
+        "{u} bao gồm những hạng mục hoặc công trình nào?",
+        "{u} trưng bày hoặc lưu giữ những hiện vật nào?",
+        "Bên trong {u} có những công trình hay hiện vật nào tiêu biểu?",
+    ],
+}
+
+
+def _get_1hop_variants(sem: str, rel_c: str, r_norm: str, u_name: str, vk: str) -> list[str]:
+    if sem in _FIXED_1HOP_TEMPLATES:
+        return [t.format(u=u_name) for t in _FIXED_1HOP_TEMPLATES[sem]]
+
+    if sem == "LOCATION":
+        if "thuộc" in rel_c:
+            return [
+                f"{u_name} thuộc quận, huyện hay khu vực nào của Hà Nội?",
+                f"{u_name} trực thuộc địa bàn nào?",
+                f"Khu vực nào là nơi {u_name} tọa lạc?",
+            ]
+        if any(k in rel_c for k in ("giáp", "gần", "cách")):
+            return [f"{u_name} {rel_c} địa danh nào?", f"Khu vực nào nằm {rel_c} {u_name}?"]
+        return [
+            f"{u_name} tọa lạc ở đâu?",
+            f"{u_name} nằm tại khu vực hoặc quận nào của Hà Nội?",
+            f"Vị trí của {u_name} nằm ở đâu?",
+            f"{u_name} nằm trên địa bàn nào của Hà Nội?",
+        ]
+
+    if sem == "TEMPORAL" or any(x in vk for x in ("thời gian", "năm")):
+        if "sinh" in r_norm:
+            return [f"{u_name} sinh vào năm nào?", f"Năm sinh của {u_name} là năm bao nhiêu?"]
+        if "mất" in r_norm:
+            return [f"{u_name} mất vào năm nào?", f"Năm mất của {u_name} là khi nào?"]
+        if any(k in r_norm for k in ("khởi dựng", "xây dựng", "thành lập")):
+            return [
+                f"{u_name} được xây dựng vào năm nào?",
+                f"{u_name} được khởi dựng khi nào?",
+                f"Công trình {u_name} được xây dựng vào thời gian nào?",
+            ]
+        if "diễn ra" in r_norm:
+            return [f"Sự kiện {u_name} diễn ra vào thời điểm nào?", f"{u_name} diễn ra vào năm nào?"]
+        if "niên đại" in r_norm:
+            return [f"{u_name} có niên đại từ khi nào?", f"Niên đại lịch sử của {u_name} là vào thời kỳ nào?"]
+        if rel_c.endswith(" vào"):
+            return [f"{u_name} {rel_c} năm nào?", f"{u_name} {rel_c} thời gian nào?"]
+        return [f"{u_name} {rel_c} vào năm nào?", f"{u_name} {rel_c} vào thời gian nào?"]
+
+    if sem == "AGENT_CREATOR":
+        if "triều vua" in r_norm:
+            return [
+                f"{u_name} được xây dựng dưới triều vua nào?",
+                f"Vị vua nào đã cho xây dựng {u_name}?",
+                f"{u_name} gắn liền với triều đại của vị vua nào?",
+            ]
+        if "thiết kế" in r_norm:
+            return [f"{u_name} do ai thiết kế?", f"Kiến trúc sư nào đã thiết kế {u_name}?", f"Công trình {u_name} được thiết kế bởi ai?"]
+        if "trụ trì" in r_norm:
+            return [f"Ai là người trụ trì {u_name}?", f"Sư trụ trì của {u_name} là ai?"]
+        if "tác giả" in r_norm:
+            return [f"Ai là tác giả của {u_name}?", f"Tác giả sáng tác {u_name} là ai?"]
+        return [f"Ai là người {rel_c} {u_name}?", f"{u_name} do ai {rel_c}?", f"Nhân vật nào gắn liền với việc {rel_c} {u_name}?"]
+
+    if sem == "NAMING_IDENTITY":
+        if "đổi tên" in r_norm:
+            return [f"{u_name} được đổi tên thành gì?", f"Tên mới sau khi đổi của {u_name} là gì?"]
+        if "tên cũ" in r_norm:
+            return [f"{u_name} từng mang tên cũ là gì?", f"Tên gọi trước đây của {u_name} là gì?"]
+        return [f"{u_name} còn được gọi bằng tên nào khác?", f"{u_name} có tên gọi khác là gì?", f"Tên gọi khác của {u_name} trong lịch sử là gì?"]
+
+    if sem == "ORGANIZATION":
+        if any(k in r_norm for k in ("hợp nhất", "sáp nhập")):
+            return [f"{u_name} hợp nhất hoặc sáp nhập với đơn vị nào?", f"{u_name} được sáp nhập thành tổ chức nào?"]
+        if any(k in r_norm for k in ("giám đốc", "chủ tịch", "chức vụ")):
+            return [f"{u_name} đảm nhiệm chức vụ hoặc vai trò gì?", f"Ai là người lãnh đạo tại {u_name}?"]
+        return [f"{u_name} trực thuộc cơ quan hay tổ chức nào?", f"{u_name} có quan hệ hợp tác với đơn vị nào?"]
+
+    if sem == "MEASUREMENT":
+        if "diện tích" in r_norm:
+            return [f"Diện tích của {u_name} là bao nhiêu?", f"{u_name} có diện tích rộng bao nhiêu?"]
+        if "chiều dài" in r_norm or "dài" in r_norm:
+            return [f"{u_name} có chiều dài bao nhiêu mét?", f"Chiều dài của {u_name} là bao nhiêu?"]
+        if "chiều cao" in r_norm or "cao" in r_norm:
+            return [f"{u_name} cao bao nhiêu mét?", f"Chiều cao của công trình {u_name} là bao nhiêu?"]
+        return [f"Quy mô số đo của {u_name} là bao nhiêu?", f"{u_name} có quy mô như thế nào?"]
+
+    if sem == "CONNECTION":
+        if "bắc qua" in r_norm:
+            return [f"{u_name} bắc qua con sông nào?", f"Cây cầu {u_name} bắc qua sông nào ở Hà Nội?"]
+        if "chảy qua" in r_norm:
+            return [f"{u_name} chảy qua những địa phận nào?", f"Dòng sông {u_name} đi qua những khu vực nào?"]
+        if "nối" in r_norm:
+            return [f"{u_name} nối liền những khu vực nào?", f"Tuyến đường {u_name} kết nối những địa điểm nào?"]
+        if any(k in r_norm for k in ("chuyến bay", "đường bay")):
+            return [f"{u_name} khai thác các chuyến bay kết nối tới địa điểm nào?", f"{u_name} có đường bay đến thành phố hay quốc gia nào?"]
+        return [f"{u_name} kết nối với những địa điểm nào?"]
+
+    return [
+        f"Cho biết thông tin về việc {u_name} {rel_c}?",
+        f"{u_name} {rel_c} ai hoặc địa danh nào?",
+        f"{u_name} {rel_c} như thế nào?",
+    ]
+
+
 def synthesize_1hop_natural_question(
     u_name: str,
     rel: str,
@@ -186,199 +266,51 @@ def synthesize_1hop_natural_question(
     """Sinh câu hỏi 1-hop tự nhiên như con người gõ tìm kiếm, không dùng từ ngữ máy tính."""
     sem = classify_relation_semantic(rel)
     rel_c = clean_rel_name(rel)
+    r_norm = normal(rel_c)
     vk = normal(v_kind)
-
-    if sem == "LOCATION":
-        if "thuộc" in rel_c:
-            variants = [
-                f"{u_name} thuộc quận, huyện hay khu vực nào của Hà Nội?",
-                f"{u_name} trực thuộc địa bàn nào?",
-                f"Khu vực nào là nơi {u_name} tọa lạc?",
-            ]
-        elif any(k in rel_c for k in ("giáp", "gần", "cách")):
-            variants = [
-                f"{u_name} {rel_c} địa danh nào?",
-                f"Khu vực nào nằm {rel_c} {u_name}?",
-            ]
-        else:
-            variants = [
-                f"{u_name} tọa lạc ở đâu?",
-                f"{u_name} nằm tại khu vực hoặc quận nào của Hà Nội?",
-                f"Vị trí của {u_name} nằm ở đâu?",
-                f"{u_name} nằm trên địa bàn nào của Hà Nội?",
-            ]
-    elif sem == "TEMPORAL" or "thời gian" in vk or "năm" in vk:
-        if "sinh" in normal(rel_c):
-            variants = [f"{u_name} sinh vào năm nào?", f"Năm sinh của {u_name} là năm bao nhiêu?"]
-        elif "mất" in normal(rel_c):
-            variants = [f"{u_name} mất vào năm nào?", f"Năm mất của {u_name} là khi nào?"]
-        elif any(k in normal(rel_c) for k in ("khởi dựng", "xây dựng", "thành lập")):
-            variants = [
-                f"{u_name} được xây dựng vào năm nào?",
-                f"{u_name} được khởi dựng khi nào?",
-                f"Công trình {u_name} được xây dựng vào thời gian nào?",
-            ]
-        elif "diễn ra" in normal(rel_c):
-            variants = [
-                f"Sự kiện {u_name} diễn ra vào thời điểm nào?",
-                f"{u_name} diễn ra vào năm nào?",
-            ]
-        elif "niên đại" in normal(rel_c):
-            variants = [
-                f"{u_name} có niên đại từ khi nào?",
-                f"Niên đại lịch sử của {u_name} là vào thời kỳ nào?",
-            ]
-        elif rel_c.endswith(" vào"):
-            variants = [
-                f"{u_name} {rel_c} năm nào?",
-                f"{u_name} {rel_c} thời gian nào?",
-            ]
-        else:
-            variants = [
-                f"{u_name} {rel_c} vào năm nào?",
-                f"{u_name} {rel_c} vào thời gian nào?",
-            ]
-    elif sem == "AGENT_CREATOR":
-        if "triều vua" in normal(rel_c):
-            variants = [
-                f"{u_name} được xây dựng dưới triều vua nào?",
-                f"Vị vua nào đã cho xây dựng {u_name}?",
-                f"{u_name} gắn liền với triều đại của vị vua nào?",
-            ]
-        elif "thiết kế" in normal(rel_c):
-            variants = [
-                f"{u_name} do ai thiết kế?",
-                f"Kiến trúc sư nào đã thiết kế {u_name}?",
-                f"Công trình {u_name} được thiết kế bởi ai?",
-            ]
-        elif "trụ trì" in normal(rel_c):
-            variants = [
-                f"Ai là người trụ trì {u_name}?",
-                f"Sư trụ trì của {u_name} là ai?",
-            ]
-        elif "tác giả" in normal(rel_c):
-            variants = [
-                f"Ai là tác giả của {u_name}?",
-                f"Tác giả sáng tác {u_name} là ai?",
-            ]
-        else:
-            variants = [
-                f"Ai là người {rel_c} {u_name}?",
-                f"{u_name} do ai {rel_c}?",
-                f"Nhân vật nào gắn liền với việc {rel_c} {u_name}?",
-            ]
-    elif sem == "DYNASTY_ORG":
-        variants = [
-            f"{u_name} thuộc triều đại hoặc vương triều nào trong lịch sử?",
-            f"{u_name} trực thuộc cơ quan hay đơn vị nào?",
-            f"{u_name} gắn liền với triều đại nào?",
-        ]
-    elif sem == "WORSHIP":
-        variants = [
-            f"{u_name} thờ phụng vị anh hùng hay danh nhân nào?",
-            f"Ai là người được thờ phụng tại {u_name}?",
-            f"{u_name} là nơi thờ tự của ai?",
-            f"{u_name} thờ vị thần hay nhân vật nào?",
-        ]
-    elif sem == "NAMING_IDENTITY":
-        if "đổi tên" in normal(rel_c):
-            variants = [
-                f"{u_name} được đổi tên thành gì?",
-                f"Tên mới sau khi đổi của {u_name} là gì?",
-            ]
-        elif "tên cũ" in normal(rel_c):
-            variants = [
-                f"{u_name} từng mang tên cũ là gì?",
-                f"Tên gọi trước đây của {u_name} là gì?",
-            ]
-        else:
-            variants = [
-                f"{u_name} còn được gọi bằng tên nào khác?",
-                f"{u_name} có tên gọi khác là gì?",
-                f"Tên gọi khác của {u_name} trong lịch sử là gì?",
-            ]
-    elif sem == "ORGANIZATION":
-        if any(k in normal(rel_c) for k in ("hợp nhất", "sáp nhập")):
-            variants = [
-                f"{u_name} hợp nhất hoặc sáp nhập với đơn vị nào?",
-                f"{u_name} được sáp nhập thành tổ chức nào?",
-            ]
-        elif any(k in normal(rel_c) for k in ("giám đốc", "chủ tịch", "chức vụ")):
-            variants = [
-                f"{u_name} đảm nhiệm chức vụ hoặc vai trò gì?",
-                f"Ai là người lãnh đạo tại {u_name}?",
-            ]
-        else:
-            variants = [
-                f"{u_name} trực thuộc cơ quan hay tổ chức nào?",
-                f"{u_name} có quan hệ hợp tác với đơn vị nào?",
-            ]
-    elif sem == "AWARD_RECOGNITION":
-        variants = [
-            f"{u_name} được trao tặng giải thưởng hay nhận danh hiệu gì?",
-            f"{u_name} được công nhận hoặc xếp hạng di tích như thế nào?",
-        ]
-    elif sem == "MEASUREMENT":
-        if "diện tích" in normal(rel_c):
-            variants = [
-                f"Diện tích của {u_name} là bao nhiêu?",
-                f"{u_name} có diện tích rộng bao nhiêu?",
-            ]
-        elif "chiều dài" in normal(rel_c) or "dài" in normal(rel_c):
-            variants = [
-                f"{u_name} có chiều dài bao nhiêu mét?",
-                f"Chiều dài của {u_name} là bao nhiêu?",
-            ]
-        elif "chiều cao" in normal(rel_c) or "cao" in normal(rel_c):
-            variants = [
-                f"{u_name} cao bao nhiêu mét?",
-                f"Chiều cao của công trình {u_name} là bao nhiêu?",
-            ]
-        else:
-            variants = [
-                f"Quy mô số đo của {u_name} là bao nhiêu?",
-                f"{u_name} có quy mô như thế nào?",
-            ]
-    elif sem == "CONNECTION":
-        if "bắc qua" in normal(rel_c):
-            variants = [
-                f"{u_name} bắc qua con sông nào?",
-                f"Cây cầu {u_name} bắc qua sông nào ở Hà Nội?",
-            ]
-        elif "chảy qua" in normal(rel_c):
-            variants = [
-                f"{u_name} chảy qua những địa phận nào?",
-                f"Dòng sông {u_name} đi qua những khu vực nào?",
-            ]
-        elif "nối" in normal(rel_c):
-            variants = [
-                f"{u_name} nối liền những khu vực nào?",
-                f"Tuyến đường {u_name} kết nối những địa điểm nào?",
-            ]
-        elif any(k in normal(rel_c) for k in ("chuyến bay", "đường bay")):
-            variants = [
-                f"{u_name} khai thác các chuyến bay kết nối tới địa điểm nào?",
-                f"{u_name} có đường bay đến thành phố hay quốc gia nào?",
-            ]
-        else:
-            variants = [
-                f"{u_name} kết nối với những địa điểm nào?",
-            ]
-    elif sem == "CONTENT_CONTAINER":
-        variants = [
-            f"{u_name} bao gồm những hạng mục hoặc công trình nào?",
-            f"{u_name} trưng bày hoặc lưu giữ những hiện vật nào?",
-            f"Bên trong {u_name} có những công trình hay hiện vật nào tiêu biểu?",
-        ]
-    else:
-        # Fallback câu hỏi thông thường nhưng không dùng chữ "theo đồ thị tri thức" hay "đối tượng nào"
-        variants = [
-            f"Cho biết thông tin về việc {u_name} {rel_c}?",
-            f"{u_name} {rel_c} ai hoặc địa danh nào?",
-            f"{u_name} {rel_c} như thế nào?",
-        ]
+    variants = _get_1hop_variants(sem, rel_c, r_norm, u_name, vk)
+    return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
     return _clean_natural_question_text(variants[idx_seed % len(variants)])
+
+
+_INVERSE_SEM_TEMPLATES: dict[str, list[str]] = {
+    "LOCATION": [
+        "Ở {v} có những công trình hay địa danh nào nổi tiếng?",
+        "Những di tích lịch sử nào nằm tại {v}?",
+        "Địa danh nào tọa lạc trên địa bàn {v}?",
+    ],
+    "WORSHIP": [
+        "Những ngôi đền, ngôi chùa nào tại Hà Nội thờ phụng {v}?",
+        "{v} được thờ phụng tại di tích nào?",
+        "Nơi nào là địa điểm thờ cúng {v}?",
+    ],
+    "AGENT_CREATOR": [
+        "{v} đã cho xây dựng hoặc sáng lập những công trình nào?",
+        "Dưới thời kỳ của {v}, công trình tiêu biểu nào được khởi dựng?",
+        "Những tác phẩm hoặc công trình nào do {v} thiết kế/chỉ đạo?",
+    ],
+    "DYNASTY_ORG": [
+        "Trong triều đại {v}, những nhân vật hoặc công trình nào nổi bật?",
+        "Những di tích lịch sử nào thuộc về {v}?",
+    ],
+    "CONNECTION": [
+        "Cây cầu nào bắc qua {v}?",
+        "Những tuyến đường hoặc công trình nào nối liền với {v}?",
+    ],
+    "NAMING_IDENTITY": [
+        "Công trình hay di tích nào từng mang tên gọi là {v}?",
+        "Địa danh nào còn được gọi là {v}?",
+    ],
+    "ORGANIZATION": [
+        "Đơn vị nào đã hợp nhất hoặc sáp nhập thành {v}?",
+        "Tổ chức nào trực thuộc hoặc liên kết với {v}?",
+    ],
+    "CONTENT_CONTAINER": [
+        "Bảo tàng hoặc di tích nào lưu giữ, trưng bày {v}?",
+        "Công trình nào bao gồm hạng mục {v}?",
+    ],
+}
 
 
 def synthesize_1hop_inverse_question(
@@ -393,49 +325,8 @@ def synthesize_1hop_inverse_question(
     rel_c = clean_rel_name(rel)
     uk_lbl = _infer_entity_natural_label(u_name, u_kind)
 
-    if sem == "LOCATION":
-        variants = [
-            f"Ở {v_name} có những công trình hay địa danh nào nổi tiếng?",
-            f"Những di tích lịch sử nào nằm tại {v_name}?",
-            f"Địa danh nào tọa lạc trên địa bàn {v_name}?",
-        ]
-    elif sem == "WORSHIP":
-        variants = [
-            f"Những ngôi đền, ngôi chùa nào tại Hà Nội thờ phụng {v_name}?",
-            f"{v_name} được thờ phụng tại di tích nào?",
-            f"Nơi nào là địa điểm thờ cúng {v_name}?",
-        ]
-    elif sem == "AGENT_CREATOR":
-        variants = [
-            f"{v_name} đã cho xây dựng hoặc sáng lập những công trình nào?",
-            f"Dưới thời kỳ của {v_name}, công trình tiêu biểu nào được khởi dựng?",
-            f"Những tác phẩm hoặc công trình nào do {v_name} thiết kế/chỉ đạo?",
-        ]
-    elif sem == "DYNASTY_ORG":
-        variants = [
-            f"Trong triều đại {v_name}, những nhân vật hoặc công trình nào nổi bật?",
-            f"Những di tích lịch sử nào thuộc về {v_name}?",
-        ]
-    elif sem == "CONNECTION":
-        variants = [
-            f"Cây cầu nào bắc qua {v_name}?",
-            f"Những tuyến đường hoặc công trình nào nối liền với {v_name}?",
-        ]
-    elif sem == "NAMING_IDENTITY":
-        variants = [
-            f"Công trình hay di tích nào từng mang tên gọi là {v_name}?",
-            f"Địa danh nào còn được gọi là {v_name}?",
-        ]
-    elif sem == "ORGANIZATION":
-        variants = [
-            f"Đơn vị nào đã hợp nhất hoặc sáp nhập thành {v_name}?",
-            f"Tổ chức nào trực thuộc hoặc liên kết với {v_name}?",
-        ]
-    elif sem == "CONTENT_CONTAINER":
-        variants = [
-            f"Bảo tàng hoặc di tích nào lưu giữ, trưng bày {v_name}?",
-            f"Công trình nào bao gồm hạng mục {v_name}?",
-        ]
+    if sem in _INVERSE_SEM_TEMPLATES:
+        variants = [t.format(v=v_name) for t in _INVERSE_SEM_TEMPLATES[sem]]
     else:
         if uk_lbl and uk_lbl != "thông tin":
             variants = [
@@ -451,62 +342,69 @@ def synthesize_1hop_inverse_question(
     return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
 
+_NAME_PREFIX_LABELS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("chùa ", "đền ", "đình ", "miếu ", "lăng ", "tháp ", "phủ "), "di tích"),
+    (("bảo tàng", "viện bảo tàng"), "bảo tàng"),
+    (("cầu ", "đường ", "phố ", "ngõ ", "quận ", "huyện ", "phường ", "xã "), "địa danh"),
+    (("nhà máy", "bệnh viện", "trường", "viện ", "hội đồng", "ủy ban", "bộ ", "ngân hàng"), "đơn vị"),
+)
+
+_KIND_KEYWORD_LABELS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("chùa", "đền", "đình", "miếu", "phủ", "di tích", "công trình"), "di tích"),
+    (("bảo tàng",), "bảo tàng"),
+    (("địa danh", "địa điểm", "vị trí", "phố", "đường", "quận", "huyện", "thành phố"), "địa danh"),
+    (("vua", "hoàng đế"), "vị vua"),
+    (("nhân vật", "danh nhân", "người", "tác giả", "kiến trúc sư"), "nhân vật"),
+    (("triều đại", "vương triều", "nhà lý", "nhà trần", "nhà lê"), "triều đại"),
+    (("tổ chức", "cơ quan", "trường", "bệnh viện", "viện"), "đơn vị"),
+    (("thời gian", "năm", "mốc thời gian"), "mốc thời gian"),
+    (("hiện vật", "bảo vật", "tác phẩm", "sách", "gốm"), "hiện vật"),
+    (("sự kiện", "trận đánh", "chiến dịch"), "sự kiện"),
+)
+
+_SEM_IN_LABELS: dict[str, str] = {
+    "LOCATION": "địa danh",
+    "WORSHIP": "danh nhân",
+    "AGENT_CREATOR": "nhân vật",
+    "TEMPORAL": "mốc thời gian",
+    "CONTENT_CONTAINER": "hiện vật",
+    "ORGANIZATION": "đơn vị",
+}
+
+
 def _infer_entity_natural_label(name: str, kind: str, incoming_rel: str = "", outgoing_rel: str = "") -> str:
     """Suy luận danh từ chỉ loại tự nhiên (địa danh, ngôi chùa, vị vua, hiện vật...) thay cho chữ 'thực thể'/'đối tượng'."""
-    k_norm = normal(kind)
     n_lower = name.lower()
-    sem_in = classify_relation_semantic(incoming_rel) if incoming_rel else ""
-    sem_out = classify_relation_semantic(outgoing_rel) if outgoing_rel else ""
-
-    # 1. Dựa vào tên thực thể (chính xác nhất)
-    if any(n_lower.startswith(x) for x in ("chùa ", "đền ", "đình ", "miếu ", "lăng ", "tháp ", "phủ ")):
-        return "di tích"
-    if any(n_lower.startswith(x) for x in ("bảo tàng", "viện bảo tàng")):
-        return "bảo tàng"
-    if any(n_lower.startswith(x) for x in ("cầu ", "đường ", "phố ", "ngõ ", "quận ", "huyện ", "phường ", "xã ")):
-        return "địa danh"
+    for prefixes, lbl in _NAME_PREFIX_LABELS:
+        if any(n_lower.startswith(p) for p in prefixes):
+            return lbl
     if any(n_lower.startswith(x) for x in ("vua ", "hoàng đế ", "lý ", "trần ", "lê ", "nguyễn ")) and len(name.split()) <= 4:
         return "nhân vật"
-    if any(n_lower.startswith(x) for x in ("nhà máy", "bệnh viện", "trường", "viện ", "hội đồng", "ủy ban", "bộ ", "ngân hàng")):
-        return "đơn vị"
 
-    # 2. Dựa vào loại thực thể (kind)
-    if any(x in k_norm for x in ("chùa", "đền", "đình", "miếu", "phủ", "di tích", "công trình")):
-        return "di tích"
-    if any(x in k_norm for x in ("bảo tàng",)):
-        return "bảo tàng"
-    if any(x in k_norm for x in ("địa danh", "địa điểm", "vị trí", "phố", "đường", "quận", "huyện", "thành phố")):
-        return "địa danh"
-    if any(x in k_norm for x in ("vua", "hoàng đế")):
-        return "vị vua"
-    if any(x in k_norm for x in ("nhân vật", "danh nhân", "người", "tác giả", "kiến trúc sư")):
-        return "nhân vật"
-    if any(x in k_norm for x in ("triều đại", "vương triều", "nhà lý", "nhà trần", "nhà lê")):
-        return "triều đại"
-    if any(x in k_norm for x in ("tổ chức", "cơ quan", "trường", "bệnh viện", "viện")):
-        return "đơn vị"
-    if any(x in k_norm for x in ("thời gian", "năm", "mốc thời gian")):
-        return "mốc thời gian"
-    if any(x in k_norm for x in ("hiện vật", "bảo vật", "tác phẩm", "sách", "gốm")):
-        return "hiện vật"
-    if any(x in k_norm for x in ("sự kiện", "trận đánh", "chiến dịch")):
-        return "sự kiện"
+    k_norm = normal(kind)
+    for keywords, lbl in _KIND_KEYWORD_LABELS:
+        if any(k in k_norm for k in keywords):
+            return lbl
 
-    # 3. Dựa vào ngữ nghĩa quan hệ đến (incoming relation)
-    if sem_in == "LOCATION":
-        return "địa danh"
-    if sem_in == "WORSHIP":
-        return "danh nhân"
-    if sem_in == "AGENT_CREATOR":
-        return "nhân vật"
-    if sem_in == "TEMPORAL":
-        return "mốc thời gian"
-    if sem_in == "CONTENT_CONTAINER":
-        return "hiện vật"
-    if sem_in == "ORGANIZATION":
-        return "đơn vị"
+    if incoming_rel:
+        sem_in = classify_relation_semantic(incoming_rel)
+        if sem_in in _SEM_IN_LABELS:
+            return _SEM_IN_LABELS[sem_in]
 
     return "thông tin"
+
+
+_ATTRIBUTE_DESCRIPTORS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("LOCATION", ("tọa lạc", "nằm"), "vị trí tọa lạc"),
+    ("TEMPORAL", ("năm", "thời gian"), "thời gian xây dựng hoặc niên đại"),
+    ("WORSHIP", (), "nhân vật được thờ phụng"),
+    ("AGENT_CREATOR", ("thiết kế", "xây dựng"), "người khởi dựng hoặc thiết kế"),
+    ("MEASUREMENT", (), "quy mô kích thước"),
+    ("CONTENT_CONTAINER", ("trưng bày", "lưu giữ"), "các hiện vật trưng bày"),
+    ("CONNECTION", (), "địa điểm kết nối"),
+    ("NAMING_IDENTITY", ("tên", "gọi"), "tên gọi lịch sử"),
+    ("ORGANIZATION", ("hợp nhất", "sáp nhập"), "quá trình hợp nhất sáp nhập"),
+)
 
 
 def _format_attribute_descriptor(rel: str) -> str:
@@ -514,26 +412,27 @@ def _format_attribute_descriptor(rel: str) -> str:
     sem = classify_relation_semantic(rel)
     rel_c = clean_rel_name(rel)
     r_norm = normal(rel_c)
-
-    if sem == "LOCATION" or "tọa lạc" in r_norm or "nằm" in r_norm:
-        return "vị trí tọa lạc"
-    if sem == "TEMPORAL" or "năm" in r_norm or "thời gian" in r_norm:
-        return "thời gian xây dựng hoặc niên đại"
-    if sem == "WORSHIP":
-        return "nhân vật được thờ phụng"
-    if sem == "AGENT_CREATOR" or "thiết kế" in r_norm or "xây dựng" in r_norm:
-        return "người khởi dựng hoặc thiết kế"
-    if sem == "MEASUREMENT":
-        return "quy mô kích thước"
-    if sem == "CONTENT_CONTAINER" or "trưng bày" in r_norm or "lưu giữ" in r_norm:
-        return "các hiện vật trưng bày"
-    if sem == "CONNECTION":
-        return "địa điểm kết nối"
-    if sem == "NAMING_IDENTITY" or "tên" in r_norm or "gọi" in r_norm:
-        return "tên gọi lịch sử"
-    if sem == "ORGANIZATION" or "hợp nhất" in r_norm or "sáp nhập" in r_norm:
-        return "quá trình hợp nhất sáp nhập"
+    for cat, keys, desc in _ATTRIBUTE_DESCRIPTORS:
+        if sem == cat or any(k in r_norm for k in keys):
+            return desc
     return rel_c
+
+
+_EXACT_PREDICATE_PHRASES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("thờ",), "thờ phụng vị anh hùng hay danh nhân nào?"),
+    (("thiết kế",), "do ai thiết kế?"),
+    (("tác giả",), "do ai là tác giả?"),
+    (("trụ trì",), "do vị sư nào trụ trì?"),
+    (("dời đô",), "dời kinh đô từ đâu?"),
+    (("triều",), "thuộc triều đại nào?"),
+    (("bắc qua",), "bắc qua con sông nào?"),
+    (("chảy qua",), "chảy qua những khu vực nào?"),
+    (("chức vụ", "chủ tịch", "giám đốc"), "đảm nhiệm chức vụ hay vai trò gì?"),
+    (("công nhận", "xếp hạng"), "được xếp hạng hay công nhận danh hiệu gì?"),
+    (("bao gồm", "chứa"), "bao gồm những công trình hay hiện vật nào?"),
+    (("trưng bày", "lưu giữ"), "trưng bày hay lưu giữ những hiện vật nào?"),
+    (("chuyến bay", "đường bay"), "kết nối đường bay tới đâu?"),
+)
 
 
 def _format_predicate_question(rel: str, c_kind: str = "") -> str:
@@ -546,9 +445,7 @@ def _format_predicate_question(rel: str, c_kind: str = "") -> str:
     if "thuộc" in r_norm:
         if any(x in ck for x in ("quận", "huyện", "phường", "tỉnh", "địa danh", "địa bàn")):
             return "thuộc quận hay khu vực nào của Hà Nội?"
-        if "sự kiện" in ck:
-            return "thuộc sự kiện lịch sử nào?"
-        return "thuộc quận, khu vực hay tổ chức nào?"
+        return "thuộc sự kiện lịch sử nào?" if "sự kiện" in ck else "thuộc quận, khu vực hay tổ chức nào?"
 
     if any(x in r_norm for x in ("tọa lạc", "nằm ở", "nằm tại", "đặt tại")):
         return "ở đâu?"
@@ -556,7 +453,7 @@ def _format_predicate_question(rel: str, c_kind: str = "") -> str:
     if any(x in r_norm for x in ("giáp", "tiếp giáp", "gần", "cách", "đối diện")):
         return f"{rel_c} địa danh hay khu vực nào?"
 
-    if sem == "TEMPORAL" or "thời gian" in ck or "năm" in ck or any(x in r_norm for x in ("năm", "thời gian", "ngày", "khi", "niên đại")):
+    if sem == "TEMPORAL" or any(x in ck for x in ("thời gian", "năm")) or any(x in r_norm for x in ("năm", "thời gian", "ngày", "khi", "niên đại")):
         if rel_c.endswith(" vào"):
             return f"{rel_c} năm nào?"
         if "vào" in r_norm:
@@ -569,17 +466,9 @@ def _format_predicate_question(rel: str, c_kind: str = "") -> str:
             return "mất vào năm nào?"
         return f"{rel_c} vào năm nào?"
 
-    if "thờ" in r_norm:
-        return "thờ phụng vị anh hùng hay danh nhân nào?"
-
-    if "thiết kế" in r_norm:
-        return "do ai thiết kế?"
-
-    if "tác giả" in r_norm:
-        return "do ai là tác giả?"
-
-    if "trụ trì" in r_norm:
-        return "do vị sư nào trụ trì?"
+    for keys, phrase in _EXACT_PREDICATE_PHRASES:
+        if any(k in r_norm for k in keys):
+            return phrase
 
     if any(x in r_norm for x in ("hợp nhất", "sáp nhập")):
         return f"{rel_c} đơn vị hay bảo tàng nào?"
@@ -593,41 +482,14 @@ def _format_predicate_question(rel: str, c_kind: str = "") -> str:
             return "mang tên là gì?"
         return "còn được gọi là gì?"
 
-    if "dời đô" in r_norm:
-        return "dời kinh đô từ đâu?"
-
     if any(x in r_norm for x in ("nơi sống", "làm việc")):
         return f"{rel_c} của danh nhân nào?"
 
     if any(x in r_norm for x in ("tặng", "khen thưởng", "bằng khen", "giải thưởng")):
         return f"{rel_c} phần thưởng hay danh hiệu gì?"
 
-    if any(x in r_norm for x in ("công nhận", "xếp hạng")):
-        return "được xếp hạng hay công nhận danh hiệu gì?"
-
-    if "triều" in r_norm:
-        return "thuộc triều đại nào?"
-
-    if any(x in r_norm for x in ("bao gồm", "chứa")):
-        return "bao gồm những công trình hay hiện vật nào?"
-
-    if any(x in r_norm for x in ("trưng bày", "lưu giữ")):
-        return "trưng bày hay lưu giữ những hiện vật nào?"
-
-    if "bắc qua" in r_norm:
-        return "bắc qua con sông nào?"
-
-    if "chảy qua" in r_norm:
-        return "chảy qua những khu vực nào?"
-
-    if any(x in r_norm for x in ("chuyến bay", "đường bay")):
-        return "kết nối đường bay tới đâu?"
-
     if sem == "MEASUREMENT" or any(x in r_norm for x in ("diện tích", "chiều dài", "chiều cao", "quy mô", "kích thước")):
         return f"có {rel_c} là bao nhiêu?"
-
-    if any(x in r_norm for x in ("chức vụ", "chủ tịch", "giám đốc")):
-        return "đảm nhiệm chức vụ hay vai trò gì?"
 
     # Fallback dựa theo kiểu đích c_kind
     if any(x in ck for x in ("nhân vật", "người", "danh nhân", "vị vua")):
@@ -638,6 +500,31 @@ def _format_predicate_question(rel: str, c_kind: str = "") -> str:
         return f"{rel_c} đơn vị nào?"
 
     return f"{rel_c} nội dung hay nhân vật nào?"
+
+
+_2HOP_SEM_PATTERNS: tuple[tuple[str, str, list[str]], ...] = (
+    ("AGENT_CREATOR", "DYNASTY_ORG", [
+        "Vị vua cho xây dựng {u} thuộc triều đại nào trong lịch sử?",
+        "{u} được khởi dựng dưới thời vị vua nào và ông thuộc vương triều gì?",
+        "Người sáng lập {u} thuộc triều đại phong kiến nào?",
+    ]),
+    ("WORSHIP", "TEMPORAL", [
+        "Nhân vật được thờ phụng tại {u} sinh vào năm nào?",
+        "Vị anh hùng được thờ tại {u} gắn liền với mốc thời gian nào trong lịch sử?",
+    ]),
+    ("WORSHIP", "LOCATION", [
+        "Vị danh nhân được thờ phụng tại {u} có quê quán ở đâu?",
+        "Người được thờ tại {u} sinh ra tại địa phương nào?",
+    ]),
+    ("CONTENT_CONTAINER", "LOCATION", [
+        "{u} lưu giữ hiện vật tiêu biểu nào và hiện vật đó có nguồn gốc từ đâu?",
+        "Hiện vật quý được trưng bày tại {u} xuất xứ từ địa phương nào?",
+    ]),
+    ("CONTENT_CONTAINER", "TEMPORAL", [
+        "{u} lưu giữ bộ sưu tập nào và bộ sưu tập đó có niên đại từ khi nào?",
+        "Hiện vật lịch sử tại {u} gắn liền với thời kỳ nào?",
+    ]),
+)
 
 
 def synthesize_2hop_bridge_question(
@@ -657,17 +544,7 @@ def synthesize_2hop_bridge_question(
     r2_c = clean_rel_name(r2)
     ck = normal(c_kind)
 
-    # TRƯỜNG HỢP 1: Vua chúa cho xây dựng -> Vua chúa thuộc triều đại nào?
-    if sem1 == "AGENT_CREATOR" and sem2 == "DYNASTY_ORG":
-        variants = [
-            f"Vị vua cho xây dựng {u_name} thuộc triều đại nào trong lịch sử?",
-            f"{u_name} được khởi dựng dưới thời vị vua nào và ông thuộc vương triều gì?",
-            f"Người sáng lập {u_name} thuộc triều đại phong kiến nào?",
-        ]
-        return _clean_natural_question_text(variants[idx_seed % len(variants)])
-
-    # TRƯỜNG HỢP 2: Vị trí -> Vị trí thuộc đơn vị hành chính/quận nào?
-    if sem1 == "LOCATION" and (sem2 == "LOCATION" or "quận" in ck or "huyện" in ck or "tỉnh" in ck):
+    if sem1 == "LOCATION" and (sem2 == "LOCATION" or any(x in ck for x in ("quận", "huyện", "tỉnh"))):
         variants = [
             f"{u_name} tọa lạc tại địa danh nào và nơi đó thuộc quận nào của Hà Nội?",
             f"Địa bàn nơi {u_name} tọa lạc thuộc quận hay khu vực nào?",
@@ -675,22 +552,6 @@ def synthesize_2hop_bridge_question(
         ]
         return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
-    # TRƯỜNG HỢP 3: Thờ phụng -> Người được thờ sinh năm nào / quê quán ở đâu?
-    if sem1 == "WORSHIP" and sem2 == "TEMPORAL":
-        variants = [
-            f"Nhân vật được thờ phụng tại {u_name} sinh vào năm nào?",
-            f"Vị anh hùng được thờ tại {u_name} gắn liền với mốc thời gian nào trong lịch sử?",
-        ]
-        return _clean_natural_question_text(variants[idx_seed % len(variants)])
-
-    if sem1 == "WORSHIP" and sem2 == "LOCATION":
-        variants = [
-            f"Vị danh nhân được thờ phụng tại {u_name} có quê quán ở đâu?",
-            f"Người được thờ tại {u_name} sinh ra tại địa phương nào?",
-        ]
-        return _clean_natural_question_text(variants[idx_seed % len(variants)])
-
-    # TRƯỜNG HỢP 4: Cầu bắc qua sông -> Dòng sông đó chảy qua đâu?
     if "bắc qua" in normal(r1_c) and sem2 == "CONNECTION":
         variants = [
             f"{u_name} bắc qua con sông nào và dòng sông này chảy qua những khu vực nào?",
@@ -698,51 +559,45 @@ def synthesize_2hop_bridge_question(
         ]
         return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
-    # TRƯỜNG HỢP 5: Lưu giữ / Trưng bày hiện vật -> Sản xuất tại đâu / có từ thời nào?
-    if sem1 == "CONTENT_CONTAINER" and sem2 == "LOCATION":
-        variants = [
-            f"{u_name} lưu giữ hiện vật tiêu biểu nào và hiện vật đó có nguồn gốc từ đâu?",
-            f"Hiện vật quý được trưng bày tại {u_name} xuất xứ từ địa phương nào?",
-        ]
-        return _clean_natural_question_text(variants[idx_seed % len(variants)])
-
-    if sem1 == "CONTENT_CONTAINER" and sem2 == "TEMPORAL":
-        variants = [
-            f"{u_name} lưu giữ bộ sưu tập nào và bộ sưu tập đó có niên đại từ khi nào?",
-            f"Hiện vật lịch sử tại {u_name} gắn liền với thời kỳ nào?",
-        ]
-        return _clean_natural_question_text(variants[idx_seed % len(variants)])
+    for s1, s2, templates in _2HOP_SEM_PATTERNS:
+        if sem1 == s1 and sem2 == s2:
+            variants = [t.format(u=u_name) for t in templates]
+            return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
     # TRƯỜNG HỢP TỔNG QUÁT TỰ NHIÊN: Suy luận từ chỉ loại danh từ thay vì dùng chữ "thực thể" / "đối tượng"
     b_lbl = _infer_entity_natural_label(b_name, b_kind, incoming_rel=r1, outgoing_rel=r2)
     q_tail = _format_predicate_question(r2, c_kind)
 
-    if b_lbl in ("địa danh", "địa bàn"):
-        variants = [
+    _GEN_BRIDGE_MAP = {
+        ("địa danh", "địa bàn"): [
             f"{u_name} tọa lạc tại địa danh nào và nơi này {q_tail}",
             f"Khu vực nơi {u_name} tọa lạc {q_tail}",
             f"Địa bàn nơi {u_name} đặt vị trí {q_tail}",
-        ]
-    elif b_lbl in ("nhân vật", "vị vua", "danh nhân"):
-        variants = [
+        ],
+        ("nhân vật", "vị vua", "danh nhân"): [
             f"{u_name} gắn liền với nhân vật lịch sử nào và người đó {q_tail}",
             f"Nhân vật gắn liền với {u_name} {q_tail}",
-        ]
-    elif b_lbl in ("hiện vật", "bảo vật"):
-        variants = [
+        ],
+        ("hiện vật", "bảo vật"): [
             f"{u_name} lưu giữ hoặc trưng bày hiện vật nào và hiện vật này {q_tail}",
             f"Hiện vật quý gắn với {u_name} {q_tail}",
-        ]
-    elif b_lbl in ("đơn vị", "tổ chức", "bảo tàng"):
-        variants = [
+        ],
+        ("đơn vị", "tổ chức", "bảo tàng"): [
             f"{u_name} liên kết hoặc sáp nhập với đơn vị nào và tổ chức này {q_tail}",
             f"Đơn vị liên kết với {u_name} {q_tail}",
-        ]
+        ],
+    }
+    for keys, var_list in _GEN_BRIDGE_MAP.items():
+        if b_lbl in keys:
+            variants = var_list
+            break
     else:
         variants = [
             f"{u_name} {r1_c} {b_lbl} nào và {b_lbl} này {q_tail}",
             f"Cho biết {b_lbl} gắn liền với việc {r1_c} của {u_name} và {b_lbl} này {q_tail}",
         ]
+
+    return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
     return _clean_natural_question_text(variants[idx_seed % len(variants)])
 

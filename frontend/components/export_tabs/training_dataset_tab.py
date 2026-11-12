@@ -6,7 +6,6 @@ from typing import Any
 
 import streamlit as st
 
-from backend.domain.graph.service import csv_bytes
 
 
 def render_training_dataset_tab(facade: Any, active_graph_project: dict, proj_id: str) -> None:
@@ -153,74 +152,35 @@ def render_training_dataset_tab(facade: Any, active_graph_project: dict, proj_id
         ]
         st.dataframe(sample_rows, width="stretch", hide_index=True)
 
-    st.markdown("##### ⬇️ Tải Xuất Dữ liệu Độc lập (Phục vụ Huấn luyện trên Colab / Server GPU)")
-    dl_c1, dl_c2, dl_c3 = st.columns(3)
-    train_bytes = "\n".join(json.dumps(x, ensure_ascii=False) for x in train_samples).encode("utf-8")
-    val_bytes = "\n".join(json.dumps(x, ensure_ascii=False) for x in val_samples).encode("utf-8")
-    test_bytes = "\n".join(json.dumps(x, ensure_ascii=False) for x in test_samples).encode("utf-8")
+    st.divider()
+    with st.container(border=True):
+        st.markdown("##### 📦 Đóng gói Dữ liệu Huấn luyện G-Retriever (Training Dataset Bundle)")
+        st.info(
+            f"💡 Bộ dữ liệu gồm **{len(all_samples):,} mẫu QA tự nhiên** ({len(train_samples):,} train / {len(val_samples):,} val / {len(test_samples):,} test) "
+            f"và **{len(nodes):,} đỉnh PyG / {len(edges):,} cạnh PyG** đã được chuẩn hóa tự động. "
+            f"Toàn bộ dữ liệu này được tích hợp đồng bộ vào **Gói Sao lưu ZIP (11 tệp)** tại **Tab 4: Bản đồ Toàn cục & Gói Sao lưu**."
+        )
+        c_zip, c_note = st.columns([1.5, 2.5])
+        with c_zip:
+            cached_zip_key = f"_p06_cached_train_zip_{proj_id}"
+            if st.button("🔨 Chuẩn bị Gói Huấn luyện ZIP", width="stretch", key=f"_p06_btn_prep_train_zip_{proj_id}"):
+                with st.spinner("Đang đóng gói dữ liệu huấn luyện và đồ thị..."):
+                    st.session_state[cached_zip_key] = facade.export_zip(active_graph_project, qa_max_samples=qa_max_samples)
+                st.rerun()
 
-    dl_c1.download_button(
-        f"⬇️ Tải train.jsonl ({len(train_samples)} mẫu)",
-        data=train_bytes,
-        file_name="train.jsonl",
-        mime="application/x-ndjson",
-        width="stretch",
-        key=f"_p06_dl_train_{proj_id}",
-    )
-    dl_c2.download_button(
-        f"⬇️ Tải val.jsonl ({len(val_samples)} mẫu)",
-        data=val_bytes,
-        file_name="val.jsonl",
-        mime="application/x-ndjson",
-        width="stretch",
-        key=f"_p06_dl_val_{proj_id}",
-    )
-    dl_c3.download_button(
-        f"⬇️ Tải test.jsonl ({len(test_samples)} mẫu)",
-        data=test_bytes,
-        file_name="test.jsonl",
-        mime="application/x-ndjson",
-        width="stretch",
-        key=f"_p06_dl_test_{proj_id}",
-    )
-
-    dl_g1, dl_g2 = st.columns(2)
-    node_idx_map = {n["id"]: idx for idx, n in enumerate(nodes)}
-    pyg_nodes = [
-        {
-            "node_id": idx,
-            "orig_id": n.get("id", ""),
-            "node_attr": f"{n.get('name', '')} ({n.get('kind', '')}): {n.get('description', '')}".strip(),
-        }
-        for idx, n in enumerate(nodes)
-    ]
-    pyg_edges = [
-        {
-            "src": node_idx_map[e["source"]],
-            "edge_attr": f"{e.get('relation', '')} | Bằng chứng: {e.get('evidence', '')}".strip(),
-            "dst": node_idx_map[e["target"]],
-            "orig_edge_id": e.get("id", ""),
-        }
-        for e in edges
-        if e.get("source") in node_idx_map and e.get("target") in node_idx_map
-    ]
-
-    pyg_nodes_csv = csv_bytes(pyg_nodes, ["node_id", "orig_id", "node_attr"])
-    pyg_edges_csv = csv_bytes(pyg_edges, ["src", "edge_attr", "dst", "orig_edge_id"])
-
-    dl_g1.download_button(
-        f"⬇️ Tải pyg_nodes.csv ({len(pyg_nodes)} đỉnh PyG)",
-        data=pyg_nodes_csv,
-        file_name="pyg_nodes.csv",
-        mime="text/csv",
-        width="stretch",
-        key=f"_p06_dl_pyg_nodes_{proj_id}",
-    )
-    dl_g2.download_button(
-        f"⬇️ Tải pyg_edges.csv ({len(pyg_edges)} cạnh PyG)",
-        data=pyg_edges_csv,
-        file_name="pyg_edges.csv",
-        mime="text/csv",
-        width="stretch",
-        key=f"_p06_dl_pyg_edges_{proj_id}",
-    )
+            cached_zip = st.session_state.get(cached_zip_key)
+            if cached_zip:
+                st.download_button(
+                    "⬇️ Tải Gói Huấn luyện ZIP (11 tệp)",
+                    data=cached_zip,
+                    file_name=f"{active_graph_project.get('name', 'kg')}_training_bundle.zip",
+                    mime="application/zip",
+                    type="primary",
+                    width="stretch",
+                    key=f"_p06_dl_train_bundle_zip_{proj_id}",
+                )
+        with c_note:
+            st.caption(
+                "📂 **Gói ZIP bao gồm trọn bộ 11 tệp:** `train.jsonl`, `val.jsonl`, `test.jsonl`, `pyg_nodes.csv`, `pyg_edges.csv`, "
+                "`do_thi_da_duyet.json`, `du_an_day_du.json`, `thuc_the.csv`, `quan_he.csv`, `bo_cau_hoi_g_retriever.json` và `.jsonl`."
+            )

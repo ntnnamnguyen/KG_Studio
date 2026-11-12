@@ -32,23 +32,6 @@ class FrontendClient:
             self.api_base_url = (api_base_url or "").rstrip("/")
             self.facade = facade or get_facade()
 
-    def _post_api(self, path: str, payload: dict) -> dict[str, Any] | None:
-        if not self.api_base_url:
-            return None
-        url = f"{self.api_base_url}{path}"
-        data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = request.Request(
-            url,
-            data=data_bytes,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            method="POST",
-        )
-        try:
-            with request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            return None
-
     def get_embedding_models(self) -> list[dict]:
         if self.api_base_url:
             try:
@@ -110,18 +93,15 @@ class FrontendClient:
         note: str = "",
         description: str = "",
     ) -> dict[str, Any]:
-        self.facade.create_snapshot(project)
-        impact = self.facade.decide_proposal(
+        return self.facade.decide_single_proposal(
             project,
             proposal_id,
             action,
-            canonical_name,
-            definition,
-            note,
-            description,
+            canonical_name=canonical_name,
+            definition=definition,
+            note=note,
+            description=description,
         )
-        self.facade.save_project(project)
-        return impact
 
     def restore_snapshot(self, project: dict, snapshot_path: str | Path) -> dict:
         return self.facade.restore_snapshot(project, Path(snapshot_path))
@@ -513,5 +493,7 @@ def get_client() -> FrontendClient:
     if _CLIENT is None:
         import os
         api_url = os.environ.get("KG_STUDIO_API_URL", "").strip()
-        _CLIENT = FrontendClient(api_base_url=api_url)
+        from frontend.composition import get_ui_composition
+        comp = get_ui_composition()
+        _CLIENT = FrontendClient(api_base_url=api_url, facade=comp.facade)
     return _CLIENT

@@ -1,57 +1,57 @@
 {
   "meta": {
     "stage": "baseline",
-    "scale": "M",
-    "timestamp": "2026-10-30T16:26:10.177219+00:00",
+    "scale": "S",
+    "timestamp": "2026-11-11T12:41:40.777102+00:00",
     "python_version": "3.13.2 (tags/v3.13.2:4f8bb39, Feb  4 2025, 15:23:48) [MSC v.1942 64 bit (AMD64)]"
   },
   "benchmarks": {
     "list_projects": {
       "repetitions": 10,
-      "p50_seconds": 0.278799,
-      "p95_seconds": 0.292352,
-      "mean_seconds": 0.275056,
-      "peak_memory_kb": 38120.06,
+      "p50_seconds": 0.003,
+      "p95_seconds": 0.023892,
+      "mean_seconds": 0.005133,
+      "peak_memory_kb": 32.91,
       "result_sample": "list"
     },
     "review_stats": {
       "repetitions": 5,
-      "p50_seconds": 6.70832,
-      "p95_seconds": 31.785556,
-      "mean_seconds": 11.6886,
-      "peak_memory_kb": 320383.4,
+      "p50_seconds": 0.008812,
+      "p95_seconds": 0.01095,
+      "mean_seconds": 0.009193,
+      "peak_memory_kb": 182.95,
       "result_sample": "dict"
     },
     "evidence_context": {
       "repetitions": 20,
-      "p50_seconds": 3.2e-05,
-      "p95_seconds": 8.2e-05,
-      "mean_seconds": 3.5e-05,
-      "peak_memory_kb": 8.71,
+      "p50_seconds": 3.8e-05,
+      "p95_seconds": 6.8e-05,
+      "mean_seconds": 4e-05,
+      "peak_memory_kb": 8.59,
       "result_sample": "dict"
     },
     "duplicate_suggestions": {
       "repetitions": 3,
-      "p50_seconds": 6.496314,
-      "p95_seconds": 7.032292,
-      "mean_seconds": 6.514079,
-      "peak_memory_kb": 307497.99,
+      "p50_seconds": 0.007915,
+      "p95_seconds": 0.174236,
+      "mean_seconds": 0.063274,
+      "peak_memory_kb": 2377.41,
       "result_sample": "list"
     },
     "proposal_impact_10_proposals": {
       "repetitions": 5,
-      "p50_seconds": 0.003837,
-      "p95_seconds": 0.005677,
-      "mean_seconds": 0.004266,
-      "peak_memory_kb": 11.88,
+      "p50_seconds": 0.009278,
+      "p95_seconds": 0.010082,
+      "mean_seconds": 0.009411,
+      "peak_memory_kb": 8.02,
       "result_sample": "list"
     },
     "vector_ensure_index": {
       "repetitions": 10,
-      "p50_seconds": 0.001652,
-      "p95_seconds": 0.242135,
-      "mean_seconds": 0.025846,
-      "peak_memory_kb": 333.74,
+      "p50_seconds": 8.9e-05,
+      "p95_seconds": 0.006428,
+      "mean_seconds": 0.000725,
+      "peak_memory_kb": 332.51,
       "result_sample": "tuple"
     }
   }

@@ -16,6 +16,7 @@ from frontend.pages import (
 from frontend.state.session import (
     PAGE_LABELS,
     PIPELINE_STEPS,
+    _safe_set_widget_state,
     compute_pipeline_readiness,
     ensure_session_state,
     normalize_page_label,
@@ -23,6 +24,7 @@ from frontend.state.session import (
     on_sb_llm_max_in_change,
     on_sb_llm_max_out_change,
     on_sb_llm_model_change,
+    on_sb_llm_provider_change,
     on_sb_llm_url_change,
     switch_llm_provider,
 )
@@ -103,25 +105,30 @@ def main() -> None:
         st.divider()
         with st.expander("⚙️ Cài đặt LLM & Token", expanded=False):
             st.caption(f"Đang dùng: `{st.session_state['llm_provider']}` — `{st.session_state['llm_model']}`")
-            provider = st.selectbox(
+            st.selectbox(
                 "Nhà cung cấp",
                 LLMGateway.PROVIDERS,
-                index=LLMGateway.PROVIDERS.index(st.session_state["llm_provider"])
-                if st.session_state["llm_provider"] in LLMGateway.PROVIDERS
-                else 0,
                 key="sb_llm_provider",
+                on_change=on_sb_llm_provider_change,
             )
-            if provider != st.session_state["llm_provider"]:
-                switch_llm_provider(provider)
-                st.rerun()
 
-            st.session_state["sb_llm_model"] = st.session_state.setdefault("llm_model", LLMGateway.DEFAULT_MODELS.get(provider, "deepseek-chat"))
+            current_prov = st.session_state["llm_provider"]
+            _safe_set_widget_state(
+                "sb_llm_model",
+                st.session_state.setdefault("llm_model", LLMGateway.DEFAULT_MODELS.get(current_prov, "deepseek-chat")),
+            )
             st.text_input("Model ID", key="sb_llm_model", on_change=on_sb_llm_model_change)
 
-            st.session_state["sb_llm_url"] = st.session_state.setdefault("llm_base_url", LLMGateway.resolve_base_url(provider))
+            _safe_set_widget_state(
+                "sb_llm_url",
+                st.session_state.setdefault("llm_base_url", LLMGateway.resolve_base_url(current_prov)),
+            )
             st.text_input("Base URL", key="sb_llm_url", on_change=on_sb_llm_url_change)
 
-            st.session_state["sb_llm_key"] = st.session_state.setdefault("llm_api_key", get_api_key(provider))
+            _safe_set_widget_state(
+                "sb_llm_key",
+                st.session_state.setdefault("llm_api_key", get_api_key(current_prov)),
+            )
             st.text_input(
                 "API Key (để trống nếu dùng Ollama)",
                 type="password",
@@ -135,7 +142,10 @@ def main() -> None:
             elif st.session_state["llm_api_key"]:
                 st.caption("ℹ️ Khóa chỉ tạm trong phiên.")
 
-            st.session_state["sb_llm_max_in"] = int(st.session_state.get("llm_max_input_tokens", 16000))
+            _safe_set_widget_state(
+                "sb_llm_max_in",
+                int(st.session_state.get("llm_max_input_tokens", 16000)),
+            )
             st.slider(
                 "📥 Max Input Tokens",
                 min_value=1024,
@@ -144,7 +154,10 @@ def main() -> None:
                 key="sb_llm_max_in",
                 on_change=on_sb_llm_max_in_change,
             )
-            st.session_state["sb_llm_max_out"] = int(st.session_state.get("llm_max_output_tokens", 16384))
+            _safe_set_widget_state(
+                "sb_llm_max_out",
+                int(st.session_state.get("llm_max_output_tokens", 16384)),
+            )
             st.slider(
                 "📤 Max Output Tokens",
                 min_value=512,

@@ -456,7 +456,7 @@ class JsonProjectRepository(ProjectRepository):
         except Exception:
             return {"at": "", "project_name": project_name, "error": "Pending SQLite sync"}
 
-    def create_snapshot(self, project: dict, *, copy_from_disk_if_clean: bool = False) -> Path:
+    def create_snapshot(self, project: dict, *, copy_from_disk_if_clean: bool = False, **kwargs: Any) -> Path:
         folder = self.project_dir(project["name"])
         project_file_path = folder / PROJECT_FILE
         if not project_file_path.exists():
@@ -470,17 +470,25 @@ class JsonProjectRepository(ProjectRepository):
         atomic_write(snap_path, json.dumps(scrubbed(project), ensure_ascii=False).encode("utf-8"))
         return snap_path
 
-    def list_snapshots(self, project: dict) -> list[Path]:
-        snap_dir = self.project_dir(project["name"]) / SNAPSHOT_DIR
+    def delete_snapshot(self, path: Path | str) -> None:
+        p = Path(path)
+        if p.exists():
+            p.unlink(missing_ok=True)
+
+    def list_snapshots(self, project: dict | str) -> list[Path]:
+        name = project if isinstance(project, str) else project.get("name", "")
+        snap_dir = self.project_dir(name) / SNAPSHOT_DIR
         return sorted(snap_dir.glob("*.json"), reverse=True) if snap_dir.exists() else []
 
-    def restore_snapshot(self, project: dict, path: Path) -> dict:
+    def restore_snapshot(self, project: dict | str, path: Path | str) -> dict:
+        name = project if isinstance(project, str) else project.get("name", "")
         old = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-        old["name"] = project["name"]
-        old["project_id"] = project.get("project_id") or old.get("project_id") or uid()
-        old = ensure_project_shape(old, project["name"])
+        old["name"] = name or old.get("name", "")
+        proj_id = (project.get("project_id") if isinstance(project, dict) else None) or old.get("project_id") or uid()
+        old["project_id"] = proj_id
+        old = ensure_project_shape(old, old["name"])
         self.save_project(old)
-        if old is not project:
+        if isinstance(project, dict) and old is not project:
             project.clear()
             project.update(old)
         return old

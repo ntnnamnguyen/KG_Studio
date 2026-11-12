@@ -1,7 +1,7 @@
 """Dịch vụ Quản lý Phiên bản Prompt theo Cấu hình & Lịch sử (Prompt Versioning Service).
 
 Tuân thủ kiến trúc thiết kế trong KG_Studio/AI/features/prompt-versioning.md:
-1. Mỗi dự án sở hữu prompt độc lập theo 3 chế độ: closed, edc, edc_plus_r.
+1. Mỗi dự án sở hữu prompt độc lập theo từng chế độ trích xuất.
 2. Quản lý bất biến (immutable versions) với chuỗi số tăng dần và content hash SHA-256.
 3. Không tự ý thay đổi catalog, mô hình hay dữ kiện khi lưu / khôi phục prompt.
 4. Migration tự động, an toàn và lũy đẳng (idempotent).
@@ -14,10 +14,12 @@ import hashlib
 from shared.config_loader import CONFIG
 from shared.constants import (
     DEFAULT_EDC_PROMPT,
+    DEFAULT_FREE_TRIPLES_PROMPT,
     EXTRACTION_MODES,
     MODE_EDC,
     MODE_EDC_PLUS_R,
     MODE_FIXED,
+    MODE_FREE_TRIPLES,
 )
 from shared.text_utils import now_iso, uid
 
@@ -28,6 +30,7 @@ DEFAULT_PROMPTS = {
     MODE_FIXED: DEFAULT_PROMPT_FIXED,
     MODE_EDC: DEFAULT_EDC_PROMPT.strip(),
     MODE_EDC_PLUS_R: DEFAULT_EDC_PROMPT.strip(),
+    MODE_FREE_TRIPLES: DEFAULT_FREE_TRIPLES_PROMPT.strip(),
 }
 
 
@@ -43,7 +46,7 @@ def ensure_project_prompt_history(project: dict) -> bool:
     has_bindings = isinstance(project.get("prompt_bindings"), dict)
     has_versions = isinstance(project.get("prompt_versions"), list)
 
-    # Đã có đầy đủ schema và 3 bindings
+    # Đã có đầy đủ schema và bindings cho các chế độ được hỗ trợ
     if (
         current_schema >= PROMPT_HISTORY_SCHEMA_VERSION
         and has_bindings
@@ -108,6 +111,9 @@ def ensure_project_prompt_history(project: dict) -> bool:
             # Xác định nội dung ban đầu từ project legacy hoặc default
             if mode == MODE_FIXED:
                 content = str(project.get("prompt") or DEFAULT_PROMPTS[MODE_FIXED]).strip()
+            elif mode == MODE_FREE_TRIPLES:
+                # Never seed the raw baseline with EDC's definition instructions.
+                content = DEFAULT_PROMPTS[MODE_FREE_TRIPLES]
             else:
                 content = str(project.get("edc_prompt") or DEFAULT_PROMPTS[mode]).strip()
 

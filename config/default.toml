@@ -29,7 +29,7 @@ gather_usage_stats = false
 [llm]
 default_provider = "deepseek"
 temperature = 0.0
-max_input_tokens = 91136
+max_input_tokens = 92160
 max_tokens = 65536
 timeout_seconds = 90.0
 max_retries = 1
@@ -61,7 +61,7 @@ recommended_chunk_size = 4200
 [llm.providers.deepseek]
 model = "deepseek-flash"
 base_url = "https://api.deepseek.com"
-max_input_tokens = 91136
+max_input_tokens = 92160
 max_tokens = 65536
 recommended_chunk_size = 2700
 
@@ -126,6 +126,7 @@ NHIỆM VỤ:
 8. Khi thông tin không rõ hoặc thiếu bằng chứng, không tạo quan hệ đó.
 9. Giữ nguyên tên riêng, số liệu, niên đại đúng như văn bản nguồn.
 10. Nếu không có tri thức, trả các danh sách rỗng.
+11. Quy tắc đặt tên thực thể: Tuyệt đối không trích xuất danh từ chung hoặc bộ phận kiến trúc/hiện vật cộc lốc (như "cổng", "chuông", "tam quan", "sân", "ao", "giếng", "hậu cung", "tượng", "bia đá"). Bắt buộc gắn kèm tên di tích chủ quản (Ví dụ: dùng "Cổng đình Bát Tràng" thay vì "Cổng", "Chuông chùa Trấn Quốc" thay vì "Chuông").
 
 Chỉ trả về một đối tượng JSON hợp lệ:
 {

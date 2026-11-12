@@ -19,6 +19,9 @@ from frontend.components.export_tabs import (
     render_training_dataset_tab,
 )
 from frontend.components.pipeline_banner import render_step_next_action
+from frontend.components.graph_source import select_graph_snapshot
+from frontend.components.graph_view import build_graph_dot
+from frontend.composition import get_ui_composition
 from frontend.state.session import navigate_to_step
 from shared.config_loader import CONFIG
 from shared.secrets_manager import get_api_key
@@ -37,54 +40,42 @@ def render_graph_export_page(project: dict) -> None:
     st.subheader("🕸️ 5. Khai thác Đồ thị Tri thức (G-Retriever & GraphRAG) & Xuất Dữ liệu")
     render_step_next_action("explore", project)
 
-    nodes, edges = facade.approved_graph(project)
-    problems = facade.validate_integrity(project)
+    graph_service = get_ui_composition().graph_qa_service
+    selected = select_graph_snapshot(project, graph_service)
+    if selected is None:
+        return
+    snapshot, source_selection = selected
+    current_approved = source_selection == "approved"
+    nodes, edges = snapshot.nodes, snapshot.edges
+    problems = graph_service.validate_integrity(project) if current_approved else [
+        f"{item.get('code')} · run {item.get('run_id', '')} · triple {item.get('triple_index', '')}"
+        for item in snapshot.diagnostics
+    ]
     proj_id = str(project.get("project_id", "default"))
 
     # =========================================================================
     # PHÂN KHU 1: BÁO CÁO SỨC KHỎE ĐỒ THỊ & CHỌN NGUỒN DỮ LIỆU KHAI THÁC
     # =========================================================================
     with st.container(border=True):
-        st.markdown("#### 📊 Báo cáo Sức khỏe Đồ thị Đã duyệt")
+        st.markdown(f"#### 📊 Đồ thị đang chọn: {source_selection} / {snapshot.source}")
         c1, c2, c3 = st.columns(3)
-        c1.metric("Thực thể (Nodes) đã duyệt", len(nodes), help="Số thực thể xuất hiện trong ít nhất một quan hệ đã duyệt")
-        c2.metric("Quan hệ (Edges) đã duyệt", len(edges), help="Số quan hệ đã được kiểm duyệt và gắn nhãn 'Đã duyệt'")
+        c1.metric("Nodes", len(nodes))
+        c2.metric("Edges / observations", len(edges))
 
-        status_text = "✅ 100% Hợp lệ" if not problems else f"⚠️ {len(problems)} Cảnh báo"
+        status_text = "Không có lỗi cấu trúc được báo" if not problems else f"⚠️ {len(problems)} Cảnh báo"
         c3.metric("Tính toàn vẹn (Integrity)", status_text, help="Kiểm tra quan hệ treo, thiếu định danh hoặc vướng danh mục")
 
         if problems:
-            st.warning("Phát hiện vấn đề toàn vẹn:\n- " + "\n- ".join(problems))
+            st.warning(f"⚠️ Có {len(problems)} diagnostics; xem chi tiết để phân biệt lỗi cấu trúc, bằng chứng và lượt trích xuất lỗi.")
+            with st.expander(f"📋 Xem chi tiết {len(problems)} cảnh báo toàn vẹn", expanded=False):
+                for p in problems:
+                    st.markdown(f"- {p}")
         else:
-            st.caption("🔒 Tất cả các bộ ba tri thức đã được kiểm tra tính nhất quán và sẵn sàng khai thác G-Retriever / xuất bản.")
+            st.caption("Kiểm tra cấu trúc không xác nhận tính đúng đắn lịch sử của dữ kiện.")
 
-        with st.expander("📂 Tùy chọn: Nạp Đồ thị từ Gói `.zip` hoặc `.json` đã xuất để chạy G-Retriever Độc lập", expanded=False):
-            st.caption(
-                "Mặc định G-Retriever khai thác trực tiếp dự án đang mở. "
-                "Bạn cũng có thể tải lên tệp `*_export.zip` hoặc `do_thi_da_duyet.json` để kiểm chứng khả năng hoạt động độc lập từ gói xuất."
-            )
-            uploaded_pkg = st.file_uploader(
-                "Chọn tệp `.zip` hoặc `.json` đã xuất từ KG Studio",
-                type=["zip", "json"],
-                key=f"_p06_upload_pkg_{proj_id}",
-            )
-            ext_proj_key = f"_p06_external_graph_{proj_id}"
-            if uploaded_pkg is not None:
-                try:
-                    loaded_ext = facade.load_project_from_export_bytes(uploaded_pkg.getvalue(), uploaded_pkg.name)
-                    st.session_state[ext_proj_key] = loaded_ext
-                    st.success(
-                        f"✅ Đã nạp thành công gói `{uploaded_pkg.name}`: "
-                        f"**{len(loaded_ext.get('nodes', []))}** thực thể, **{len(loaded_ext.get('edges', []))}** quan hệ."
-                    )
-                except Exception as exc:
-                    st.error(f"Không thể đọc gói đồ thị: {exc}")
-            if ext_proj_key in st.session_state:
-                if st.button("🔄 Quay lại dùng Đồ thị của Dự án đang mở", key=f"_p06_clear_ext_{proj_id}"):
-                    st.session_state.pop(ext_proj_key, None)
-                    st.rerun()
-
-    active_graph_project = st.session_state.get(f"_p06_external_graph_{proj_id}", project)
+    active_graph_project = snapshot.as_project()
+    graph_context_id = f"{proj_id}_{snapshot.fingerprint[:16]}"
+    st.caption(f"Graph fingerprint: {snapshot.fingerprint}")
 
     # =========================================================================
     # PHÂN KHU 2: 4 TAB CHỨC NĂNG (G-RETRIEVER QA, BENCHMARK, TRAINING QA STUDIO, BẢN ĐỒ & XUẤT FILE)
@@ -99,13 +90,16 @@ def render_graph_export_page(project: dict) -> None:
     )
 
     with tab_qa:
-        render_g_retriever_qa_tab(facade, active_graph_project, proj_id)
+        render_g_retriever_qa_tab(graph_service, active_graph_project, graph_context_id)
 
     with tab_bench:
-        render_benchmark_tab(facade, active_graph_project, proj_id)
+        render_benchmark_tab(graph_service, active_graph_project, graph_context_id)
 
     with tab_train_studio:
-        render_training_dataset_tab(facade, active_graph_project, proj_id)
+        if current_approved:
+            render_training_dataset_tab(facade, project, proj_id)
+        else:
+            st.info("Graph thô dùng để đánh giá; không tự coi observations là nhãn đúng để sinh dữ liệu huấn luyện.")
 
     with tab_export:
         if edges:
@@ -140,7 +134,7 @@ def render_graph_export_page(project: dict) -> None:
                             value=clamped_limit,
                             step=1,
                             key=slider_key,
-                            help=f"Kéo thanh trượt để điều chỉnh từ 1 đến tối đa {total_edges} quan hệ đã duyệt.",
+                            help=f"Chỉ giới hạn hiển thị, không cắt dữ liệu xuất ({total_edges} cạnh).",
                         )
                     )
                     st.session_state[limit_state_key] = display_limit
@@ -150,31 +144,27 @@ def render_graph_export_page(project: dict) -> None:
                 displayed_edges = edges[:display_limit]
                 displayed_node_ids = {x for e in displayed_edges for x in (e["source"], e["target"])}
                 st.caption(
-                    f"ℹ️ Đang hiển thị **{len(displayed_edges)}/{total_edges}** quan hệ đã duyệt "
+                    f"ℹ️ Đang hiển thị **{len(displayed_edges)}/{total_edges}** cạnh của nguồn đang chọn "
                     f"(tương ứng **{len(displayed_node_ids)}/{len(nodes)}** thực thể)."
                 )
 
-                nodes_by_id = {n["id"]: n["name"] for n in nodes}
-                dot_lines = [
-                    "digraph KG {",
-                    '  rankdir="LR";',
-                    '  node [shape=box, style="rounded,filled", fillcolor="#eef6ff", color="#3b82f6", fontname="sans-serif"];',
-                    '  edge [fontname="sans-serif", color="#64748b", fontsize=10];',
-                ]
-                for e in displayed_edges:
-                    src = nodes_by_id.get(e["source"], e["source"]).replace('"', '\\"')
-                    dst = nodes_by_id.get(e["target"], e["target"]).replace('"', '\\"')
-                    rel = e.get("relation", "").replace('"', '\\"')
-                    dot_lines.append(f'  "{src}" -> "{dst}" [label="{rel}"];')
-                dot_lines.append("}")
-                st.graphviz_chart("\n".join(dot_lines))
+                st.graphviz_chart(build_graph_dot([n for n in nodes if n["id"] in displayed_node_ids], displayed_edges))
         else:
             st.info(
-                "ℹ️ Hiện chưa có quan hệ nào ở trạng thái **'Đã duyệt'** để hiển thị đồ thị. "
-                "Hãy chuyển sang **Bước 4: Rà soát & Chuẩn hóa** để duyệt các quan hệ hoặc thực hiện duyệt hàng loạt."
+                "Nguồn đang chọn chưa có cạnh để hiển thị. Xem lựa chọn runs hoặc diagnostics phía trên."
             )
 
         st.divider()
+        st.download_button("⬇️ Tải graph đang chọn (JSON + manifest)", graph_service.export_graph_json(snapshot),
+                           file_name=f"{snapshot.source}_graph.json", mime="application/json", key="p05_graph_json")
+        st.download_button("⬇️ Tải edges/observations (CSV)",
+                           graph_service.csv_bytes(edges, ["id", "source", "target", "relation", "evidence", "run_id", "triple_index", "doc_id"]),
+                           file_name=f"{snapshot.source}_edges.csv", mime="text/csv", key="p05_graph_edges_csv")
+        if snapshot.diagnostics:
+            with st.expander("Diagnostics và mục không dựng được cạnh"):
+                st.json(snapshot.diagnostics)
+        if not current_approved:
+            return
         with st.container(border=True):
             st.markdown("#### 📦 Tải xuống Bộ dữ liệu Tri thức & Gói Huấn luyện G-Retriever")
             st.caption(
@@ -188,7 +178,7 @@ def render_graph_export_page(project: dict) -> None:
             info_c2.write(f"🔢 **Revision**: `{export_rev[:10]}`")
             info_c3.write(f"📅 **Thời điểm**: `{datetime.now().strftime('%Y-%m-%d %H:%M')}`")
 
-            export_key = f"_export_cache_{project.get('project_id', 'default')}"
+            export_key = f"_export_cache_{project.get('project_id', 'default')}_{snapshot.fingerprint}"
             exp_cache = st.session_state.setdefault(export_key, {})
 
             d1, d2 = st.columns(2)

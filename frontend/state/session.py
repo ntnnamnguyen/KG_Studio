@@ -10,7 +10,7 @@ from backend.domain.catalogs.service import catalog_rows, compute_catalog_hash, 
 from backend.facade import get_facade
 from backend.integrations.llm import LLMGateway
 from shared.config_loader import CONFIG
-from shared.constants import STATUS_APPROVED, STATUS_CHECK, STATUS_PENDING
+from shared.constants import MODE_FREE_TRIPLES, STATUS_APPROVED, STATUS_CHECK, STATUS_PENDING
 from shared.schemas.curation import (
     CurationPreviewDTO,
     CurationResultDTO,
@@ -105,6 +105,11 @@ def compute_pipeline_readiness(project: dict) -> dict[str, Any]:
     edges = project.get("edges", [])
     proposals = project.get("schema_proposals", [])
     errors = project.get("chunk_errors", {})
+    baseline = project.get("extraction_mode") == MODE_FREE_TRIPLES
+    if baseline:
+        runs = [run for run in runs if run.get("extraction_mode") == MODE_FREE_TRIPLES]
+        errors = {str(run.get("run_id", index)): run for index, run in enumerate(runs) if run.get("status") == "error"}
+        nodes, edges, proposals = [], [], []
 
     # 1. Tài liệu
     has_docs = len(docs) > 0
@@ -115,7 +120,7 @@ def compute_pipeline_readiness(project: dict) -> dict[str, Any]:
     # 2. Thiết lập
     has_rel_cat = bool(project.get("relations"))
     has_type_cat = bool(project.get("entity_types"))
-    setup_ready = has_rel_cat and has_type_cat
+    setup_ready = project.get("extraction_mode") == MODE_FREE_TRIPLES or (has_rel_cat and has_type_cat)
     setup_state = "ready" if setup_ready else "warning"
     setup_badge = "✓" if setup_ready else "!"
 
@@ -151,8 +156,9 @@ def compute_pipeline_readiness(project: dict) -> dict[str, Any]:
 
     # 5. Khai thác
     has_approved = approved_count > 0
-    exp_state = "ready" if has_approved else "empty"
-    exp_badge = "✓" if has_approved else "○"
+    can_explore = has_approved or (baseline and any(run.get("status") == "ok" for run in runs))
+    exp_state = "ready" if can_explore else "empty"
+    exp_badge = "✓" if can_explore else "○"
 
     # Xác định hành động tiếp theo tổng thể của dự án
     if not has_docs:
@@ -178,6 +184,13 @@ def compute_pipeline_readiness(project: dict) -> dict[str, Any]:
             "title": f"Xử lý {len(errors)} đoạn văn bản gặp lỗi",
             "reason": "Có đoạn trích xuất gặp sự cố kết nối hoặc giới hạn token.",
             "button_text": "➡️ Xem và chạy lại đoạn lỗi ở Bước 3",
+        }
+    elif project.get("extraction_mode") == MODE_FREE_TRIPLES:
+        overall_next = {
+            "step_id": "explore", "step_index": 4,
+            "title": "Dựng KG thô và đối sánh thuật toán",
+            "reason": "Chọn baseline runs ở Bước 5 để dựng graph dẫn xuất, không qua duyệt schema.",
+            "button_text": "➡️ Xem KG baseline ở Bước 5",
         }
     elif total_needs_review > 0:
         overall_next = {
@@ -238,7 +251,7 @@ def compute_pipeline_readiness(project: dict) -> dict[str, Any]:
         "explore": {
             "state": exp_state,
             "badge": exp_badge,
-            "ready": has_approved,
+            "ready": can_explore,
             "approved_count": approved_count,
             "nodes_count": len(nodes),
             "edges_count": len(edges),
@@ -286,19 +299,14 @@ def reset_edc_state_if_project_changed(project: dict, state_store: dict[str, Any
     store = _store(state_store)
     proj_id = str(project.get("project_id") or project.get("name") or "default")
     prev_id = store.get("_edc_active_project_id")
-    if prev_id != proj_id:
+    changed = prev_id != proj_id
+    if changed or not isinstance(store.get("_edc_tables"), dict):
         store["_edc_active_project_id"] = proj_id
         store["_edc_tables"] = {
             "entity_types": _default_table_state(proj_id, "entity_types"),
             "relations": _default_table_state(proj_id, "relations"),
         }
-        return True
-    if "_edc_tables" not in store or not isinstance(store["_edc_tables"], dict):
-        store["_edc_tables"] = {
-            "entity_types": _default_table_state(proj_id, "entity_types"),
-            "relations": _default_table_state(proj_id, "relations"),
-        }
-    return False
+    return changed
 
 
 def get_edc_table_state(
@@ -402,13 +410,8 @@ def select_page_proposals(
     state_store: dict[str, Any] | None = None,
 ) -> list[str]:
     """Chọn tất cả các dòng đủ điều kiện (pending) trên trang hiện tại, giữ nguyên lựa chọn ở trang khác."""
-    t_state = get_edc_table_state(project, kind, state_store)
-    eligible_ids = [
-        str(prop.get("id", ""))
-        for prop in page_proposals
-        if prop.get("id") and prop.get("kind") == kind and prop.get("status") == "pending"
-    ]
-    return _apply_selection_state(t_state, "select_page", eligible_ids=eligible_ids)
+    eligible = [str(p["id"]) for p in page_proposals if p.get("id") and p.get("kind") == kind and p.get("status") == "pending"]
+    return _apply_selection_state(get_edc_table_state(project, kind, state_store), "select_page", eligible_ids=eligible)
 
 
 def select_all_filtered_proposals(
@@ -418,13 +421,8 @@ def select_all_filtered_proposals(
     state_store: dict[str, Any] | None = None,
 ) -> list[str]:
     """Chọn toàn bộ các dòng đủ điều kiện (pending) khớp bộ lọc hiện tại, kể cả ngoài trang đang xem."""
-    t_state = get_edc_table_state(project, kind, state_store)
-    eligible = [
-        str(prop.get("id", ""))
-        for prop in filtered_proposals
-        if prop.get("id") and prop.get("kind") == kind and prop.get("status") == "pending"
-    ]
-    return _apply_selection_state(t_state, "select_all", eligible_ids=eligible)
+    eligible = [str(p["id"]) for p in filtered_proposals if p.get("id") and p.get("kind") == kind and p.get("status") == "pending"]
+    return _apply_selection_state(get_edc_table_state(project, kind, state_store), "select_all", eligible_ids=eligible)
 
 
 def clear_proposal_selection(
@@ -433,8 +431,7 @@ def clear_proposal_selection(
     state_store: dict[str, Any] | None = None,
 ) -> None:
     """Xóa lựa chọn của riêng bảng hiện tại (không ảnh hưởng bảng kia)."""
-    t_state = get_edc_table_state(project, kind, state_store)
-    _apply_selection_state(t_state, "clear")
+    _apply_selection_state(get_edc_table_state(project, kind, state_store), "clear")
 
 
 def reconcile_selection_with_filter(
@@ -796,7 +793,8 @@ def reset_curation_state_if_project_changed(project: dict, state_store: dict[str
     store = _store(state_store)
     proj_id = str(project.get("project_id") or project.get("name") or "default")
     prev_id = store.get("_curation_active_project_id")
-    if prev_id != proj_id:
+    changed = prev_id != proj_id
+    if changed or not isinstance(store.get("_curation_sections"), dict):
         store["_curation_active_project_id"] = proj_id
         store["_curation_active_section"] = "edges"
         store["_curation_return_context"] = None
@@ -805,14 +803,7 @@ def reset_curation_state_if_project_changed(project: dict, state_store: dict[str
             "entities": _default_curation_section_state(proj_id, "entities"),
             "merge": _default_curation_section_state(proj_id, "merge"),
         }
-        return True
-    if "_curation_sections" not in store or not isinstance(store["_curation_sections"], dict):
-        store["_curation_sections"] = {
-            "edges": _default_curation_section_state(proj_id, "edges"),
-            "entities": _default_curation_section_state(proj_id, "entities"),
-            "merge": _default_curation_section_state(proj_id, "merge"),
-        }
-    return False
+    return changed
 
 
 def get_curation_section_state(
@@ -905,13 +896,8 @@ def select_page_edges(
     state_store: dict[str, Any] | None = None,
 ) -> list[str]:
     """Chọn các cạnh đủ điều kiện (Chờ duyệt / Cần kiểm tra) trên trang hiện tại, giữ nguyên lựa chọn trang khác."""
-    s_state = get_curation_section_state(project, "edges", state_store)
-    eligible_ids = [
-        str(edge.get("id", ""))
-        for edge in page_edges
-        if edge.get("id") and edge.get("status") in (STATUS_PENDING, STATUS_CHECK)
-    ]
-    return _apply_selection_state(s_state, "select_page", eligible_ids=eligible_ids)
+    eligible = [str(e["id"]) for e in page_edges if e.get("id") and e.get("status") in (STATUS_PENDING, STATUS_CHECK)]
+    return _apply_selection_state(get_curation_section_state(project, "edges", state_store), "select_page", eligible_ids=eligible)
 
 
 def select_all_filtered_edges(
@@ -920,21 +906,15 @@ def select_all_filtered_edges(
     state_store: dict[str, Any] | None = None,
 ) -> list[str]:
     """Chọn toàn bộ các cạnh đủ điều kiện (Chờ duyệt / Cần kiểm tra) khớp bộ lọc hiện tại."""
-    s_state = get_curation_section_state(project, "edges", state_store)
-    eligible = [
-        str(edge.get("id", ""))
-        for edge in filtered_edges
-        if edge.get("id") and edge.get("status") in (STATUS_PENDING, STATUS_CHECK)
-    ]
-    return _apply_selection_state(s_state, "select_all", eligible_ids=eligible)
+    eligible = [str(e["id"]) for e in filtered_edges if e.get("id") and e.get("status") in (STATUS_PENDING, STATUS_CHECK)]
+    return _apply_selection_state(get_curation_section_state(project, "edges", state_store), "select_all", eligible_ids=eligible)
 
 
 def clear_edge_selection(
     project: dict,
     state_store: dict[str, Any] | None = None,
 ) -> None:
-    s_state = get_curation_section_state(project, "edges", state_store)
-    _apply_selection_state(s_state, "clear")
+    _apply_selection_state(get_curation_section_state(project, "edges", state_store), "clear")
 
 
 def reconcile_edge_selection_with_filter(
@@ -944,14 +924,15 @@ def reconcile_edge_selection_with_filter(
     state_store: dict[str, Any] | None = None,
 ) -> int:
     """Khi bộ lọc thay đổi: tự động bỏ chọn các ID không còn nằm trong kết quả lọc mới và thông báo rõ số mục bị bỏ."""
-    s_state = get_curation_section_state(project, "edges", state_store)
     visible_eligible_ids = {
-        str(e.get("id", ""))
-        for e in filtered_edges
-        if e.get("id") and e.get("status") in (STATUS_PENDING, STATUS_CHECK)
+        str(e["id"]) for e in filtered_edges if e.get("id") and e.get("status") in (STATUS_PENDING, STATUS_CHECK)
     }
     return _apply_selection_state(
-        s_state, "reconcile", visible_eligible_ids=visible_eligible_ids, filter_signature=filter_signature, item_noun="cạnh"
+        get_curation_section_state(project, "edges", state_store),
+        "reconcile",
+        visible_eligible_ids=visible_eligible_ids,
+        filter_signature=filter_signature,
+        item_noun="cạnh",
     )
 
 
@@ -966,8 +947,7 @@ def toggle_entity_selection(
     nid = str(node_id or "").strip()
     if not nid:
         return list(s_state["selected_ids"])
-    nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", [])}
-    is_eligible = nid in nodes_by_id
+    is_eligible = any(n.get("id") == nid for n in project.get("nodes", []))
     return _apply_selection_state(s_state, "toggle", item_id=nid, selected=selected, is_eligible=is_eligible)
 
 
@@ -977,9 +957,8 @@ def select_page_entities(
     state_store: dict[str, Any] | None = None,
 ) -> list[str]:
     """Chọn các thực thể trên trang hiện tại, giữ nguyên lựa chọn trang khác."""
-    s_state = get_curation_section_state(project, "entities", state_store)
-    node_ids = [str(node.get("id", "")) for node in page_nodes if node.get("id")]
-    return _apply_selection_state(s_state, "select_page", eligible_ids=node_ids)
+    eligible = [str(n["id"]) for n in page_nodes if n.get("id")]
+    return _apply_selection_state(get_curation_section_state(project, "entities", state_store), "select_page", eligible_ids=eligible)
 
 
 def select_all_filtered_entities(
@@ -988,17 +967,15 @@ def select_all_filtered_entities(
     state_store: dict[str, Any] | None = None,
 ) -> list[str]:
     """Chọn toàn bộ các thực thể khớp bộ lọc hiện tại."""
-    s_state = get_curation_section_state(project, "entities", state_store)
-    node_ids = [str(node.get("id", "")) for node in filtered_nodes if node.get("id")]
-    return _apply_selection_state(s_state, "select_all", eligible_ids=node_ids)
+    eligible = [str(n["id"]) for n in filtered_nodes if n.get("id")]
+    return _apply_selection_state(get_curation_section_state(project, "entities", state_store), "select_all", eligible_ids=eligible)
 
 
 def clear_entity_selection(
     project: dict,
     state_store: dict[str, Any] | None = None,
 ) -> None:
-    s_state = get_curation_section_state(project, "entities", state_store)
-    _apply_selection_state(s_state, "clear")
+    _apply_selection_state(get_curation_section_state(project, "entities", state_store), "clear")
 
 
 def reconcile_entity_selection_with_filter(
@@ -1290,6 +1267,8 @@ def ensure_session_state() -> dict:
 
     # Khởi tạo giá trị ban đầu cho các widget keys để tránh lỗi rỗng
     for k, v in [
+        ("sb_llm_provider", cur_provider),
+        ("p02_llm_prov", cur_provider),
         ("sb_llm_key", st.session_state["llm_api_key"]),
         ("p02_llm_key", st.session_state["llm_api_key"]),
         ("sb_llm_model", st.session_state["llm_model"]),
@@ -1309,108 +1288,96 @@ def ensure_session_state() -> dict:
 def sync_llm_state_from_store() -> None:
     """Đồng bộ giá trị từ canonical session_state sang các widget keys (sb_* và p02_*)."""
     k = st.session_state.get("llm_api_key", "")
-    st.session_state["sb_llm_key"] = k
-    st.session_state["p02_llm_key"] = k
+    _safe_set_widget_state("sb_llm_key", k)
+    _safe_set_widget_state("p02_llm_key", k)
 
     m = st.session_state.get("llm_model", "")
-    st.session_state["sb_llm_model"] = m
-    st.session_state["p02_llm_model"] = m
+    _safe_set_widget_state("sb_llm_model", m)
+    _safe_set_widget_state("p02_llm_model", m)
 
     u = st.session_state.get("llm_base_url", "")
-    st.session_state["sb_llm_url"] = u
-    st.session_state["p02_llm_url"] = u
+    _safe_set_widget_state("sb_llm_url", u)
+    _safe_set_widget_state("p02_llm_url", u)
 
     p = st.session_state.get("llm_provider", LLMGateway.DEFAULT_PROVIDER)
-    st.session_state["sb_llm_provider"] = p
-    st.session_state["p02_llm_prov"] = p
+    _safe_set_widget_state("sb_llm_provider", p)
+    _safe_set_widget_state("p02_llm_prov", p)
 
     mi = int(st.session_state.get("llm_max_input_tokens", 16000))
-    st.session_state["sb_llm_max_in"] = mi
-    st.session_state["p02_llm_max_in"] = mi
+    _safe_set_widget_state("sb_llm_max_in", mi)
+    _safe_set_widget_state("p02_llm_max_in", mi)
 
     mo = int(st.session_state.get("llm_max_output_tokens", 16384))
-    st.session_state["sb_llm_max_out"] = mo
-    st.session_state["p02_llm_max_out"] = mo
+    _safe_set_widget_state("sb_llm_max_out", mo)
+    _safe_set_widget_state("p02_llm_max_out", mo)
+
+
+def _safe_set_widget_state(key: str, val: Any) -> None:
+    """Gán an toàn vào session_state tránh lỗi StreamlitWidgetAlreadyInstantiatedError."""
+    if st.session_state.get(key) == val:
+        return
+    try:
+        st.session_state[key] = val
+    except Exception:
+        pass
 
 
 def _sync_llm_state_field(field_name: str, src_key: str, dest_key: str, is_int: bool = False) -> None:
     raw = st.session_state.get(src_key, 0 if is_int else "")
     val = int(raw) if is_int else str(raw).strip()
     st.session_state[field_name] = val
-    st.session_state[dest_key] = val
+    _safe_set_widget_state(dest_key, val)
 
 
-def on_sb_llm_key_change() -> None:
-    _sync_llm_state_field("llm_api_key", "sb_llm_key", "p02_llm_key")
+def on_sb_llm_provider_change() -> None:
+    new_p = st.session_state.get("sb_llm_provider")
+    if new_p and new_p in LLMGateway.PROVIDERS:
+        switch_llm_provider(new_p)
 
 
-def on_p02_llm_key_change() -> None:
-    _sync_llm_state_field("llm_api_key", "p02_llm_key", "sb_llm_key")
+def on_p02_llm_provider_change() -> None:
+    new_p = st.session_state.get("p02_llm_prov")
+    if new_p and new_p in LLMGateway.PROVIDERS:
+        switch_llm_provider(new_p)
 
 
-def on_sb_llm_model_change() -> None:
-    _sync_llm_state_field("llm_model", "sb_llm_model", "p02_llm_model")
+def _make_llm_change_handler(field: str, src: str, dest: str, is_int: bool = False):
+    def handler() -> None:
+        _sync_llm_state_field(field, src, dest, is_int=is_int)
+    return handler
 
 
-def on_p02_llm_model_change() -> None:
-    _sync_llm_state_field("llm_model", "p02_llm_model", "sb_llm_model")
-
-
-def on_sb_llm_url_change() -> None:
-    _sync_llm_state_field("llm_base_url", "sb_llm_url", "p02_llm_url")
-
-
-def on_p02_llm_url_change() -> None:
-    _sync_llm_state_field("llm_base_url", "p02_llm_url", "sb_llm_url")
-
-
-def on_sb_llm_max_in_change() -> None:
-    _sync_llm_state_field("llm_max_input_tokens", "sb_llm_max_in", "p02_llm_max_in", is_int=True)
-
-
-def on_p02_llm_max_in_change() -> None:
-    _sync_llm_state_field("llm_max_input_tokens", "p02_llm_max_in", "sb_llm_max_in", is_int=True)
-
-
-def on_sb_llm_max_out_change() -> None:
-    _sync_llm_state_field("llm_max_output_tokens", "sb_llm_max_out", "p02_llm_max_out", is_int=True)
-
-
-def on_p02_llm_max_out_change() -> None:
-    _sync_llm_state_field("llm_max_output_tokens", "p02_llm_max_out", "sb_llm_max_out", is_int=True)
+on_sb_llm_key_change = _make_llm_change_handler("llm_api_key", "sb_llm_key", "p02_llm_key")
+on_p02_llm_key_change = _make_llm_change_handler("llm_api_key", "p02_llm_key", "sb_llm_key")
+on_sb_llm_model_change = _make_llm_change_handler("llm_model", "sb_llm_model", "p02_llm_model")
+on_p02_llm_model_change = _make_llm_change_handler("llm_model", "p02_llm_model", "sb_llm_model")
+on_sb_llm_url_change = _make_llm_change_handler("llm_base_url", "sb_llm_url", "p02_llm_url")
+on_p02_llm_url_change = _make_llm_change_handler("llm_base_url", "p02_llm_url", "sb_llm_url")
+on_sb_llm_max_in_change = _make_llm_change_handler("llm_max_input_tokens", "sb_llm_max_in", "p02_llm_max_in", is_int=True)
+on_p02_llm_max_in_change = _make_llm_change_handler("llm_max_input_tokens", "p02_llm_max_in", "sb_llm_max_in", is_int=True)
+on_sb_llm_max_out_change = _make_llm_change_handler("llm_max_output_tokens", "sb_llm_max_out", "p02_llm_max_out", is_int=True)
+on_p02_llm_max_out_change = _make_llm_change_handler("llm_max_output_tokens", "p02_llm_max_out", "sb_llm_max_out", is_int=True)
 
 
 def switch_llm_provider(new_provider: str) -> None:
     """Chuyển đổi nhà cung cấp LLM: cập nhật provider, model, URL, nạp API key đã lưu và đề xuất token."""
     if new_provider not in LLMGateway.PROVIDERS:
         return
-    st.session_state["llm_provider"] = new_provider
-    st.session_state["sb_llm_provider"] = new_provider
-    st.session_state["p02_llm_prov"] = new_provider
-
     new_model = LLMGateway.DEFAULT_MODELS.get(new_provider, "")
-    st.session_state["llm_model"] = new_model
-    st.session_state["sb_llm_model"] = new_model
-    st.session_state["p02_llm_model"] = new_model
-
     new_url = LLMGateway.resolve_base_url(new_provider)
-    st.session_state["llm_base_url"] = new_url
-    st.session_state["sb_llm_url"] = new_url
-    st.session_state["p02_llm_url"] = new_url
-
-    # Nạp API key an toàn cho provider mới
     saved_key = get_api_key(new_provider)
-    st.session_state["llm_api_key"] = saved_key
-    st.session_state["sb_llm_key"] = saved_key
-    st.session_state["p02_llm_key"] = saved_key
-
     auto_rec = LLMGateway.recommend_token_limits(new_provider, new_model)
-    st.session_state["llm_max_input_tokens"] = auto_rec["max_input_tokens"]
-    st.session_state["sb_llm_max_in"] = auto_rec["max_input_tokens"]
-    st.session_state["p02_llm_max_in"] = auto_rec["max_input_tokens"]
-
-    st.session_state["llm_max_output_tokens"] = auto_rec["max_output_tokens"]
-    st.session_state["sb_llm_max_out"] = auto_rec["max_output_tokens"]
-    st.session_state["p02_llm_max_out"] = auto_rec["max_output_tokens"]
-
     st.session_state["extraction_chunk_size"] = auto_rec["recommended_chunk_size"]
+
+    updates = {
+        ("llm_provider", "sb_llm_provider", "p02_llm_prov"): new_provider,
+        ("llm_model", "sb_llm_model", "p02_llm_model"): new_model,
+        ("llm_base_url", "sb_llm_url", "p02_llm_url"): new_url,
+        ("llm_api_key", "sb_llm_key", "p02_llm_key"): saved_key,
+        ("llm_max_input_tokens", "sb_llm_max_in", "p02_llm_max_in"): auto_rec["max_input_tokens"],
+        ("llm_max_output_tokens", "sb_llm_max_out", "p02_llm_max_out"): auto_rec["max_output_tokens"],
+    }
+    for (state_key, *widget_keys), val in updates.items():
+        st.session_state[state_key] = val
+        for w_key in widget_keys:
+            _safe_set_widget_state(w_key, val)

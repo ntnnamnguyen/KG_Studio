@@ -286,6 +286,22 @@ def render_proposal_detail_drawer(
                 hide_index=True,
             )
 
+            with st.expander("🔍 Đọc Đoạn văn bản Chunk gốc của các Quan sát", expanded=False):
+                from frontend.components.merge.provenance_view import get_chunk_info, highlight_text_html
+                for o_idx, o in enumerate(obs[:4], 1):
+                    doc_id = str(o.get("doc_id", ""))
+                    chunk_num = o.get("chunk_number")
+                    chunk_info = get_chunk_info(project, doc_id, chunk_num)
+                    doc_name = o.get("doc_name") or (chunk_info.get("doc_name") if chunk_info else doc_id)
+                    page_str = f" · Trang {chunk_info['page_from']}" if chunk_info and chunk_info.get("page_from") is not None else ""
+                    st.caption(f"**Quan sát #{o_idx}:** Tệp `{doc_name}` · Đoạn **{chunk_num or 1}**{page_str}")
+                    ev_text = str(o.get("evidence") or o.get("example") or proposal.get("name", "")).strip()
+                    if chunk_info and chunk_info.get("text"):
+                        h_html = highlight_text_html(chunk_info["text"], [ev_text, proposal.get("name", "")])
+                        st.markdown(h_html, unsafe_allow_html=True)
+                    elif ev_text:
+                        st.info(f"Trích dẫn: {ev_text}")
+
         cands = proposal.get("alignment_candidates") or []
         if cands:
             st.markdown("##### 🎯 Top-K Ứng viên đích (Target Alignment)")
@@ -302,6 +318,22 @@ def render_proposal_detail_drawer(
                 width='stretch',
                 hide_index=True,
             )
+
+            with st.expander("🔍 Đọc Đoạn văn bản Chunk gốc của các Quan sát", expanded=False):
+                from frontend.components.merge.provenance_view import get_chunk_info, highlight_text_html
+                for o_idx, o in enumerate(obs[:4], 1):
+                    doc_id = str(o.get("doc_id", ""))
+                    chunk_num = o.get("chunk_number")
+                    chunk_info = get_chunk_info(project, doc_id, chunk_num)
+                    doc_name = o.get("doc_name") or (chunk_info.get("doc_name") if chunk_info else doc_id)
+                    page_str = f" · Trang {chunk_info['page_from']}" if chunk_info and chunk_info.get("page_from") is not None else ""
+                    st.caption(f"**Quan sát #{o_idx}:** Tệp `{doc_name}` · Đoạn **{chunk_num or 1}**{page_str}")
+                    ev_text = str(o.get("evidence") or o.get("example") or proposal.get("name", "")).strip()
+                    if chunk_info and chunk_info.get("text"):
+                        h_html = highlight_text_html(chunk_info["text"], [ev_text, proposal.get("name", "")])
+                        st.markdown(h_html, unsafe_allow_html=True)
+                    elif ev_text:
+                        st.info(f"Trích dẫn: {ev_text}")
         else:
             st.caption("Chưa có ứng viên gợi ý cho mục này.")
 
@@ -357,8 +389,6 @@ def render_proposal_detail_drawer(
                 st.rerun()
             except Exception as exc:
                 st.error(str(exc))
-
-
 def render_edc_review_table(
     project: dict,
     kind: str,
@@ -381,7 +411,25 @@ def render_edc_review_table(
     doc_options = ["all"] + [str(d["id"]) for d in docs]
     doc_labels = {"all": "Tất cả tài liệu", **{str(d["id"]): f"{d.get('name', d['id'])}" for d in docs}}
 
-    f1, f2, f3, f4 = st.columns([1.2, 1.8, 1.3, 1.2])
+    # 1. Tính toán số bộ lọc nâng cao EDC đang bật
+    adv_edc_count = sum([
+        filters.get("doc_id", "all") != "all",
+        filters.get("candidate_filter", "all") != "all",
+        filters.get("definition_filter", "all") != "all",
+        filters.get("origin_filter", "all") != "all",
+        filters.get("sort_by", "name") != "name",
+    ])
+    adv_edc_label = f"⚙️ Bộ lọc & Sắp xếp nâng cao ({adv_edc_count})" if adv_edc_count > 0 else "⚙️ Bộ lọc & Sắp xếp nâng cao"
+
+    # TẦNG 1: THANH CƠ BẢN TINH GỌN (CHỈ 1 DÒNG DUY NHẤT)
+    c_edc_search, c_edc_status = st.columns([3.5, 1.5])
+    filters["search"] = c_edc_search.text_input(
+        f"Tìm đề xuất {kind}",
+        value=filters.get("search", ""),
+        placeholder="🔍 Tìm nhanh tên đề xuất, tên chuẩn hóa, định nghĩa...",
+        label_visibility="collapsed",
+        key=f"flt_search_{kind}",
+    )
     status_options = ["pending", "all", "approved", "merged", "rejected"]
     status_labels = {
         "pending": "Chờ duyệt (pending)",
@@ -390,89 +438,98 @@ def render_edc_review_table(
         "merged": "Đã hợp nhất",
         "rejected": "Đã từ chối",
     }
-    filters["status"] = f1.selectbox(
-        "Trạng thái",
+    filters["status"] = c_edc_status.selectbox(
+        f"Trạng thái {kind}",
         status_options,
         index=status_options.index(filters.get("status", "pending")) if filters.get("status", "pending") in status_options else 0,
         format_func=lambda s: status_labels.get(s, s),
+        label_visibility="collapsed",
         key=f"flt_status_{kind}",
     )
-    filters["search"] = f2.text_input(
-        "Tìm tên đề xuất / tên chuẩn / định nghĩa",
-        value=filters.get("search", ""),
-        key=f"flt_search_{kind}",
-    )
-    filters["doc_id"] = f3.selectbox(
-        "Tài liệu nguồn",
-        doc_options,
-        index=doc_options.index(filters.get("doc_id", "all")) if filters.get("doc_id", "all") in doc_options else 0,
-        format_func=lambda d: doc_labels.get(d, d),
-        key=f"flt_doc_{kind}",
-    )
-    cand_options = ["all", "has_candidates", "no_candidates"]
-    cand_labels = {
-        "all": "Mọi trạng thái ứng viên",
-        "has_candidates": "Đã có ứng viên đích",
-        "no_candidates": "Chưa có ứng viên",
-    }
-    filters["candidate_filter"] = f4.selectbox(
-        "Ứng viên",
-        cand_options,
-        index=cand_options.index(filters.get("candidate_filter", "all")),
-        format_func=lambda c: cand_labels[c],
-        key=f"flt_cand_{kind}",
-    )
 
-    f5, f6, f7, f8 = st.columns([1.2, 1.3, 1.3, 1.0])
-    def_options = ["all", "has_definition", "missing_definition"]
-    def_labels = {
-        "all": "Mọi định nghĩa",
-        "has_definition": "Đã có định nghĩa",
-        "missing_definition": "Thiếu định nghĩa",
-    }
-    filters["definition_filter"] = f5.selectbox(
-        "Định nghĩa",
-        def_options,
-        index=def_options.index(filters.get("definition_filter", "all")),
-        format_func=lambda d: def_labels[d],
-        key=f"flt_def_{kind}",
-    )
-    origin_options = ["all", "undecided", "auto_aligned", "human_decided"]
-    origin_labels = {
-        "all": "Mọi nguồn quyết định",
-        "undecided": "Chưa có quyết định người dùng",
-        "auto_aligned": "Tự động hợp nhất",
-        "human_decided": "Con người đã quyết định",
-    }
-    filters["origin_filter"] = f6.selectbox(
-        "Nguồn quyết định",
-        origin_options,
-        index=origin_options.index(filters.get("origin_filter", "all")),
-        format_func=lambda o: origin_labels[o],
-        key=f"flt_orig_{kind}",
-    )
-    sort_options = ["name", "impact_edges", "alignment_score"]
-    sort_labels = {
-        "name": "Tên đề xuất (A-Z)",
-        "impact_edges": "Số cạnh ảnh hưởng (Cao → Thấp)",
-        "alignment_score": "Điểm tương đồng (Cao → Thấp)",
-    }
-    chosen_sort = f7.selectbox(
-        "Sắp xếp theo",
-        sort_options,
-        index=sort_options.index(filters.get("sort_by", "name")),
-        format_func=lambda s: sort_labels[s],
-        key=f"flt_sort_{kind}",
-    )
-    filters["sort_by"] = chosen_sort
-    filters["sort_desc"] = chosen_sort in ("impact_edges", "alignment_score")
-    page_sizes = [20, 50, 100]
-    filters["page_size"] = f8.selectbox(
-        "Số dòng / trang",
-        page_sizes,
-        index=page_sizes.index(filters.get("page_size", 50)) if filters.get("page_size", 50) in page_sizes else 1,
-        key=f"flt_psize_{kind}",
-    )
+    # TẦNG 2: VÙNG MỞ RỘNG BỘ LỌC NÂNG CAO (Mặc định thu gọn, mở khi có tiêu chí đang lọc)
+    with st.expander(adv_edc_label, expanded=bool(adv_edc_count > 0)):
+        f3, f4, f5 = st.columns(3)
+        filters["doc_id"] = f3.selectbox(
+            "Tài liệu nguồn",
+            doc_options,
+            index=doc_options.index(filters.get("doc_id", "all")) if filters.get("doc_id", "all") in doc_options else 0,
+            format_func=lambda d: doc_labels.get(d, d),
+            key=f"flt_doc_{kind}",
+        )
+        cand_options = ["all", "has_candidates", "no_candidates"]
+        cand_labels = {
+            "all": "Mọi trạng thái ứng viên",
+            "has_candidates": "Đã có ứng viên đích",
+            "no_candidates": "Chưa có ứng viên",
+        }
+        filters["candidate_filter"] = f4.selectbox(
+            "Ứng viên",
+            cand_options,
+            index=cand_options.index(filters.get("candidate_filter", "all")),
+            format_func=lambda c: cand_labels[c],
+            key=f"flt_cand_{kind}",
+        )
+        def_options = ["all", "has_definition", "missing_definition"]
+        def_labels = {
+            "all": "Mọi định nghĩa",
+            "has_definition": "Đã có định nghĩa",
+            "missing_definition": "Thiếu định nghĩa",
+        }
+        filters["definition_filter"] = f5.selectbox(
+            "Định nghĩa",
+            def_options,
+            index=def_options.index(filters.get("definition_filter", "all")),
+            format_func=lambda d: def_labels[d],
+            key=f"flt_def_{kind}",
+        )
+
+        f6, f7, f8, f_edc_reset = st.columns([1.2, 1.5, 1.0, 0.8])
+        origin_options = ["all", "undecided", "auto_aligned", "human_decided"]
+        origin_labels = {
+            "all": "Mọi nguồn quyết định",
+            "undecided": "Chưa có quyết định người dùng",
+            "auto_aligned": "Tự động hợp nhất",
+            "human_decided": "Con người đã quyết định",
+        }
+        filters["origin_filter"] = f6.selectbox(
+            "Nguồn quyết định",
+            origin_options,
+            index=origin_options.index(filters.get("origin_filter", "all")),
+            format_func=lambda o: origin_labels[o],
+            key=f"flt_orig_{kind}",
+        )
+        sort_options = ["name", "impact_edges", "alignment_score"]
+        sort_labels = {
+            "name": "Tên đề xuất (A-Z)",
+            "impact_edges": "Số cạnh ảnh hưởng (Cao → Thấp)",
+            "alignment_score": "Điểm tương đồng (Cao → Thấp)",
+        }
+        chosen_sort = f7.selectbox(
+            "Sắp xếp theo",
+            sort_options,
+            index=sort_options.index(filters.get("sort_by", "name")),
+            format_func=lambda s: sort_labels[s],
+            key=f"flt_sort_{kind}",
+        )
+        filters["sort_by"] = chosen_sort
+        filters["sort_desc"] = chosen_sort in ("impact_edges", "alignment_score")
+        page_sizes = [20, 50, 100]
+        filters["page_size"] = f8.selectbox(
+            "Số dòng / trang",
+            page_sizes,
+            index=page_sizes.index(filters.get("page_size", 50)) if filters.get("page_size", 50) in page_sizes else 1,
+            key=f"flt_psize_{kind}",
+        )
+        f_edc_reset.write("")
+        f_edc_reset.write("")
+        if f_edc_reset.button("🔄 Đặt lại", key=f"flt_btn_reset_{kind}", help="Xóa bộ lọc nâng cao"):
+            filters["doc_id"] = "all"
+            filters["candidate_filter"] = "all"
+            filters["definition_filter"] = "all"
+            filters["origin_filter"] = "all"
+            filters["sort_by"] = "name"
+            st.rerun()
 
     filtered_proposals = filter_and_sort_proposals(project, kind, filters)
     filtered_count = len(filtered_proposals)

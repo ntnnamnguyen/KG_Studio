@@ -110,7 +110,9 @@ def render_projects_docs_page(project: dict) -> None:
         target_doc = next((d for d in docs if d["name"] == chosen_doc_name), None)
         if target_doc:
             if target_doc.get("warnings"):
-                st.warning("Cảnh báo khi đọc file:\n- " + "\n- ".join(target_doc["warnings"]))
+                with st.expander(f"⚠️ Cảnh báo khi đọc file ({len(target_doc['warnings'])})", expanded=False):
+                    for w in target_doc["warnings"]:
+                        st.markdown(f"- {w}")
             text_preview = target_doc.get("text", "")
             st.text_area(
                 "Nội dung văn bản (đầu 3,000 ký tự)",

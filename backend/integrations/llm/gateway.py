@@ -6,11 +6,13 @@ import hashlib
 import json
 
 from shared.catalog_utils import EDC_SCHEMA, validate_edc_payload
+from shared.constants import MODE_FREE_TRIPLES
+from shared.schemas.free_triples import FREE_TRIPLES_SCHEMA, parse_free_triples_json
 from shared.schemas.prompts import PreparedExtractionRequestDTO
 
 from . import providers, token_budget
 from .clients import make_adapter
-from .errors import LLMError
+from .errors import LLMError, classify_error
 from .parsing import build_user_message, clean_llm_json, pick_choice_letter
 from .providers import ProviderSpec
 
@@ -18,6 +20,10 @@ _JSON_OBJECT_FORMAT = {"type": "json_object"}
 _EDC_SCHEMA_FORMAT = {
     "type": "json_schema",
     "json_schema": {"name": "edc_extraction", "strict": True, "schema": EDC_SCHEMA},
+}
+_FREE_TRIPLES_SCHEMA_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "free_triples_extraction", "strict": True, "schema": FREE_TRIPLES_SCHEMA},
 }
 
 
@@ -74,8 +80,14 @@ class LLMGateway:
         loop_index: int = 1,
         is_draft: bool = False,
         retrieval_summary: dict | None = None,
+        output_contract: str = "",
     ) -> PreparedExtractionRequestDTO:
         """Dựng dữ liệu request trích xuất hoàn chỉnh, tính toán ngân sách token, user message và mã băm request."""
+        if output_contract not in ("", MODE_FREE_TRIPLES):
+            raise ValueError(f"Hợp đồng đầu ra không được hỗ trợ: {output_contract}")
+        free_triples = output_contract == MODE_FREE_TRIPLES
+        if free_triples and allowed_relations:
+            raise ValueError("Baseline bộ ba tự do không được nhận danh mục quan hệ.")
         spec = providers.provider_spec(provider)
         warnings: list[str] = []
         raw_chars = len(chunk or "")
@@ -93,8 +105,12 @@ class LLMGateway:
             if cut_warn not in warnings:
                 warnings.append(cut_warn)
 
-        resp_format = _JSON_OBJECT_FORMAT if (not open_mode or spec.key == "deepseek") else _EDC_SCHEMA_FORMAT
-        user_msg = build_user_message(fitted_chunk, allowed_relations, open_mode)
+        if free_triples:
+            resp_format = _JSON_OBJECT_FORMAT if spec.key == "deepseek" else _FREE_TRIPLES_SCHEMA_FORMAT
+            user_msg = build_user_message(fitted_chunk, [], open_mode=True)
+        else:
+            resp_format = _JSON_OBJECT_FORMAT if (not open_mode or spec.key == "deepseek") else _EDC_SCHEMA_FORMAT
+            user_msg = build_user_message(fitted_chunk, allowed_relations, open_mode)
 
         # Băm request chuẩn không chứa secret / api key
         hash_payload = (
@@ -103,7 +119,7 @@ class LLMGateway:
         )
         req_hash = hashlib.sha256(hash_payload.encode("utf-8")).hexdigest()
 
-        cfg_id = configuration_id or ("edc" if open_mode else "closed")
+        cfg_id = configuration_id or (MODE_FREE_TRIPLES if free_triples else ("edc" if open_mode else "closed"))
         return PreparedExtractionRequestDTO(
             project_id=project_id,
             configuration_id=cfg_id,
@@ -156,9 +172,9 @@ class LLMGateway:
         appended_content: str = "",
         loop_index: int = 1,
         retrieval_summary: dict | None = None,
+        output_contract: str = "",
     ) -> ExtractionResult:
         spec = providers.provider_spec(provider)
-        LLMGateway._validate_credentials(spec, api_key, model, client)
 
         prep = LLMGateway.prepare_extraction_request(
             provider,
@@ -178,41 +194,54 @@ class LLMGateway:
             appended_content=appended_content,
             loop_index=loop_index,
             retrieval_summary=retrieval_summary,
+            output_contract=output_contract,
         )
 
         warnings = list(prep.warnings)
-        adapter = make_adapter(spec, api_key, providers.resolve_base_url(provider, base_url), client=client)
-        resp = adapter.chat(
-            model=model,
-            system=prep.system_prompt,
-            user=prep.user_message,
-            temperature=prep.temperature,
-            max_tokens=prep.max_tokens,
-            response_format=prep.response_format,
-        )
-        warnings.extend(resp.warnings)
-
-        if resp.finish_reason == "length":
-            raise LLMError(
-                f"Câu trả lời bị cắt do chạm giới hạn token (finish_reason=length, output={resp.output_tokens}/{prep.max_tokens} tokens). "
-                f"Đoạn văn bản quá dài hoặc mật độ thực thể quá dày; hãy giảm 'Kích thước đoạn (chunk_size)' xuống khoảng 2000-2500 ký tự.",
-                "token_limit",
-                input_tokens=resp.input_tokens,
-                output_tokens=resp.output_tokens,
-                raw=resp.content,
-            )
-
         try:
-            parsed = clean_llm_json(resp.content)
-            data = validate_edc_payload(parsed) if open_mode else parsed
-        except ValueError as exc:
-            raise LLMError(
-                f"Đầu ra JSON không đúng cấu trúc trích xuất: {exc}",
-                "json",
-                input_tokens=resp.input_tokens,
-                output_tokens=resp.output_tokens,
-                raw=resp.content,
-            ) from exc
+            LLMGateway._validate_credentials(spec, api_key, model, client)
+            adapter = make_adapter(spec, api_key, providers.resolve_base_url(provider, base_url), client=client)
+            resp = adapter.chat(
+                model=model,
+                system=prep.system_prompt,
+                user=prep.user_message,
+                temperature=prep.temperature,
+                max_tokens=prep.max_tokens,
+                response_format=prep.response_format,
+            )
+            warnings.extend(resp.warnings)
+
+            if resp.finish_reason in ("length", "max_tokens"):
+                raise LLMError(
+                    f"Câu trả lời bị cắt do chạm giới hạn token (finish_reason={resp.finish_reason}, output={resp.output_tokens}/{prep.max_tokens} tokens). "
+                    f"Đoạn văn bản quá dài hoặc mật độ thực thể quá dày; hãy giảm 'Kích thước đoạn (chunk_size)' xuống khoảng 2000-2500 ký tự.",
+                    "token_limit",
+                    input_tokens=resp.input_tokens,
+                    output_tokens=resp.output_tokens,
+                    raw=resp.content,
+                )
+
+            try:
+                if output_contract == MODE_FREE_TRIPLES:
+                    data = parse_free_triples_json(resp.content)
+                else:
+                    parsed = clean_llm_json(resp.content)
+                    data = validate_edc_payload(parsed) if open_mode else parsed
+            except ValueError as exc:
+                raise LLMError(
+                    f"Đầu ra JSON không đúng cấu trúc trích xuất: {exc}",
+                    "json",
+                    input_tokens=resp.input_tokens,
+                    output_tokens=resp.output_tokens,
+                    raw=resp.content,
+                ) from exc
+        except LLMError as exc:
+            exc.prepared_request = prep
+            raise
+        except Exception as exc:
+            error = classify_error(exc)
+            error.prepared_request = prep
+            raise error from exc
 
         return ExtractionResult(
             data=data,

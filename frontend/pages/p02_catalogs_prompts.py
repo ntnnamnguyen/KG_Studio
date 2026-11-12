@@ -11,11 +11,13 @@ from frontend.components.ml_lab_panel import render_ml_lab_panel
 from frontend.components.pipeline_banner import render_step_next_action
 from frontend.components.prompt_editor import render_prompt_management_panel
 from frontend.state.session import (
+    _safe_set_widget_state,
     navigate_to_step,
     on_p02_llm_key_change,
     on_p02_llm_max_in_change,
     on_p02_llm_max_out_change,
     on_p02_llm_model_change,
+    on_p02_llm_provider_change,
     on_p02_llm_url_change,
     switch_llm_provider,
 )
@@ -33,34 +35,28 @@ def render_catalogs_prompts_page(project: dict) -> None:
     # 1. HÀNH ĐỘNG GỢI Ý TIẾP THEO (Next Action Callout)
     render_step_next_action("setup", project)
 
-    # 2. VÙNG 1: KẾT NỐI MÔ HÌNH & LLM (Centralized LLM Connection Card)
-    with st.container(border=True):
-        st.markdown("#### 🤖 1. Kết nối Mô hình Ngôn ngữ (LLM Connection)")
+    # 2. VÙNG 1: KẾT NỐI MÔ HÌNH & LLM (Centralized LLM Connection Card - Thu gọn mặc định)
+    current_provider = st.session_state.get("llm_provider", LLMGateway.DEFAULT_PROVIDER)
+    current_model = st.session_state.setdefault("llm_model", LLMGateway.DEFAULT_MODELS.get(current_provider, "deepseek-chat"))
+    with st.expander(f"🤖 1. Kết nối Mô hình Ngôn ngữ (LLM Connection) — {current_provider} ({current_model})", expanded=False):
         c_p, c_m = st.columns([1.5, 2.5])
-        current_provider = st.session_state.get("llm_provider", LLMGateway.DEFAULT_PROVIDER)
-        provider = c_p.selectbox(
+        c_p.selectbox(
             "Nhà cung cấp LLM",
             LLMGateway.PROVIDERS,
-            index=LLMGateway.PROVIDERS.index(current_provider)
-            if current_provider in LLMGateway.PROVIDERS
-            else 0,
             key="p02_llm_prov",
+            on_change=on_p02_llm_provider_change,
         )
-        if provider != current_provider:
-            switch_llm_provider(provider)
-            st.rerun()
 
-        current_model = st.session_state.setdefault("llm_model", LLMGateway.DEFAULT_MODELS.get(provider, "deepseek-chat"))
-        st.session_state["p02_llm_model"] = current_model
+        _safe_set_widget_state("p02_llm_model", current_model)
         c_m.text_input("Tên mô hình (Model ID)", key="p02_llm_model", on_change=on_p02_llm_model_change)
 
         c_url, c_key = st.columns([2, 2])
-        current_base_url = st.session_state.setdefault("llm_base_url", LLMGateway.resolve_base_url(provider))
-        st.session_state["p02_llm_url"] = current_base_url
+        current_base_url = st.session_state.setdefault("llm_base_url", LLMGateway.resolve_base_url(current_provider))
+        _safe_set_widget_state("p02_llm_url", current_base_url)
         c_url.text_input("API Base URL", key="p02_llm_url", on_change=on_p02_llm_url_change)
 
-        current_api_key = st.session_state.setdefault("llm_api_key", get_api_key(provider))
-        st.session_state["p02_llm_key"] = current_api_key
+        current_api_key = st.session_state.setdefault("llm_api_key", get_api_key(current_provider))
+        _safe_set_widget_state("p02_llm_key", current_api_key)
         c_key.text_input(
             "API Key (để trống nếu dùng Ollama cục bộ)",
             type="password",
@@ -68,16 +64,14 @@ def render_catalogs_prompts_page(project: dict) -> None:
             on_change=on_p02_llm_key_change,
         )
 
-        is_persisted = has_persisted_key(provider)
-        if is_persisted:
-            c_key.caption(f"🔒 Khóa đã lưu an toàn: `{mask_api_key(st.session_state['llm_api_key'])}` (trong config/.secrets.toml hoặc biến môi trường)")
-        elif st.session_state["llm_api_key"]:
-            c_key.caption("ℹ️ Khóa chỉ tạm thời trong phiên. Bấm **Lưu API Key an toàn** bên dưới để lưu bền vững.")
-        else:
+        is_persisted = has_persisted_key(current_provider)
+        if not st.session_state.get("llm_api_key"):
             c_key.caption("⚠️ Chưa có API Key. Bắt buộc đối với DeepSeek, OpenAI, Claude, Qwen.")
+        elif not is_persisted:
+            c_key.caption("ℹ️ Khóa chỉ tạm thời trong phiên. Bấm **Lưu API Key an toàn** bên dưới để lưu bền vững.")
 
         c_tok1, c_tok2 = st.columns(2)
-        st.session_state["p02_llm_max_in"] = int(st.session_state.get("llm_max_input_tokens", 16000))
+        _safe_set_widget_state("p02_llm_max_in", int(st.session_state.get("llm_max_input_tokens", 16000)))
         c_tok1.slider(
             "📥 Token đầu vào tối đa (Input Tokens)",
             min_value=1024,
@@ -87,7 +81,7 @@ def render_catalogs_prompts_page(project: dict) -> None:
             on_change=on_p02_llm_max_in_change,
             help="Ngân sách token đầu vào tối đa (bao gồm system prompt và đoạn văn bản).",
         )
-        st.session_state["p02_llm_max_out"] = int(st.session_state.get("llm_max_output_tokens", 16384))
+        _safe_set_widget_state("p02_llm_max_out", int(st.session_state.get("llm_max_output_tokens", 16384)))
         c_tok2.slider(
             "📤 Token đầu ra tối đa (Output Tokens / max_tokens)",
             min_value=512,
@@ -111,7 +105,7 @@ def render_catalogs_prompts_page(project: dict) -> None:
             else:
                 st.error(f"❌ {msg}")
 
-        if b2.button("⚡ Đặt lại theo Model", width="stretch", key="p02_btn_auto_tok"):
+        def _handle_reset_token_limits() -> None:
             rec = LLMGateway.recommend_token_limits(
                 st.session_state["llm_provider"],
                 st.session_state["llm_model"],
@@ -119,10 +113,12 @@ def render_catalogs_prompts_page(project: dict) -> None:
             st.session_state["llm_max_input_tokens"] = rec["max_input_tokens"]
             st.session_state["llm_max_output_tokens"] = rec["max_output_tokens"]
             st.session_state["extraction_chunk_size"] = rec["recommended_chunk_size"]
-            st.session_state["p02_llm_max_in"] = rec["max_input_tokens"]
-            st.session_state["p02_llm_max_out"] = rec["max_output_tokens"]
-            st.toast(f"Đã đặt lại token theo mô hình: {st.session_state['llm_model']}")
-            st.rerun()
+            _safe_set_widget_state("p02_llm_max_in", rec["max_input_tokens"])
+            _safe_set_widget_state("sb_llm_max_in", rec["max_input_tokens"])
+            _safe_set_widget_state("p02_llm_max_out", rec["max_output_tokens"])
+            _safe_set_widget_state("sb_llm_max_out", rec["max_output_tokens"])
+
+        b2.button("⚡ Đặt lại theo Model", width="stretch", key="p02_btn_auto_tok", on_click=_handle_reset_token_limits)
 
         if b3.button("💾 Lưu cấu hình mặc định", width="stretch", key="p02_btn_save_def_toml", help="Lưu model và giới hạn token vào config/default.toml"):
             saved_path = save_llm_token_config_to_toml(
@@ -137,14 +133,14 @@ def render_catalogs_prompts_page(project: dict) -> None:
                 save_api_key(st.session_state["llm_provider"], st.session_state["llm_api_key"])
             st.success(f"Đã lưu vào `{saved_path.name}` thành công!")
 
+        def _handle_delete_api_key() -> None:
+            delete_api_key(st.session_state["llm_provider"])
+            st.session_state["llm_api_key"] = ""
+            _safe_set_widget_state("sb_llm_key", "")
+            _safe_set_widget_state("p02_llm_key", "")
+
         if is_persisted:
-            if b4.button("🗑️ Xóa API Key đã lưu", width="stretch", key="p02_btn_del_key", help="Xóa API Key khỏi config/.secrets.toml"):
-                delete_api_key(st.session_state["llm_provider"])
-                st.session_state["llm_api_key"] = ""
-                st.session_state["sb_llm_key"] = ""
-                st.session_state["p02_llm_key"] = ""
-                st.toast(f"🗑️ Đã xóa API key đã lưu của {st.session_state['llm_provider']}!")
-                st.rerun()
+            b4.button("🗑️ Xóa API Key đã lưu", width="stretch", key="p02_btn_del_key", on_click=_handle_delete_api_key, help="Xóa API Key khỏi config/.secrets.toml")
         else:
             if b4.button("🔑 Lưu API Key an toàn", width="stretch", key="p02_btn_save_key", help="Lưu bảo mật vào config/.secrets.toml (bỏ qua bởi Git)"):
                 save_api_key(st.session_state["llm_provider"], st.session_state["llm_api_key"])

@@ -29,6 +29,7 @@ from backend.facade import get_facade
 from backend.integrations.llm.gateway import LLMGateway
 from shared.constants import (
     DEFAULT_EDC_PROMPT,
+    EXTRACTION_MODES,
     MODE_EDC,
     MODE_EDC_PLUS_R,
     MODE_FIXED,
@@ -96,7 +97,7 @@ class TestPromptVersioning(unittest.TestCase):
         self.assertIn("prompt_bindings", self.project_a)
         self.assertIn("prompt_versions", self.project_a)
 
-        # Đảm bảo cả 3 chế độ đều có binding độc lập
+        # Mỗi chế độ được hỗ trợ đều có binding độc lập
         bindings = self.project_a["prompt_bindings"]
         self.assertIn(MODE_FIXED, bindings)
         self.assertIn(MODE_EDC, bindings)
@@ -105,7 +106,8 @@ class TestPromptVersioning(unittest.TestCase):
         self.assertNotEqual(bindings[MODE_EDC], bindings[MODE_EDC_PLUS_R])
 
         initial_version_count = len(self.project_a["prompt_versions"])
-        self.assertEqual(initial_version_count, 3)
+        self.assertEqual(set(bindings), set(EXTRACTION_MODES))
+        self.assertEqual(initial_version_count, len(EXTRACTION_MODES))
 
         # Lần 2: Chạy lại migration trên cùng project phải là no-op
         migrated_2 = ensure_project_prompt_history(self.project_a)

@@ -44,14 +44,7 @@ def handle_api_request(
         return 200, {"models": svc.list_embedding_models()}
 
     if method == "GET" and clean_path == "/api/v1/projects":
-        names = svc.list_projects()
-        summaries = []
-        for n in names:
-            summ = svc.sqlite_repo.get_project_summary(n)
-            if not summ.project_id:
-                summ = svc.sqlite_repo.get_project_summary(svc.load_project(n))
-            summaries.append(summ.to_dict())
-        return 200, {"projects": summaries}
+        return 200, {"projects": svc.projects_service.list_project_summaries()}
 
     if clean_path.startswith("/api/v1/projects/"):
         parts = clean_path.split("/")
@@ -61,8 +54,7 @@ def handle_api_request(
             sub_sub_action = parts[6] if len(parts) >= 7 else ""
 
             if method == "GET" and not sub_action:
-                proj = svc.load_project(project_name)
-                return 200, {"project": svc.sqlite_repo.get_project_summary(proj).to_dict()}
+                return 200, {"project": svc.projects_service.get_project_summary(project_name)}
 
             if method == "POST" and sub_action == "retrieve-schema":
                 proj = svc.load_project(project_name)

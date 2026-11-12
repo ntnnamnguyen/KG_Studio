@@ -5,7 +5,6 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from backend.integrations import llm_gateway as legacy
 from backend.integrations.llm import (
     PROVIDER_ANTHROPIC,
     PROVIDER_DEEPSEEK,
@@ -60,11 +59,6 @@ EMPTY = json.dumps({"thuc_the": [], "quan_he": []})
 
 
 class LLMPackageTests(unittest.TestCase):
-    def test_legacy_module_reexports_same_objects(self) -> None:
-        self.assertIs(legacy.LLMGateway, LLMGateway)
-        self.assertIs(legacy.LLMError, LLMError)
-        self.assertEqual(legacy.PROVIDER_DEEPSEEK, PROVIDER_DEEPSEEK)
-
     def test_parsing_and_error_classification(self) -> None:
         self.assertEqual(clean_llm_json("```json\n" + EMPTY + "\n```"), {"thuc_the": [], "quan_he": []})
         self.assertEqual(clean_llm_json("Kết quả: " + EMPTY + " xong"), {"thuc_the": [], "quan_he": []})

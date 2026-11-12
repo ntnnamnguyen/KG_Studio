@@ -225,8 +225,20 @@ class TestSemanticClustering(unittest.TestCase):
         self.assertEqual(p_kind["canonical_name"], "di tích")
 
     def test_facade_and_client_integration(self):
-        facade = KGStudioFacade()
-        client = FrontendClient(facade=facade)
+        import tempfile
+        from pathlib import Path
+        from backend.repositories.json_repo import JsonProjectRepository
+        from backend.repositories.sqlite_repo import SQLiteProjectRepository
+        from backend.repositories.vector_repo import VectorIndexRepository
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            facade = KGStudioFacade(
+                json_repo=JsonProjectRepository(tmp_path / "projects"),
+                sqlite_repo=SQLiteProjectRepository(tmp_path / "test.db"),
+                vector_repo=VectorIndexRepository(tmp_path / "vectors"),
+            )
+            client = FrontendClient(facade=facade)
 
         # Test preview clustering prompt
         prev_prompt = client.preview_clustering_prompt(

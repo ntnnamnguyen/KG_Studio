@@ -2,6 +2,10 @@
 
 Bộ mã nguồn **KG Studio Pro** được tổ chức thành một dự án **hoàn toàn độc lập** tại `D:\DATN\CrawData\KG_Studio`, **không phụ thuộc bất kỳ file code nào của `KG_Studio_MVP` cũ**.
 
+Baseline B `free_triples` đã có trong phần chọn phương pháp ở Bước 2. Chế độ này không cần danh mục, chỉ trích xuất `subject/predicate/object/evidence`, giữ kết quả riêng ở nhật ký Bước 3 và cho tải JSON độc lập với đồ thị đã duyệt. Xem [hợp đồng, hướng dẫn và kiểm thử baseline](AI/report/free-triples-baseline-implementation.md).
+
+Tại **Bước 5 → Nguồn đồ thị → Baseline B — KG thô**, chọn các runs (mỗi chunk một attempt) để dựng graph theo chuỗi. Baseline dùng chung phần hiển thị, PCST/PPR/Naive Top-K và xuất JSON/CSV; không cần tự động duyệt dữ kiện. Có thể nạp cùng bộ gold facts độc lập vào tab Benchmark để so các graph không dùng chung ID. Xem [báo cáo KG baseline và kiểm chứng](AI/report/baseline-graph-implementation.md) và [JSON gold mẫu giả định](AI/report/baseline-graph-gold-example.json).
+
 ## 1. Cấu trúc Thư mục Chuẩn Thương mại & Học máy
 
 ```text

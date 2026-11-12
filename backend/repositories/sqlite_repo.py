@@ -261,6 +261,9 @@ class SQLiteProjectRepository:
                     props_data,
                 )
 
+    def sync_project(self, project: dict) -> None:
+        return self.sync_from_project_dict(project)
+
     def update_edge_status(self, project_id: str, edge_id: str, status: str) -> bool:
         """Cập nhật trạng thái một cạnh trong SQLite tức thì O(1)."""
         with self._connect() as conn:
@@ -441,6 +444,33 @@ class SQLiteProjectRepository:
             rows = conn.execute(sql, params).fetchall()
             return [dict(row) for row in rows]
 
+    def _paginate(
+        self,
+        table: str,
+        where_clause: str,
+        params: list[Any],
+        order_by: str,
+        page: int = 1,
+        page_size: int = 50,
+        transform: Any = None,
+    ) -> dict[str, Any]:
+        """Tiện ích dùng chung phân trang truy vấn trên SQLite."""
+        page_size = max(1, min(int(page_size), 200))
+        offset = (max(1, int(page)) - 1) * page_size
+        with self._connect() as conn:
+            total = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {where_clause}", params).fetchone()[0]
+            query_sql = f"SELECT * FROM {table} WHERE {where_clause} ORDER BY {order_by} LIMIT ? OFFSET ?"
+            rows = conn.execute(query_sql, params + [page_size, offset]).fetchall()
+            items = [transform(dict(r)) if transform else dict(r) for r in rows]
+
+        return {
+            "items": items,
+            "total_count": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": max(1, (total + page_size - 1) // page_size),
+        }
+
     def query_edges_page(
         self,
         project_id: str,
@@ -470,23 +500,7 @@ class SQLiteProjectRepository:
             params.extend([q, q, q, q])
 
         where_clause = " AND ".join(clauses)
-        page_size = max(1, min(int(page_size), 200))
-        offset = (max(1, int(page)) - 1) * page_size
-
-        with self._connect() as conn:
-            total = conn.execute(f"SELECT COUNT(*) FROM edges WHERE {where_clause}", params).fetchone()[0]
-            query_sql = f"SELECT * FROM edges WHERE {where_clause} ORDER BY chunk_number ASC, id ASC LIMIT ? OFFSET ?"
-            rows = conn.execute(query_sql, params + [page_size, offset]).fetchall()
-            items = [dict(r) for r in rows]
-
-        total_pages = max(1, (total + page_size - 1) // page_size)
-        return {
-            "items": items,
-            "total_count": total,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": total_pages,
-        }
+        return self._paginate("edges", where_clause, params, "chunk_number ASC, id ASC", page, page_size)
 
     def query_nodes_page(
         self,
@@ -509,27 +523,12 @@ class SQLiteProjectRepository:
             params.extend([q, q, q])
 
         where_clause = " AND ".join(clauses)
-        page_size = max(1, min(int(page_size), 200))
-        offset = (max(1, int(page)) - 1) * page_size
 
-        with self._connect() as conn:
-            total = conn.execute(f"SELECT COUNT(*) FROM nodes WHERE {where_clause}", params).fetchone()[0]
-            query_sql = f"SELECT * FROM nodes WHERE {where_clause} ORDER BY kind ASC, name ASC LIMIT ? OFFSET ?"
-            rows = conn.execute(query_sql, params + [page_size, offset]).fetchall()
-            items = []
-            for r in rows:
-                d = dict(r)
-                d["aliases"] = json.loads(d.get("aliases_json") or "[]")
-                items.append(d)
+        def _fmt_node(d: dict[str, Any]) -> dict[str, Any]:
+            d["aliases"] = json.loads(d.get("aliases_json") or "[]")
+            return d
 
-        total_pages = max(1, (total + page_size - 1) // page_size)
-        return {
-            "items": items,
-            "total_count": total,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": total_pages,
-        }
+        return self._paginate("nodes", where_clause, params, "kind ASC, name ASC", page, page_size, transform=_fmt_node)
 
     def query_proposals_page(
         self,
@@ -551,27 +550,12 @@ class SQLiteProjectRepository:
             params.append(status)
 
         where_clause = " AND ".join(clauses)
-        page_size = max(1, min(int(page_size), 200))
-        offset = (max(1, int(page)) - 1) * page_size
 
-        with self._connect() as conn:
-            total = conn.execute(f"SELECT COUNT(*) FROM schema_proposals WHERE {where_clause}", params).fetchone()[0]
-            query_sql = f"SELECT * FROM schema_proposals WHERE {where_clause} ORDER BY id ASC LIMIT ? OFFSET ?"
-            rows = conn.execute(query_sql, params + [page_size, offset]).fetchall()
-            items = []
-            for r in rows:
-                d = dict(r)
-                d["alignment_candidates"] = json.loads(d.get("candidates_json") or "[]")
-                items.append(d)
+        def _fmt_prop(d: dict[str, Any]) -> dict[str, Any]:
+            d["alignment_candidates"] = json.loads(d.get("candidates_json") or "[]")
+            return d
 
-        total_pages = max(1, (total + page_size - 1) // page_size)
-        return {
-            "items": items,
-            "total_count": total,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": total_pages,
-        }
+        return self._paginate("schema_proposals", where_clause, params, "id ASC", page, page_size, transform=_fmt_prop)
 
     def get_node_by_id(self, project_id: str, node_id: str) -> dict | None:
         """Tra cứu nhanh một thực thể theo ID trực tiếp từ SQLite."""

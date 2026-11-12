@@ -533,46 +533,69 @@ def render_edge_curation_table_and_batch_bar(project: dict) -> dict[str, Any]:
     rel_options = ["all"] + sorted({str(e.get("relation", "")) for e in project.get("edges", []) if e.get("relation")})
     kind_options = ["all"] + sorted({str(n.get("kind", "")) for n in nodes if n.get("kind")})
 
-    with st.expander("🔍 Bộ lọc & Sắp xếp Quan hệ", expanded=True):
+    # 1. Tính toán số bộ lọc nâng cao đang bật để hiển thị badge số đếm
+    adv_active_count = sum([
+        filters.get("doc_id", "all") != "all",
+        filters.get("relation", "all") != "all",
+        filters.get("entity_id", "all") != "all",
+        filters.get("entity_kind", "all") != "all",
+        filters.get("evidence_state", "all") != "all",
+        filters.get("schema_state", "all") != "all",
+    ])
+    adv_label = f"⚙️ Bộ lọc nâng cao ({adv_active_count})" if adv_active_count > 0 else "⚙️ Bộ lọc nâng cao"
+
+    # TẦNG 1: THANH CƠ BẢN TINH GỌN (CHỈ 1 DÒNG DUY NHẤT)
+    c_search, c_status = st.columns([3.5, 1.5])
+    filters["search"] = c_search.text_input(
+        "Tìm kiếm từ khóa",
+        value=filters.get("search", ""),
+        placeholder="🔍 Tìm nhanh thực thể, quan hệ, trích dẫn bằng chứng...",
+        label_visibility="collapsed",
+        key="cur_edge_f_search",
+    )
+    status_opts = ["all", STATUS_CHECK, STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED]
+    filters["status"] = c_status.selectbox(
+        "Trạng thái duyệt",
+        status_opts,
+        index=status_opts.index(filters["status"]) if filters["status"] in status_opts else 0,
+        format_func=lambda x: "Tất cả trạng thái" if x == "all" else f"Trạng thái: {x}",
+        label_visibility="collapsed",
+        key="cur_edge_f_status",
+    )
+
+    # TẦNG 2: VÙNG MỞ RỘNG BỘ LỌC NÂNG CAO (Mặc định thu gọn, mở khi có tiêu chí đang lọc)
+    with st.expander(adv_label, expanded=bool(adv_active_count > 0)):
         f1, f2, f3, f4 = st.columns(4)
-        status_opts = ["all", STATUS_CHECK, STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED]
-        filters["status"] = f1.selectbox(
-            "Trạng thái duyệt",
-            status_opts,
-            index=status_opts.index(filters["status"]) if filters["status"] in status_opts else 0,
-            format_func=lambda x: "Tất cả trạng thái" if x == "all" else x,
-            key="cur_edge_f_status",
-        )
-        filters["doc_id"] = f2.selectbox(
+        filters["doc_id"] = f1.selectbox(
             "Tài liệu nguồn",
             doc_options,
             index=doc_options.index(filters["doc_id"]) if filters["doc_id"] in doc_options else 0,
             format_func=lambda x: doc_names.get(x, x),
             key="cur_edge_f_doc",
         )
-        filters["relation"] = f3.selectbox(
+        filters["relation"] = f2.selectbox(
             "Loại quan hệ",
             rel_options,
             index=rel_options.index(filters["relation"]) if filters["relation"] in rel_options else 0,
             format_func=lambda x: "Tất cả quan hệ" if x == "all" else x,
             key="cur_edge_f_rel",
         )
-        filters["entity_id"] = f4.selectbox(
+        filters["entity_id"] = f3.selectbox(
             "Thực thể liên quan",
             node_options,
             index=node_options.index(filters["entity_id"]) if filters["entity_id"] in node_options else 0,
             format_func=lambda x: node_names.get(x, x),
             key="cur_edge_f_ent",
         )
-
-        f5, f6, f7, f8 = st.columns([1.2, 1.2, 1.2, 1.8])
-        filters["entity_kind"] = f5.selectbox(
+        filters["entity_kind"] = f4.selectbox(
             "Loại thực thể đầu mút",
             kind_options,
             index=kind_options.index(filters["entity_kind"]) if filters["entity_kind"] in kind_options else 0,
             format_func=lambda x: "Tất cả loại" if x == "all" else x,
             key="cur_edge_f_kind",
         )
+
+        f5, f6, f_reset = st.columns([2, 2, 1])
         ev_opts = ["all", "matched", "not_found", "override", "ambiguous"]
         ev_labels = {
             "all": "Mọi tình trạng bằng chứng",
@@ -581,7 +604,7 @@ def render_edge_curation_table_and_batch_bar(project: dict) -> dict[str, Any]:
             "override": "Ngoại lệ bằng chứng",
             "ambiguous": "Nhiều vị trí khớp",
         }
-        filters["evidence_state"] = f6.selectbox(
+        filters["evidence_state"] = f5.selectbox(
             "Tình trạng bằng chứng",
             ev_opts,
             index=ev_opts.index(filters["evidence_state"]) if filters["evidence_state"] in ev_opts else 0,
@@ -597,18 +620,23 @@ def render_edge_curation_table_and_batch_bar(project: dict) -> dict[str, Any]:
             "rejected_proposal": "Đề xuất EDC bị từ chối",
             "out_of_catalog": "Ngoài danh mục",
         }
-        filters["schema_state"] = f7.selectbox(
+        filters["schema_state"] = f6.selectbox(
             "Tình trạng danh mục",
             sc_opts,
             index=sc_opts.index(filters["schema_state"]) if filters["schema_state"] in sc_opts else 0,
             format_func=lambda x: sc_labels.get(x, x),
             key="cur_edge_f_schema",
         )
-        filters["search"] = f8.text_input(
-            "Tìm từ khóa (thực thể, quan hệ, trích dẫn, ghi chú)",
-            value=filters.get("search", ""),
-            key="cur_edge_f_search",
-        )
+        f_reset.write("")
+        f_reset.write("")
+        if f_reset.button("🔄 Đặt lại lọc", key="cur_edge_btn_reset_filters", help="Xóa nhanh toàn bộ bộ lọc nâng cao"):
+            filters["doc_id"] = "all"
+            filters["relation"] = "all"
+            filters["entity_id"] = "all"
+            filters["entity_kind"] = "all"
+            filters["evidence_state"] = "all"
+            filters["schema_state"] = "all"
+            st.rerun()
 
     filtered_edges = filter_and_sort_edges(project, filters)
     filter_sig = compute_edge_filter_signature(filters)
@@ -921,15 +949,36 @@ def render_entity_table(project: dict) -> dict[str, Any]:
     else:
         dup_ids = set()
 
-    with st.expander("🔍 Bộ lọc & Tìm kiếm Thực thể", expanded=True):
-        c1, c2, c3, c4, c5 = st.columns([1.2, 1.3, 1.2, 1.2, 1.6])
-        filters["kind"] = c1.selectbox(
-            "Loại thực thể",
-            kind_options,
-            index=kind_options.index(filters["kind"]) if filters["kind"] in kind_options else 0,
-            format_func=lambda x: "Tất cả loại" if x == "all" else x,
-            key="cur_ent_f_kind",
-        )
+    # 1. Tính toán số bộ lọc nâng cao thực thể đang bật
+    adv_ent_count = sum([
+        filters.get("doc_id", "all") != "all",
+        filters.get("degree_filter", "all") != "all",
+        filters.get("schema_state", "all") != "all",
+        bool(filters.get("dup_candidate_only", False)),
+    ])
+    adv_ent_label = f"⚙️ Bộ lọc nâng cao ({adv_ent_count})" if adv_ent_count > 0 else "⚙️ Bộ lọc nâng cao"
+
+    # TẦNG 1: THANH CƠ BẢN TINH GỌN (CHỈ 1 DÒNG DUY NHẤT)
+    c_ent_search, c_ent_kind = st.columns([3.5, 1.5])
+    filters["search"] = c_ent_search.text_input(
+        "Tìm thực thể",
+        value=filters.get("search", ""),
+        placeholder="🔍 Tìm tên thực thể, bí danh, mô tả...",
+        label_visibility="collapsed",
+        key="cur_ent_f_search",
+    )
+    filters["kind"] = c_ent_kind.selectbox(
+        "Loại thực thể",
+        kind_options,
+        index=kind_options.index(filters["kind"]) if filters["kind"] in kind_options else 0,
+        format_func=lambda x: "Tất cả loại" if x == "all" else f"Loại: {x}",
+        label_visibility="collapsed",
+        key="cur_ent_f_kind",
+    )
+
+    # TẦNG 2: VÙNG MỞ RỘNG BỘ LỌC NÂNG CAO (Mặc định thu gọn, mở khi có tiêu chí đang lọc)
+    with st.expander(adv_ent_label, expanded=bool(adv_ent_count > 0)):
+        c2, c3, c4 = st.columns([1.5, 1.2, 1.3])
         filters["doc_id"] = c2.selectbox(
             "Tài liệu nguồn",
             doc_options,
@@ -960,16 +1009,20 @@ def render_entity_table(project: dict) -> dict[str, Any]:
             format_func=lambda x: sc_labels.get(x, x),
             key="cur_ent_f_schema",
         )
-        filters["search"] = c5.text_input(
-            "Tìm tên, bí danh, mô tả",
-            value=filters.get("search", ""),
-            key="cur_ent_f_search",
-        )
-        filters["dup_candidate_only"] = st.checkbox(
+
+        c_chk, c_reset = st.columns([3.5, 1.5])
+        filters["dup_candidate_only"] = c_chk.checkbox(
             f"Chỉ hiện thực thể đang nằm trong cặp nghi trùng" + (f" ({len(dup_ids)} thực thể)" if dup_active else " (bấm để quét)"),
             value=bool(filters.get("dup_candidate_only", False)),
             key="cur_ent_f_dup",
         )
+        c_reset.write("")
+        if c_reset.button("🔄 Đặt lại lọc", key="cur_ent_btn_reset_filters", help="Xóa nhanh toàn bộ bộ lọc nâng cao"):
+            filters["doc_id"] = "all"
+            filters["degree_filter"] = "all"
+            filters["schema_state"] = "all"
+            filters["dup_candidate_only"] = False
+            st.rerun()
 
     filtered_nodes = filter_and_sort_entities(project, filters, dup_node_ids=dup_ids)
     ent_sig = f"{filters.get('kind')}_{filters.get('doc_id')}_{filters.get('schema_state')}_{filters.get('degree_filter')}_{filters.get('dup_candidate_only')}_{filters.get('search')}"

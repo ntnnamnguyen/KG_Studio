@@ -1,100 +1,26 @@
-"""Lớp Điều phối Trung tâm (Backend Facade) độc lập 100%."""
+"""Lớp Tương Thích Ngược (Compatibility Facade) cho KG Studio.
+Theo chuẩn Quy tắc 5 trong AGENTS.md:
+- Facade KHÔNG chứa nghiệp vụ transaction, snapshot hay domain logic trực tiếp.
+- Mọi phương thức công khai đều là một lời gọi ủy quyền (1-line delegate) sang
+  6 Application Services chuẩn trong `backend/modules/`.
+"""
 from __future__ import annotations
 
-import copy
-import json
 from pathlib import Path
 import threading
 from typing import Any, Callable
-import concurrent.futures
 
-from backend.domain.catalogs.service import (
-     catalog_rows,
-    compute_catalog_hash,
-    compute_full_request_hash,
-    compute_project_revision,
-    decide_proposal,
-    extraction_prompt,
-    preview_proposal_decisions as domain_preview_proposal_decisions,
-    apply_proposal_decisions as domain_apply_proposal_decisions,
-    prompt_signature,
-    save_prompt_settings,
-)
-from backend.domain.curation.service import (
-    apply_bulk_entity_merges as domain_apply_bulk_entity_merges,
-    apply_curation_decisions as domain_apply_curation_decisions,
-    apply_entity_merge as domain_apply_entity_merge,
-    apply_relation_merge as domain_apply_relation_merge,
-    apply_semantic_clusters as domain_apply_semantic_clusters,
-    approvable_edges,
-    bulk_apply_relation_merges as domain_bulk_apply_relation_merges,
-    collapse_duplicate_edges as domain_collapse_duplicate_edges,
-    compute_apparent_duplicate_edge_groups,
-    compute_curation_request_hash,
-    duplicate_suggestions,
-    evidence_context,
-    inspect_edge_schema_status,
-    is_edge_exportable,
-    mark_pair_not_duplicate as domain_mark_pair_not_duplicate,
-    mark_pairs_not_duplicate_bulk as domain_mark_pairs_not_duplicate_bulk,
-    mark_relation_pair_not_duplicate as domain_mark_relation_pair_not_duplicate,
-    mark_relation_pairs_not_duplicate_bulk as domain_mark_relation_pairs_not_duplicate_bulk,
-    merge_nodes,
-    preview_curation_decisions as domain_preview_curation_decisions,
-    preview_clustering_prompt as domain_preview_clustering_prompt,
-    preview_entity_merge as domain_preview_entity_merge,
-    relation_duplicate_suggestions as domain_relation_duplicate_suggestions,
-    review_stats,
-    scan_semantic_clusters as domain_scan_semantic_clusters,
-    select_edge_evidence_span,
-    set_edge_status,
-    set_edges_status,
-    token_totals,
-    update_edge,
-    update_node,
-    validate_edge_for_approval,
-)
-from backend.domain.dataset_exporter.exporter import ActiveLearningExporter
-from backend.domain.documents.processor import add_document, document_chunks
-from backend.domain.extraction.base_engine import ChunkContext, EngineOutput
-from backend.domain.extraction.registry import EngineRegistry, default_registry
-from backend.domain.extraction.validator import cache_key
-from backend.domain.graph.g_retriever import (
-    SubgraphRetrievalResult,
-    answer_question_with_graph,
-    evaluate_retrieval_methods,
-    load_project_from_export_bytes,
-    retrieve_subgraph,
-)
-from backend.domain.graph.qa_generator import (
-    generate_qa_benchmark,
-    generate_training_qa_dataset,
-    paraphrase_qa_questions_with_llm,
-)
-from backend.domain.graph.service import approved_graph, approved_json_bytes, csv_bytes, export_zip, validate_integrity
-from backend.domain.schema_intelligence.aligner import TargetAligner
-from backend.domain.schema_intelligence.retriever import SchemaRetriever
-from backend.integrations.embedder_gateway import default_embedder, list_registered_models
+from backend.domain.catalogs.core import compute_project_revision
+from backend.domain.extraction.base_engine import EngineOutput
+from backend.domain.graph.g_retriever import SubgraphRetrievalResult
+from backend.integrations.embedder_gateway import list_registered_models
 from backend.integrations.llm import LLMGateway
-from backend.integrations.neo4j_gateway import Neo4jGateway
-from backend.repositories.json_repo import JsonProjectRepository
-from backend.repositories.sqlite_repo import SQLiteProjectRepository
-from backend.repositories.vector_repo import VectorIndexRepository
-from backend.domain.prompts.service import (
-    DEFAULT_PROMPTS,
-    compute_prompt_hash,
-    diff_prompt_versions,
-    get_active_prompt_content,
-    get_active_prompt_version,
-    get_prompt_version,
-    list_prompt_versions,
-    restore_prompt_version,
-    save_prompt_version,
-)
-from shared.catalog_utils import edc_prompt, relation_catalog
-from shared.constants import MODE_EDC, MODE_EDC_PLUS_R, MODE_FIXED
-from shared.schemas.prompts import PreparedExtractionRequestDTO
-from shared.secrets_manager import get_api_key
+from backend.modules.curation.application.service import CurationApplicationService
+from backend.modules.extraction.application.service import ExtractionApplicationService
+from backend.modules.graph_qa.application.service import GraphQAApplicationService
+from backend.modules.projects.application.service import ProjectsApplicationService
+from backend.modules.schema_intelligence.application.service import SchemaIntelligenceApplicationService
+from backend.modules.training.application.service import TrainingApplicationService
 from shared.schemas.curation import (
     CurationPreviewDTO,
     CurationResultDTO,
@@ -110,92 +36,91 @@ from shared.schemas.edc import (
     BulkReviewResultDTO,
 )
 from shared.schemas.project import EDCPlusRSettingsDTO
-from shared.text_utils import now_iso, sha, uid
+from shared.schemas.prompts import PreparedExtractionRequestDTO
+from shared.secrets_manager import get_api_key
 
 
 class KGStudioFacade:
-    """Điểm kết nối duy nhất cho mọi tác vụ Backend (Dự án, Tài liệu, EDC+R, Kiểm duyệt, Xuất, ML Lab)."""
+    """Compatibility Forwarding Facade kết nối các consumer cũ tới 6 Application Services."""
 
     def __init__(
         self,
         *,
-        json_repo: JsonProjectRepository | None = None,
-        sqlite_repo: SQLiteProjectRepository | None = None,
-        vector_repo: VectorIndexRepository | None = None,
-        engine_registry: EngineRegistry | None = None,
-        exporter: ActiveLearningExporter | None = None,
+        container: Any | None = None,
+        json_repo: Any | None = None,
+        sqlite_repo: Any | None = None,
+        vector_repo: Any | None = None,
+        engine_registry: Any | None = None,
+        exporter: Any | None = None,
     ) -> None:
-        self.json_repo = json_repo or JsonProjectRepository()
-        self.sqlite_repo = sqlite_repo or SQLiteProjectRepository()
-        self.vector_repo = vector_repo or VectorIndexRepository()
-        self.retriever = SchemaRetriever(vector_repo=self.vector_repo)
-        self.aligner = TargetAligner(vector_repo=self.vector_repo)
-        self.engine_registry = engine_registry or default_registry
-        self.exporter = exporter or ActiveLearningExporter()
-        self._locks_guard = threading.Lock()
-        self._project_locks: dict[str, threading.RLock] = {}
+        from backend.bootstrap import get_container
+        app_c = container or (get_container() if json_repo is None and sqlite_repo is None and vector_repo is None else None)
+
+        if app_c is not None:
+            self._container = app_c
+            self.json_repo = app_c.json_repo
+            self.sqlite_repo = app_c.sqlite_repo
+            self.vector_repo = app_c.vector_repo
+            self.projects_service = app_c.projects_service
+            self.schema_service = app_c.schema_service
+            self.extraction_service = app_c.extraction_service
+            self.curation_service = app_c.curation_service
+            self.graph_qa_service = app_c.graph_qa_service
+            self.training_service = app_c.training_service
+        else:
+            from backend.repositories.json_repo import JsonProjectRepository
+            from backend.repositories.sqlite_repo import SQLiteProjectRepository
+            from backend.repositories.vector_repo import VectorIndexRepository
+            self.json_repo = json_repo or JsonProjectRepository()
+            self.sqlite_repo = sqlite_repo or SQLiteProjectRepository()
+            self.vector_repo = vector_repo or VectorIndexRepository()
+            self.projects_service = ProjectsApplicationService(
+                project_store=self.json_repo,
+                read_projection=self.sqlite_repo,
+                vector_repo=self.vector_repo,
+            )
+            self.schema_service = SchemaIntelligenceApplicationService(
+                commit_coordinator=self.projects_service.commit_coordinator,
+                vector_repo=self.vector_repo,
+            )
+            self.extraction_service = ExtractionApplicationService(
+                engine_registry=engine_registry,
+                llm_gateway=LLMGateway,
+                schema_service=self.schema_service,
+                project_store=self.json_repo,
+                commit_coordinator=self.projects_service.commit_coordinator,
+            )
+            self.curation_service = CurationApplicationService(
+                commit_coordinator=self.projects_service.commit_coordinator,
+                project_store=self.json_repo,
+            )
+            self.graph_qa_service = GraphQAApplicationService()
+            self.training_service = TrainingApplicationService(exporter=exporter)
+
+        # Compatibility attributes for legacy inspection
+        self.commit_coordinator = self.projects_service.commit_coordinator
+        self.retriever = getattr(self.schema_service, "retriever", None)
+        self.aligner = getattr(self.schema_service, "aligner", None)
+        self.engine_registry = self.extraction_service.engine_registry
+        self.exporter = self.training_service.exporter
         self._last_committed_revision: dict[str, str] = {}
-        self._last_disk_stat: dict[str, tuple[int, int]] = {}
-        self._idempotency_cache: dict[tuple[str, str], dict[str, Any]] = {}
-
-    def _project_file_stat(self, proj_name: str) -> tuple[int, int] | None:
-        if not proj_name:
-            return None
-        try:
-            folder = self.json_repo.find_folder(proj_name)
-            if folder is None:
-                return None
-            p_file = folder / "project.json"
-            if not p_file.exists():
-                return None
-            st = p_file.stat()
-            return (st.st_mtime_ns, st.st_size)
-        except Exception:
-            return None
-
-    def _record_disk_stat(self, proj_id: str, proj_name: str) -> None:
-        st = self._project_file_stat(proj_name)
-        if st is not None:
-            self._last_disk_stat[proj_id] = st
-
-    def _disk_changed_externally(self, proj_id: str, proj_name: str) -> bool:
-        st = self._project_file_stat(proj_name)
-        if st is None:
-            return False
-        prev = self._last_disk_stat.get(proj_id)
-        return prev is None or prev != st
-
-    def _can_copy_disk_snapshot(self, proj_id: str, proj_name: str, mem_rev: str) -> bool:
-        if not proj_name or self._last_committed_revision.get(proj_id) != mem_rev:
-            return False
-        st = self._project_file_stat(proj_name)
-        return st is not None and self._last_disk_stat.get(proj_id) == st
-
-    def get_project_lock(self, project_key: str) -> threading.RLock:
-        """Lấy hoặc tạo re-entrant lock theo từng dự án phục vụ đa luồng."""
-        return self._get_lock(project_key)
-
-    def _get_lock(self, project_key: str) -> threading.RLock:
-        key = str(project_key or "default")
-        with self._locks_guard:
-            if key not in self._project_locks:
-                self._project_locks[key] = threading.RLock()
-            return self._project_locks[key]
 
     def _current_model_fingerprint(self, project: dict) -> str:
+        """Lấy fingerprint của mô hình embedding hiện tại phục vụ tương thích ngược."""
         try:
             settings = self.get_edc_plus_r_settings(project)
+            from backend.integrations.embedder_gateway import default_embedder
             embedder = default_embedder(settings.embedder_model)
             return getattr(embedder, "fingerprint", "") or ""
         except Exception:
             return ""
 
     def _sync_sqlite_safe(self, project: dict, result_dto: Any | None = None) -> tuple[str, str]:
-        """Đồng bộ SQLite an toàn; nếu lỗi, đánh dấu sync_pending và ghi nhận lỗi vào project/result mà không làm hỏng commit JSON."""
+        """Đồng bộ SQLite an toàn phục vụ tương thích ngược."""
         name = project.get("name", "")
         try:
             self.sqlite_repo.sync_from_project_dict(project)
-            if name:
+            if name and hasattr(self.json_repo, "clear_sync_pending"):
                 self.json_repo.clear_sync_pending(name)
             project["sync_pending"] = False
             project["sync_error"] = ""
@@ -205,7 +130,7 @@ class KGStudioFacade:
             return "synced", ""
         except Exception as exc:
             err_str = str(exc)
-            if name:
+            if name and hasattr(self.json_repo, "mark_sync_pending"):
                 self.json_repo.mark_sync_pending(name, err_str)
             project["sync_pending"] = True
             project["sync_error"] = err_str
@@ -221,7 +146,7 @@ class KGStudioFacade:
         project: dict,
         expected_revision: str,
     ) -> str:
-        """Kiểm tra xung đột đa phiên: nếu một phiên khác đã commit lên đĩa sau expected_revision. Trả về mem_rev hiện tại."""
+        """Kiểm tra xung đột đa phiên phục vụ tương thích ngược."""
         mem_rev = compute_project_revision(project)
         if not expected_revision:
             return mem_rev
@@ -230,190 +155,114 @@ class KGStudioFacade:
             raise ValueError(
                 "Dự án đã được cập nhật bởi một phiên làm việc khác (revision mismatch). Vui lòng tải lại và xem trước lại."
             )
-        if last_committed_rev and proj_name and self._disk_changed_externally(proj_id, proj_name):
-            try:
-                disk_proj = self.json_repo.load_project(proj_name)
-                disk_rev = compute_project_revision(disk_proj)
-                if disk_rev == last_committed_rev and disk_rev != mem_rev:
-                    raise ValueError(
-                        "Dự án trên đĩa đã thay đổi bởi phiên khác kể từ lúc xem trước. Vui lòng xem trước lại."
-                    )
-            except ValueError:
-                raise
-            except Exception:
-                pass
         return mem_rev
 
-    # --- Quản lý Dự án ---
+    # =========================================================================
+    # 1. PHÂN HỆ PROJECTS (backend/modules/projects)
+    # =========================================================================
+
+    def get_project_lock(self, project_key: str) -> threading.RLock:
+        return self.projects_service.get_project_lock(project_key)
+
     def list_projects(self) -> list[str]:
-        return self.json_repo.list_projects()
+        return self.projects_service.list_projects()
 
     def list_project_headers(self) -> list[dict]:
-        """Trả về danh sách metadata tóm tắt của các dự án (không nạp toàn bộ JSON đồ thị)."""
-        return self.json_repo.list_project_headers()
+        return self.projects_service.list_project_headers()
 
     def load_project(self, name: str) -> dict:
-        project = self.json_repo.load_project(name)
-        proj_id = str(project.get("project_id") or project.get("name") or name)
-        self._last_committed_revision[proj_id] = compute_project_revision(project)
-        self._record_disk_stat(proj_id, str(project.get("name") or name))
-        self._sync_sqlite_safe(project)
-        return project
+        return self.projects_service.load_project(name)
 
     def save_project(self, project: dict) -> Path:
-        proj_id = str(project.get("project_id") or project.get("name") or "default")
-        with self._get_lock(proj_id):
-            path = self.json_repo.save_project(project)
-            self._last_committed_revision[proj_id] = compute_project_revision(project)
-            self._record_disk_stat(proj_id, str(project.get("name") or ""))
-            try:
-                self.vector_repo.invalidate_project_indices(
-                    proj_id,
-                    kind="relations",
-                    current_catalog_items=catalog_rows(project, "relations"),
-                )
-                self.vector_repo.invalidate_project_indices(
-                    proj_id,
-                    kind="entity_types",
-                    current_catalog_items=catalog_rows(project, "entity_types"),
-                )
-            except Exception:
-                pass
-            self._sync_sqlite_safe(project)
-            return path
+        return self.projects_service.save_project(project)
 
     def resync_sqlite(self, project: dict) -> dict[str, Any]:
-        """Đồng bộ lại SQLite cho dự án đang có trạng thái sync_pending."""
-        proj_id = str(project.get("project_id") or project.get("name") or "default")
-        with self._get_lock(proj_id):
-            self.sqlite_repo.sync_from_project_dict(project)
-            self.json_repo.clear_sync_pending(project["name"])
-            project["sync_pending"] = False
-            project["sync_error"] = ""
-            return {"status": "synced", "sync_pending": False, "project_id": proj_id}
+        return self.projects_service.resync_sqlite(project)
 
-    def query_edges_page(
-        self,
-        project_or_id: dict | str,
-        *,
-        status: str | None = None,
-        doc_id: str | None = None,
-        relation: str | None = None,
-        search: str | None = None,
-        page: int = 1,
-        page_size: int = 50,
-    ) -> dict[str, Any]:
-        """Truy vấn trang cạnh quan hệ sử dụng chỉ mục SQLite tối ưu."""
-        pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
-        return self.sqlite_repo.query_edges_page(
-            pid,
-            status=status,
-            doc_id=doc_id,
-            relation=relation,
-            search=search,
-            page=page,
-            page_size=page_size,
-        )
+    def query_edges_page(self, project_or_id: dict | str, **kwargs: Any) -> dict[str, Any]:
+        return self.projects_service.query_edges_page(project_or_id, **kwargs)
 
-    def query_nodes_page(
-        self,
-        project_or_id: dict | str,
-        *,
-        kind: str | None = None,
-        search: str | None = None,
-        page: int = 1,
-        page_size: int = 50,
-    ) -> dict[str, Any]:
-        """Truy vấn trang danh sách thực thể có phân trang trên SQLite."""
-        pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
-        return self.sqlite_repo.query_nodes_page(
-            pid,
-            kind=kind,
-            search=search,
-            page=page,
-            page_size=page_size,
-        )
+    def query_nodes_page(self, project_or_id: dict | str, **kwargs: Any) -> dict[str, Any]:
+        return self.projects_service.query_nodes_page(project_or_id, **kwargs)
 
-    def query_proposals_page(
-        self,
-        project_or_id: dict | str,
-        *,
-        kind: str | None = None,
-        status: str | None = None,
-        page: int = 1,
-        page_size: int = 50,
-    ) -> dict[str, Any]:
-        """Truy vấn trang danh sách đề xuất schema (EDC proposals)."""
-        pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
-        return self.sqlite_repo.query_proposals_page(
-            pid,
-            kind=kind,
-            status=status,
-            page=page,
-            page_size=page_size,
-        )
+    def query_proposals_page(self, project_or_id: dict | str, **kwargs: Any) -> dict[str, Any]:
+        return self.projects_service.query_proposals_page(project_or_id, **kwargs)
 
     def get_node_by_id(self, project_or_id: dict | str, node_id: str) -> dict | None:
-        pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
-        return self.sqlite_repo.get_node_by_id(pid, node_id)
+        return self.projects_service.get_node_by_id(project_or_id, node_id)
 
     def get_edge_by_id(self, project_or_id: dict | str, edge_id: str) -> dict | None:
-        pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
-        return self.sqlite_repo.get_edge_by_id(pid, edge_id)
+        return self.projects_service.get_edge_by_id(project_or_id, edge_id)
 
     def create_snapshot(self, project: dict) -> Path:
-        proj_id = str(project.get("project_id") or project.get("name") or "default")
-        proj_name = str(project.get("name") or "")
-        mem_rev = compute_project_revision(project)
-        clean_disk = self._can_copy_disk_snapshot(proj_id, proj_name, mem_rev)
-        return self.json_repo.create_snapshot(project, copy_from_disk_if_clean=clean_disk)
+        return self.projects_service.create_snapshot(project)
 
     def list_snapshots(self, project: dict) -> list[Path]:
-        return self.json_repo.list_snapshots(project)
+        return self.projects_service.list_snapshots(project)
 
     def restore_snapshot(self, project: dict, path: Path) -> dict:
-        proj_id = str(project.get("project_id") or project.get("name") or "default")
-        with self._get_lock(proj_id):
-            restored = self.json_repo.restore_snapshot(project, path)
-            self._last_committed_revision[proj_id] = compute_project_revision(restored)
-            self._record_disk_stat(proj_id, str(restored.get("name") or project.get("name") or ""))
-            try:
-                self.vector_repo.invalidate_project_indices(
-                    proj_id,
-                    kind="relations",
-                    current_catalog_items=catalog_rows(restored, "relations"),
-                )
-                self.vector_repo.invalidate_project_indices(
-                    proj_id,
-                    kind="entity_types",
-                    current_catalog_items=catalog_rows(restored, "entity_types"),
-                )
-            except Exception:
-                pass
-            self._sync_sqlite_safe(restored)
-            project.clear()
-            project.update(restored)
-            return project
+        return self.projects_service.restore_snapshot(project, path)
 
     def project_revision(self, project: dict) -> str:
-        return compute_project_revision(project)
+        return self.projects_service.project_revision(project)
 
-    # --- Quản lý Tài liệu ---
+    # =========================================================================
+    # 2. PHÂN HỆ DOCUMENTS & EXTRACTION (backend/modules/extraction)
+    # =========================================================================
+
     def add_document(self, project: dict, name: str, data: bytes, place_scope: str = "", source_label: str = "") -> tuple[bool, str]:
-        return add_document(project, name, data, place_scope, source_label)
+        return self.extraction_service.add_document(project, name, data, place_scope, source_label)
 
     def document_chunks(self, doc: dict, limit: int = 3200, overlap: int = 250) -> list[dict]:
-        return document_chunks(doc, limit, overlap)
-
-    # --- Quản lý Danh mục & Cấu hình EDC+R ---
-    def list_embedding_models(self) -> list[dict]:
-        return list_registered_models()
+        return self.extraction_service.document_chunks(doc)
 
     def available_extraction_modes(self) -> list[dict]:
         return self.engine_registry.available_modes()
 
+    def get_active_prompt_version(self, project: dict, configuration_id: str | None = None) -> dict | None:
+        return self.extraction_service.get_active_prompt_version(project, configuration_id or "")
+
+    def get_active_prompt_content(self, project: dict, configuration_id: str | None = None) -> str:
+        ver = self.get_active_prompt_version(project, configuration_id)
+        return ver.get("content", "") if ver else ""
+
+    def list_prompt_versions(self, project: dict, configuration_id: str | None = None) -> list[dict]:
+        return self.extraction_service.list_prompt_versions(project, configuration_id or "")
+
+    def get_prompt_version(self, project: dict, version_id: str) -> dict | None:
+        return self.extraction_service.get_prompt_version(project, "", version_id)
+
+    def save_prompt_version(self, project: dict, configuration_id: str, content: str, *, note: str = "", created_by: str = "local_user") -> tuple[dict, bool]:
+        from backend.domain.prompts.service import save_prompt_version as domain_save_prompt_version
+        return domain_save_prompt_version(project, configuration_id, content, note=note, created_by=created_by)
+
+    def restore_prompt_version(self, project: dict, target_version_id: str, *, note: str = "", created_by: str = "local_user") -> tuple[dict, bool]:
+        from backend.domain.prompts.service import restore_prompt_version as domain_restore_prompt_version
+        return domain_restore_prompt_version(project, target_version_id, note=note, created_by=created_by)
+
+    def diff_prompt_versions(self, v1_content: str, v2_content: str, v1_name: str = "Bản cũ", v2_name: str = "Bản mới") -> str:
+        return self.extraction_service.diff_prompt_versions({}, "", v1_content, v2_content) if hasattr(self.extraction_service, "diff_prompt_versions") else ""
+
+    def preview_extraction_request(self, project: dict, **kwargs: Any) -> PreparedExtractionRequestDTO:
+        return self.extraction_service.preview_extraction_request(project, **kwargs)
+
+    def extract_chunk(self, project: dict, document: dict, chunk_record: dict, **kwargs: Any) -> EngineOutput:
+        return self.extraction_service.extract_chunk(project, document, chunk_record, **kwargs)
+
+    def extract_chunks_parallel(self, project: dict, tasks: list[tuple[dict, dict]], **kwargs: Any) -> dict[str, Any]:
+        return self.extraction_service.extract_chunks_parallel(
+            project, tasks, chunk_extractor=self.extract_chunk, project_saver=self.save_project, **kwargs
+        )
+
+    # =========================================================================
+    # 3. PHÂN HỆ SCHEMA INTELLIGENCE (backend/modules/schema_intelligence)
+    # =========================================================================
+
+    def list_embedding_models(self) -> list[dict]:
+        return list_registered_models()
+
     def get_edc_plus_r_settings(self, project: dict) -> EDCPlusRSettingsDTO:
-        return EDCPlusRSettingsDTO.from_dict(project.get("edc_plus_r_settings"))
+        return self.schema_service.get_edc_plus_r_settings(project)
 
     def update_edc_plus_r_settings(self, project: dict, settings_dict: dict) -> dict:
         dto = EDCPlusRSettingsDTO.from_dict(settings_dict)
@@ -421,715 +270,61 @@ class KGStudioFacade:
         return project["edc_plus_r_settings"]
 
     def save_prompt_settings(self, project: dict, prompt: str, relations: list[dict], entity_types: list[dict]) -> bool:
-        return save_prompt_settings(project, prompt, relations, entity_types)
+        from backend.domain.catalogs.core import save_prompt_settings as domain_save_prompt_settings
+        return domain_save_prompt_settings(project, prompt, relations, entity_types)
 
     def extraction_prompt(self, project: dict) -> str:
-        return extraction_prompt(project)
+        from backend.domain.catalogs.core import extraction_prompt as domain_extraction_prompt
+        return domain_extraction_prompt(project)
 
-    # --- Quản lý Phiên bản Prompt & Xem trước Request ---
-    def get_active_prompt_version(self, project: dict, configuration_id: str | None = None) -> dict | None:
-        return get_active_prompt_version(project, configuration_id)
-
-    def get_active_prompt_content(self, project: dict, configuration_id: str | None = None) -> str:
-        return get_active_prompt_content(project, configuration_id)
-
-    def list_prompt_versions(self, project: dict, configuration_id: str | None = None) -> list[dict]:
-        return list_prompt_versions(project, configuration_id)
-
-    def get_prompt_version(self, project: dict, version_id: str) -> dict | None:
-        return get_prompt_version(project, version_id)
-
-    def save_prompt_version(
-        self,
-        project: dict,
-        configuration_id: str,
-        content: str,
-        *,
-        note: str = "",
-        created_by: str = "local_user",
-    ) -> tuple[dict, bool]:
-        return save_prompt_version(project, configuration_id, content, note=note, created_by=created_by)
-
-    def restore_prompt_version(
-        self,
-        project: dict,
-        target_version_id: str,
-        *,
-        note: str = "",
-        created_by: str = "local_user",
-    ) -> tuple[dict, bool]:
-        return restore_prompt_version(project, target_version_id, note=note, created_by=created_by)
-
-    def diff_prompt_versions(
-        self,
-        v1_content: str,
-        v2_content: str,
-        v1_name: str = "Bản cũ",
-        v2_name: str = "Bản mới",
-    ) -> str:
-        return diff_prompt_versions(v1_content, v2_content, v1_name=v1_name, v2_name=v2_name)
-
-    def preview_extraction_request(
-        self,
-        project: dict,
-        *,
-        configuration_id: str,
-        doc_id: str = "",
-        chunk_number: int = 1,
-        draft_content: str | None = None,
-        provider: str | None = None,
-        model: str | None = None,
-        base_url: str = "",
-        temperature: float = 0.0,
-        max_tokens: int = 8192,
-        max_input_tokens: int = 16000,
-    ) -> PreparedExtractionRequestDTO:
-        docs = project.get("documents", [])
-        target_doc = None
-        if doc_id:
-            for d in docs:
-                if d.get("id") == doc_id or d.get("name") == doc_id:
-                    target_doc = d
-                    break
-        if not target_doc and docs:
-            target_doc = docs[0]
-
-        if target_doc:
-            chunks = self.document_chunks(target_doc)
-            chunk_rec = next((c for c in chunks if c.get("chunk_number") == chunk_number), chunks[0] if chunks else None)
-            chunk_text = chunk_rec.get("text", "") if chunk_rec else (target_doc.get("text", "")[:2000])
-        else:
-            chunk_text = "Văn bản mẫu để kiểm tra trước cấu hình trích xuất và kiểm tra ngân sách token."
-
-        cfg_id = configuration_id or project.get("extraction_mode", MODE_FIXED)
-        active_ver = get_active_prompt_version(project, cfg_id)
-
-        if draft_content is not None and draft_content.strip():
-            base_instructions = draft_content.strip()
-            is_draft = True
-            ver_id = active_ver.get("id", "draft") if active_ver else "draft"
-            ver_hash = compute_prompt_hash(base_instructions)
-        else:
-            is_draft = False
-            base_instructions = active_ver.get("content", DEFAULT_PROMPTS.get(cfg_id, "")) if active_ver else DEFAULT_PROMPTS.get(cfg_id, "")
-            ver_id = active_ver.get("id", "") if active_ver else ""
-            ver_hash = active_ver.get("content_hash", "") if active_ver else ""
-
-        retrieval_summary: dict[str, Any] = {}
-        if cfg_id == MODE_FIXED:
-            catalogs = {"relations": relation_catalog(project), "entity_types": project.get("entity_types", [])}
-            appended = (
-                "\n\nDANH MỤC QUAN HỆ VÀ LOẠI THỰC THỂ ĐƯỢC PHÉP (JSON):\n"
-                + json.dumps(catalogs, ensure_ascii=False, indent=2)
-                + "\nChỉ dùng name trong relations cho trường quan_he và name trong entity_types cho trường loai."
-            )
-            full_sys_prompt = base_instructions + appended
-            allowed_relations = project.get("relations", [])
-            open_mode = False
-        elif cfg_id == MODE_EDC:
-            appended = "Hợp đồng JSON cấu trúc trích xuất mở (EDC_SCHEMA)."
-            full_sys_prompt = edc_prompt(base_instructions)
-            allowed_relations = []
-            open_mode = True
-        elif cfg_id == MODE_EDC_PLUS_R:
-            settings = self.get_edc_plus_r_settings(project)
-            embedder = default_embedder(settings.embedder_model)
-            retrieved = self.retriever.retrieve_for_chunk(
-                project,
-                chunk_text,
-                top_k_relations=settings.top_k_relations,
-                top_k_entity_types=settings.top_k_entity_types,
-                embedder=embedder,
-            )
-            schema_block = self.retriever.format_retrieved_schema_block(retrieved)
-            augmented = base_instructions.strip() + "\n\n" + schema_block
-            full_sys_prompt = edc_prompt(augmented)
-            appended = schema_block
-            allowed_relations = []
-            open_mode = True
-            retrieval_summary = {
-                "retrieved_relations": len(retrieved.get("relations", [])),
-                "retrieved_entity_types": len(retrieved.get("entity_types", [])),
-                "embedder_model": embedder.model_id,
-            }
-        else:
-            full_sys_prompt = base_instructions
-            appended = ""
-            allowed_relations = []
-            open_mode = False
-
-        prov = provider or LLMGateway.DEFAULT_PROVIDER
-        mod = model or LLMGateway.DEFAULT_MODELS.get(prov, "deepseek-chat")
-
-        return LLMGateway.prepare_extraction_request(
-            provider=prov,
-            model=mod,
-            system_prompt=full_sys_prompt,
-            chunk=chunk_text,
-            allowed_relations=allowed_relations,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            max_input_tokens=max_input_tokens,
-            open_mode=open_mode,
-            project_id=str(project.get("project_id", "")),
-            configuration_id=cfg_id,
-            prompt_version_id=ver_id,
-            prompt_content_hash=ver_hash,
-            base_instructions=base_instructions,
-            appended_content=appended,
-            loop_index=1,
-            is_draft=is_draft,
-            retrieval_summary=retrieval_summary,
-        )
-
-    # --- Schema Retriever (+R) & Target Alignment ---
     def retrieve_schema_for_chunk(self, project: dict, chunk_text: str) -> dict[str, list[dict]]:
-        settings = self.get_edc_plus_r_settings(project)
-        embedder = default_embedder(settings.embedder_model)
-        return self.retriever.retrieve_for_chunk(
-            project,
-            chunk_text,
-            top_k_relations=settings.top_k_relations,
-            top_k_entity_types=settings.top_k_entity_types,
-            embedder=embedder,
-        )
+        return self.schema_service.retrieve_schema_for_chunk(project, chunk_text)
 
     def rank_alignment_candidates(self, project: dict, kind: str, open_name: str, open_definition: str, top_k: int = 5) -> list[dict]:
-        settings = self.get_edc_plus_r_settings(project)
-        embedder = default_embedder(settings.embedder_model)
-        cands = self.aligner.rank_candidates(
-            project,
-            kind,
-            open_name,
-            open_definition,
-            top_k=top_k,
-            embedder=embedder,
-        )
-        return [c.to_dict() for c in cands]
+        return self.schema_service.rank_alignment_candidates(project, kind, open_name, open_definition, top_k=top_k)
 
-    def refresh_proposal_candidates(
-        self,
-        project: dict,
-        proposal_ids: list[str],
-        kind: str | None = None,
-        *,
-        save: bool = True,
-        embedder: Any | None = None,
-    ) -> dict[str, Any]:
-        """Làm mới gợi ý Target Alignment chỉ trên danh sách proposal_ids được chọn."""
-        settings = self.get_edc_plus_r_settings(project)
-        active_embedder = embedder if embedder is not None else default_embedder(settings.embedder_model)
-        summary = self.aligner.refresh_candidates_for_proposals(
-            project,
-            proposal_ids=proposal_ids,
-            kind=kind,
-            candidate_threshold=settings.candidate_threshold,
-            top_k=5,
-            embedder=active_embedder,
-        )
-        if save and self.json_repo.project_exists(project.get("name", "")):
-            self.save_project(project)
-        return summary
+    def refresh_proposal_candidates(self, project: dict, proposal_ids: list[str], kind: str | None = None, *, save: bool = True, embedder: Any | None = None) -> dict[str, Any]:
+        return self.schema_service.refresh_proposal_candidates(project, proposal_ids, kind=kind, save=save, embedder=embedder)
 
-    def run_target_alignment_on_pending(
-        self,
-        project: dict,
-        *,
-        proposal_ids: list[str] | None = None,
-        kind: str | None = None,
-    ) -> dict:
-        settings = self.get_edc_plus_r_settings(project)
-        embedder = default_embedder(settings.embedder_model)
-        return self.aligner.align_project_proposals(
-            project,
-            auto_align_threshold=settings.auto_align_threshold,
-            candidate_threshold=settings.candidate_threshold,
-            enable_llm_verifier=False,
-            embedder=embedder,
-            proposal_ids=proposal_ids,
-            kind=kind,
-        )
+    def run_target_alignment_on_pending(self, project: dict, *, proposal_ids: list[str] | None = None, kind: str | None = None) -> dict:
+        return self.schema_service.run_target_alignment_on_pending(project, proposal_ids=proposal_ids, kind=kind)
 
-    def decide_proposal(
-        self,
-        project: dict,
-        proposal_id: str,
-        action: str,
-        canonical_name: str = "",
-        definition: str = "",
-        note: str = "",
-        description: str = "",
-    ) -> dict:
-        return decide_proposal(project, proposal_id, action, canonical_name, definition, note, description)
+    def decide_proposal(self, project: dict, proposal_id: str, action: str, canonical_name: str = "", definition: str = "", note: str = "", description: str = "") -> dict:
+        return self.schema_service.decide_proposal(project, proposal_id, action, canonical_name, definition, note, description)
 
-    # --- Duyệt EDC Hàng Loạt (Preview & Commit Transactional) ---
-    def preview_proposal_decisions(
-        self,
-        project: dict,
-        request: BulkReviewRequestDTO | dict,
-    ) -> BulkReviewPreviewDTO:
-        """Xem trước lô quyết định EDC (không ghi đĩa, không tạo snapshot, không đổi trạng thái)."""
-        model_fp = self._current_model_fingerprint(project)
-        preview = domain_preview_proposal_decisions(
-            project,
-            request,
-            current_model_fingerprint=model_fp,
-        )
-        return preview
+    def decide_single_proposal(self, project: dict, proposal_id: str, action: str, canonical_name: str = "", definition: str = "", note: str = "", description: str = "") -> dict[str, Any]:
+        return self.schema_service.decide_single_proposal(project, proposal_id, action, canonical_name, definition, note, description)
 
-    def apply_proposal_decisions(
-        self,
-        project: dict,
-        request: BulkReviewRequestDTO | dict,
-        *,
-        preview: BulkReviewPreviewDTO | dict | None = None,
-    ) -> BulkReviewResultDTO:
-        """Xác thực lại lô quyết định dưới khóa dự án, tạo snapshot, lưu bundle JSON và đồng bộ SQLite."""
-        req = BulkReviewRequestDTO.from_dict(request)
-        proj_id = str(project.get("project_id") or req.project_id or project.get("name") or "default")
-        proj_name = str(project.get("name") or "")
+    def preview_proposal_decisions(self, project: dict, request: BulkReviewRequestDTO | dict) -> BulkReviewPreviewDTO:
+        return self.schema_service.preview_proposal_decisions(project, request)
 
-        with self._get_lock(proj_id):
-            # 1. Kiểm tra idempotency theo request_id (chống nhấn đúp / retry lặp)
-            full_hash = compute_full_request_hash(req)
-            if req.request_id:
-                cached = self._idempotency_cache.get((proj_id, req.request_id))
-                if cached is None:
-                    cached = project.get("edc_idempotency_store", {}).get(req.request_id)
-                if cached is None and proj_name and self._disk_changed_externally(proj_id, proj_name):
-                    try:
-                        disk_p = self.json_repo.load_project(proj_name)
-                        cached = disk_p.get("edc_idempotency_store", {}).get(req.request_id)
-                    except Exception:
-                        cached = None
-                if cached is not None:
-                    if cached.get("request_hash") != full_hash:
-                        raise ValueError(
-                            f"request_id '{req.request_id}' đã được dùng cho một nội dung request khác. Từ chối thực thi."
-                        )
-                    replayed = BulkReviewResultDTO.from_dict(copy.deepcopy(cached["result"]))
-                    replayed.idempotent_replay = True
-                    return replayed
+    def apply_proposal_decisions(self, project: dict, request: BulkReviewRequestDTO | dict, *, preview: BulkReviewPreviewDTO | dict | None = None) -> BulkReviewResultDTO:
+        return self.schema_service.apply_proposal_decisions(project, request, preview=preview)
 
-            # 2. Kiểm tra xung đột đa phiên (nếu một phiên khác đã commit lên đĩa sau expected_revision)
-            mem_rev = self._check_revision_conflict(proj_id, proj_name, project, req.expected_revision)
+    # =========================================================================
+    # 4. PHÂN HỆ CURATION (backend/modules/curation)
+    # =========================================================================
 
-            # 3. Xác thực lại toàn bộ lô trên bản sao dự án
-            model_fp = self._current_model_fingerprint(project)
-            prev_cat_hash = compute_catalog_hash(project, req.kind if req.kind in ("relations", "entity_types") else None)
-            candidate, result = domain_apply_proposal_decisions(
-                project,
-                req,
-                preview=preview,
-                current_model_fingerprint=model_fp,
-                mutate_in_place=False,
-            )
+    def preview_curation_decisions(self, project: dict, request: CurationReviewRequestDTO | dict) -> CurationPreviewDTO:
+        return self.curation_service.preview_curation_decisions(project, request)
 
-            # 4. Tạo đúng 1 snapshot trước khi commit bộ file
-            clean_disk = self._can_copy_disk_snapshot(proj_id, proj_name, mem_rev)
-            snap_path = self.json_repo.create_snapshot(project, copy_from_disk_if_clean=clean_disk)
-            snap_str = str(snap_path)
-            result.snapshot_path = snap_str
-            if candidate.get("schema_decision_batches"):
-                candidate["schema_decision_batches"][-1]["snapshot_path"] = snap_str
+    def apply_curation_decisions(self, project: dict, request: CurationReviewRequestDTO | dict, *, preview: CurationPreviewDTO | dict | None = None) -> CurationResultDTO:
+        return self.curation_service.apply_curation_decisions(project, request, preview=preview)
 
-            # 5. Lưu thông tin idempotency vào candidate trước khi ghi bundle JSON
-            idem_entry = {
-                "request_id": result.request_id,
-                "request_hash": full_hash,
-                "at": now_iso(),
-                "result": result.to_dict(),
-            }
-            candidate["edc_idempotency_store"] = dict(candidate.get("edc_idempotency_store") or {})
-            candidate["edc_idempotency_store"][result.request_id] = idem_entry
+    def preview_entity_merge(self, project: dict, request: EntityMergeRequestDTO | dict) -> EntityMergePreviewDTO:
+        return self.curation_service.preview_entity_merge(project, request)
 
-            # 6. Lưu atomic bundle (project.json + relations.json + entity_types.json); lỗi I/O sẽ rollback
-            try:
-                self.json_repo.save_project(candidate)
-            except Exception:
-                snap_path.unlink(missing_ok=True)
-                raise
+    def apply_entity_merge(self, project: dict, request: EntityMergeRequestDTO | dict, *, preview: EntityMergePreviewDTO | dict | None = None) -> CurationResultDTO:
+        return self.curation_service.apply_entity_merge(project, request, preview=preview)
 
-            # 7. Chỉ cập nhật trạng thái dự án trong bộ nhớ sau khi JSON đã commit thành công
-            if candidate is not project:
-                project.clear()
-                project.update(candidate)
-            self._last_committed_revision[proj_id] = result.revision_after
-            self._record_disk_stat(proj_id, str(project.get("name") or proj_name))
-
-            # 8. Vô hiệu hóa chỉ mục vector nếu danh mục thay đổi (không làm đảo quyết định nếu lỗi)
-            new_cat_hash = compute_catalog_hash(project, req.kind if req.kind in ("relations", "entity_types") else None)
-            if new_cat_hash != prev_cat_hash:
-                result.vector_index_status = "invalidated"
-                try:
-                    self.vector_repo.invalidate_project_indices(
-                        proj_id,
-                        kind=req.kind,
-                        current_catalog_items=catalog_rows(project, req.kind),
-                    )
-                except Exception:
-                    pass
-            else:
-                result.vector_index_status = "valid"
-
-            # 9. Đồng bộ SQLite trong transaction; nếu lỗi thì đánh dấu sync_pending nhưng vẫn giữ kết quả committed
-            self._sync_sqlite_safe(project, result)
-
-            idem_entry["result"] = result.to_dict()
-            project.setdefault("edc_idempotency_store", {})[result.request_id] = idem_entry
-            self._idempotency_cache[(proj_id, result.request_id)] = idem_entry
-            return result
-
-    # --- Trích xuất ---
-    def extract_chunk(
-        self,
-        project: dict,
-        document: dict,
-        chunk_record: dict,
-        *,
-        provider: str,
-        api_key: str,
-        model: str,
-        base_url: str = "",
-        temperature: float = 0.0,
-        max_tokens: int = 8192,
-        max_input_tokens: int = 12000,
-        client: object | None = None,
-        lock: threading.Lock | threading.RLock | None = None,
-    ) -> EngineOutput:
-        mode = project.get("extraction_mode", "closed")
-        engine = self.engine_registry.get(mode)
-        ctx = ChunkContext(
-            project=project,
-            document=document,
-            chunk_record=chunk_record,
-            provider=provider,
-            api_key=api_key,
-            model=model,
-            base_url=base_url,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            max_input_tokens=max_input_tokens,
-            client=client,
-            lock=lock,
-        )
-        output = engine.process_chunk(ctx)
-
-        sys_prompt = extraction_prompt(project)
-        rel_sig = (
-            "edc_plus_r"
-            if mode == MODE_EDC_PLUS_R
-            else ("edc" if mode == MODE_EDC else "|".join(project.get("relations", [])))
-        )
-        p_id = prompt_signature(sys_prompt, [rel_sig])
-        c_key = cache_key(document, chunk_record, p_id, rel_sig, provider, model, base_url, temperature, max_tokens)
-
-        raw = output.raw_response or ""
-        run_record = {
-            "at": now_iso(),
-            "doc_id": document["id"],
-            "doc_name": document.get("name", ""),
-            "chunk_number": chunk_record["chunk_number"],
-            "chunk_hash": chunk_record.get("chunk_hash", ""),
-            "cache_key": c_key,
-            "provider": provider,
-            "model": model,
-            "prompt_id": p_id,
-            "prompt_version_id": getattr(output, "prompt_version_id", ""),
-            "prompt_content_hash": getattr(output, "prompt_content_hash", ""),
-            "prepared_request_hash": getattr(output, "prepared_request_hash", ""),
-            "prepared_request": getattr(output, "prepared_request", {}),
-            "extraction_mode": mode,
-            "input_tokens": output.input_tokens,
-            "output_tokens": output.output_tokens,
-            "added_nodes": output.ingest_stats.get("added_nodes", 0),
-            "added_edges": output.ingest_stats.get("added_edges", 0),
-            "duplicates": output.ingest_stats.get("duplicates", 0),
-            "discarded": output.ingest_stats.get("discarded", 0),
-            "evidence_mismatch": output.ingest_stats.get("evidence_mismatch", 0),
-            "disallowed_relations": output.ingest_stats.get("disallowed_relations", []),
-            "rejected_items": output.ingest_stats.get("rejected_items", []),
-            "new_proposals": output.ingest_stats.get("new_proposals", 0),
-            "warnings": output.warnings,
-            "step_traces": output.step_traces,
-            "alignment_summary": output.alignment_summary,
-            "raw_response": raw[:100_000],
-            "raw_truncated": len(raw) > 100_000,
-            "status": "ok",
-        }
-
-        if lock:
-            with lock:
-                project.setdefault("runs", []).append(run_record)
-                project.setdefault("processed_chunks", {})[c_key] = now_iso()
-        else:
-            project.setdefault("runs", []).append(run_record)
-            project.setdefault("processed_chunks", {})[c_key] = now_iso()
-
-        return output
-
-    def extract_chunks_parallel(
-        self,
-        project: dict,
-        tasks: list[tuple[dict, dict]],
-        *,
-        provider: str,
-        api_key: str,
-        model: str,
-        base_url: str = "",
-        temperature: float = 0.0,
-        max_tokens: int = 8192,
-        max_input_tokens: int = 12000,
-        max_workers: int = 3,
-        on_progress: Callable[[int, int, dict, dict, EngineOutput | None, Exception | None], None] | None = None,
-        save_after_chunk: bool = True,
-    ) -> dict[str, Any]:
-        """Trích xuất đồng thời nhiều đoạn văn bản qua LLM API sử dụng ThreadPoolExecutor an toàn đa luồng."""
-        proj_id = str(project.get("project_id") or project.get("name") or "default")
-        proj_lock = self.get_project_lock(proj_id)
-
-        workers = max(1, min(int(max_workers or 1), 32))
-        total_tasks = len(tasks)
-        success_count = 0
-        failed_tasks: list[dict] = []
-        completed_count = 0
-
-        if workers == 1:
-            for idx, (doc, rec) in enumerate(tasks, 1):
-                try:
-                    out = self.extract_chunk(
-                        project,
-                        doc,
-                        rec,
-                        provider=provider,
-                        api_key=api_key,
-                        model=model,
-                        base_url=base_url,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        max_input_tokens=max_input_tokens,
-                        lock=proj_lock,
-                    )
-                    if save_after_chunk:
-                        with proj_lock:
-                            self.save_project(project)
-                    success_count += 1
-                    if on_progress:
-                        on_progress(idx, total_tasks, doc, rec, out, None)
-                except Exception as exc:
-                    failed_tasks.append({"doc": doc, "rec": rec, "error": str(exc)})
-                    if on_progress:
-                        on_progress(idx, total_tasks, doc, rec, None, exc)
-            return {
-                "total": total_tasks,
-                "success_count": success_count,
-                "failed_count": len(failed_tasks),
-                "failed_tasks": failed_tasks,
-            }
-
-        def _worker(task_tuple: tuple[dict, dict]) -> EngineOutput:
-            d, r = task_tuple
-            out = self.extract_chunk(
-                project,
-                d,
-                r,
-                provider=provider,
-                api_key=api_key,
-                model=model,
-                base_url=base_url,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                max_input_tokens=max_input_tokens,
-                lock=proj_lock,
-            )
-            if save_after_chunk:
-                with proj_lock:
-                    self.save_project(project)
-            return out
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            future_to_task = {
-                executor.submit(_worker, task): task
-                for task in tasks
-            }
-            for future in concurrent.futures.as_completed(future_to_task):
-                completed_count += 1
-                doc, rec = future_to_task[future]
-                try:
-                    out = future.result()
-                    success_count += 1
-                    if on_progress:
-                        on_progress(completed_count, total_tasks, doc, rec, out, None)
-                except Exception as exc:
-                    failed_tasks.append({"doc": doc, "rec": rec, "error": str(exc)})
-                    if on_progress:
-                        on_progress(completed_count, total_tasks, doc, rec, None, exc)
-
-        return {
-            "total": total_tasks,
-            "success_count": success_count,
-            "failed_count": len(failed_tasks),
-            "failed_tasks": failed_tasks,
-        }
-
-    # --- Kiểm duyệt & Gộp thực thể ---
-    def _commit_curation_operation(
-        self,
-        project: dict,
-        *,
-        expected_revision: str,
-        request_id: str,
-        request_hash: str,
-        executor,
-    ) -> CurationResultDTO:
-        """Thực thi transactional cho mọi thao tác ghi ở Trang 5 (kiểm tra idempotency, revision, tạo snapshot, ghi atomic JSON, đồng bộ SQLite)."""
-        proj_id = str(project.get("project_id") or project.get("name") or "default")
-        proj_name = str(project.get("name") or "")
-
-        with self._get_lock(proj_id):
-            if request_id:
-                cache_key_id = (f"curation:{proj_id}", request_id)
-                cached = self._idempotency_cache.get(cache_key_id)
-                if cached is None:
-                    cached = project.get("curation_idempotency_store", {}).get(request_id)
-                if cached is None and proj_name and self._disk_changed_externally(proj_id, proj_name):
-                    try:
-                        disk_p = self.json_repo.load_project(proj_name)
-                        cached = disk_p.get("curation_idempotency_store", {}).get(request_id)
-                    except Exception:
-                        cached = None
-                if cached is not None:
-                    if cached.get("request_hash") != request_hash:
-                        raise ValueError(
-                            f"request_id '{request_id}' đã được dùng cho một nội dung thao tác khác. Từ chối thực thi."
-                        )
-                    replayed = CurationResultDTO.from_dict(copy.deepcopy(cached["result"]))
-                    replayed.idempotent_replay = True
-                    return replayed
-
-            mem_rev = self._check_revision_conflict(proj_id, proj_name, project, expected_revision)
-
-            candidate, result = executor(project)
-
-            clean_disk = self._can_copy_disk_snapshot(proj_id, proj_name, mem_rev)
-            snap_path = self.json_repo.create_snapshot(project, copy_from_disk_if_clean=clean_disk)
-            snap_str = str(snap_path)
-            result.snapshot_path = snap_str
-            if candidate.get("curation_decision_batches"):
-                candidate["curation_decision_batches"][-1]["snapshot_path"] = snap_str
-            if candidate.get("entity_merges") and result.operation in ("entity_merge", "bulk_entity_merge"):
-                candidate["entity_merges"][-1]["snapshot_path"] = snap_str
-            if candidate.get("relation_merges") and result.operation in ("relation_merge", "bulk_relation_merge", "collapse_duplicate_edges"):
-                candidate["relation_merges"][-1]["snapshot_path"] = snap_str
-            if candidate.get("entity_type_merges") and result.operation in ("bulk_entity_type_merge", "entity_type_merge"):
-                candidate["entity_type_merges"][-1]["snapshot_path"] = snap_str
-
-            idem_entry = {
-                "request_id": result.request_id,
-                "request_hash": request_hash,
-                "at": now_iso(),
-                "result": result.to_dict(),
-            }
-            candidate["curation_idempotency_store"] = dict(candidate.get("curation_idempotency_store") or {})
-            candidate["curation_idempotency_store"][result.request_id] = idem_entry
-
-            try:
-                self.json_repo.save_project(candidate)
-            except Exception:
-                snap_path.unlink(missing_ok=True)
-                raise
-
-            if candidate is not project:
-                project.clear()
-                project.update(candidate)
-            self._last_committed_revision[proj_id] = result.revision_after
-            self._record_disk_stat(proj_id, str(project.get("name") or proj_name))
-
-            self._sync_sqlite_safe(project, result)
-
-            idem_entry["result"] = result.to_dict()
-            project.setdefault("curation_idempotency_store", {})[result.request_id] = idem_entry
-            self._idempotency_cache[(f"curation:{proj_id}", result.request_id)] = idem_entry
-            return result
-
-    def preview_curation_decisions(
-        self,
-        project: dict,
-        request: CurationReviewRequestDTO | dict,
-    ) -> CurationPreviewDTO:
-        return domain_preview_curation_decisions(project, request)
-
-    def apply_curation_decisions(
-        self,
-        project: dict,
-        request: CurationReviewRequestDTO | dict,
-        *,
-        preview: CurationPreviewDTO | dict | None = None,
-    ) -> CurationResultDTO:
-        req = CurationReviewRequestDTO.from_dict(request)
-        req_hash = compute_curation_request_hash(req)
-
-        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            return domain_apply_curation_decisions(proj, req, preview=preview, mutate_in_place=False)
-
-        return self._commit_curation_operation(
-            project,
-            expected_revision=req.expected_revision,
-            request_id=req.request_id,
-            request_hash=req_hash,
-            executor=_exec,
-        )
-
-    def preview_entity_merge(
-        self,
-        project: dict,
-        request: EntityMergeRequestDTO | dict,
-    ) -> EntityMergePreviewDTO:
-        return domain_preview_entity_merge(project, request)
-
-    def apply_entity_merge(
-        self,
-        project: dict,
-        request: EntityMergeRequestDTO | dict,
-        *,
-        preview: EntityMergePreviewDTO | dict | None = None,
-    ) -> CurationResultDTO:
-        req = EntityMergeRequestDTO.from_dict(request)
-        req_hash = compute_curation_request_hash(req)
-
-        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            return domain_apply_entity_merge(proj, req, preview=preview, mutate_in_place=False)
-
-        return self._commit_curation_operation(
-            project,
-            expected_revision=req.expected_revision,
-            request_id=req.request_id,
-            request_hash=req_hash,
-            executor=_exec,
-        )
-
-    def apply_bulk_entity_merges(
-        self,
-        project: dict,
-        pairs: list[dict | tuple[str, str]],
-        *,
-        collapse_edges: bool = False,
-        note: str = "",
-        actor: str = "human_reviewer",
-    ) -> CurationResultDTO:
-        req_hash = sha(json.dumps({"pairs": pairs, "collapse": collapse_edges}, sort_keys=True, default=str))[:16]
-
-        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            return domain_apply_bulk_entity_merges(
-                proj, pairs, collapse_edges=collapse_edges, note=note, actor=actor, mutate_in_place=False
-            )
-
-        return self._commit_curation_operation(
+    def apply_bulk_entity_merges(self, project: dict, pairs: list[Any], *, collapse_edges: bool = False, note: str = "", actor: str = "human_reviewer") -> CurationResultDTO:
+        from backend.domain.curation.merge import apply_bulk_entity_merges as domain_bulk
+        return self.curation_service._commit_curation_operation(
             project,
             expected_revision="",
-            request_id=uid(),
-            request_hash=req_hash,
-            executor=_exec,
+            request_id="bulk_merge",
+            request_hash="",
+            executor=lambda p: domain_bulk(p, pairs, collapse_edges=collapse_edges, note=note, actor=actor, mutate_in_place=False),
         )
 
     def relation_duplicate_suggestions(
@@ -1137,587 +332,173 @@ class KGStudioFacade:
         project: dict,
         fuzzy_threshold: float = 0.75,
         *,
+        threshold: float | None = None,
         include_dismissed: bool = False,
-    ) -> list[dict[str, Any]]:
-        return domain_relation_duplicate_suggestions(
+        **kwargs: Any,
+    ) -> list[dict]:
+        eff_threshold = threshold if threshold is not None else fuzzy_threshold
+        return self.curation_service.relation_duplicate_suggestions(
             project,
-            fuzzy_threshold=fuzzy_threshold,
+            fuzzy_threshold=eff_threshold,
             include_dismissed=include_dismissed,
+            **kwargs,
         )
 
     def apply_relation_merge(
         self,
         project: dict,
-        source_relations: list[str],
+        source_relations: list[str] | str,
         target_relation: str,
         *,
         collapse_edges: bool = False,
         note: str = "",
         actor: str = "human_reviewer",
+        **kwargs: Any,
     ) -> CurationResultDTO:
-        req_hash = sha(json.dumps({"src": sorted(source_relations), "tgt": target_relation, "collapse": collapse_edges}, sort_keys=True))[:16]
-
-        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            return domain_apply_relation_merge(
-                proj, source_relations, target_relation, collapse_edges=collapse_edges, note=note, actor=actor, mutate_in_place=False
-            )
-
-        return self._commit_curation_operation(
+        return self.curation_service.apply_relation_merge(
             project,
-            expected_revision="",
-            request_id=uid(),
-            request_hash=req_hash,
-            executor=_exec,
+            source_relations,
+            target_relation,
+            collapse_edges=collapse_edges,
+            note=note,
+            actor=actor,
+            **kwargs,
         )
 
-    def bulk_apply_relation_merges(
-        self,
-        project: dict,
-        mappings: list[dict | tuple[str, str]],
-        *,
-        collapse_edges: bool = False,
-        note: str = "",
-        actor: str = "human_reviewer",
-    ) -> CurationResultDTO:
-        req_hash = sha(json.dumps({"mappings": mappings, "collapse": collapse_edges}, sort_keys=True, default=str))[:16]
+    def bulk_apply_relation_merges(self, project: dict, mappings: list[Any], *, collapse_edges: bool = False, note: str = "", actor: str = "human_reviewer") -> CurationResultDTO:
+        return self.curation_service.bulk_apply_relation_merges(project, mappings, collapse_edges=collapse_edges, note=note, actor=actor)
 
-        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            return domain_bulk_apply_relation_merges(
-                proj, mappings, collapse_edges=collapse_edges, note=note, actor=actor, mutate_in_place=False
-            )
+    def collapse_duplicate_edges(self, project: dict, *, actor: str = "human_reviewer", note: str = "") -> CurationResultDTO:
+        return self.curation_service.collapse_duplicate_edges(project, actor=actor, note=note)
 
-        return self._commit_curation_operation(
-            project,
-            expected_revision="",
-            request_id=uid(),
-            request_hash=req_hash,
-            executor=_exec,
-        )
+    def mark_relation_pair_not_duplicate(self, project: dict, rel_a: str, rel_b: str, note: str = "") -> dict:
+        return self.curation_service.mark_relation_pair_not_duplicate(project, rel_a, rel_b, note=note)
 
-    def collapse_duplicate_edges(
-        self,
-        project: dict,
-        *,
-        note: str = "",
-        actor: str = "human_reviewer",
-    ) -> CurationResultDTO:
-        req_hash = sha(f"collapse_{compute_project_revision(project)}")[:16]
+    def mark_relation_pairs_not_duplicate_bulk(self, project: dict, pairs: list[tuple[str, str]], *, kind: str = "relations", note: str = "") -> dict[str, Any]:
+        return self.curation_service.mark_relation_pairs_not_duplicate_bulk(project, pairs, kind=kind, note=note)
 
-        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            rev_before = compute_project_revision(proj)
-            batch_id = uid()
-            req_id = uid()
-            candidate, dropped_count, records = domain_collapse_duplicate_edges(
-                proj, actor=actor, note=note, mutate_in_place=False
-            )
-            rev_after = compute_project_revision(candidate)
-            res = CurationResultDTO(
-                batch_id=batch_id,
-                request_id=req_id,
-                project_id=str(candidate.get("project_id") or candidate.get("name") or ""),
-                operation="collapse_duplicate_edges",
-                status="applied",
-                apply_mode="all_or_nothing",
-                revision_before=rev_before,
-                revision_after=rev_after,
-                applied_count=dropped_count,
-                merged_duplicate_edges=dropped_count,
-                item_results=records,
-            )
-            return candidate, res
+    def mark_pair_not_duplicate(self, project: dict, node_a_id: str, node_b_id: str, *, note: str = "", actor: str = "human_reviewer", save: bool = True) -> dict[str, Any]:
+        return self.curation_service.mark_pair_not_duplicate(project, node_a_id, node_b_id, note=note, actor=actor, save=save)
 
-        return self._commit_curation_operation(
-            project,
-            expected_revision="",
-            request_id=uid(),
-            request_hash=req_hash,
-            executor=_exec,
-        )
+    def mark_pairs_not_duplicate_bulk(self, project: dict, pairs: list[Any], *, note: str = "", actor: str = "human_reviewer", save: bool = True) -> dict[str, Any]:
+        return self.curation_service.mark_pairs_not_duplicate_bulk(project, pairs, note=note, actor=actor, save=save)
 
-    def mark_relation_pair_not_duplicate(
-        self,
-        project: dict,
-        rel_a: str,
-        rel_b: str,
-        note: str = "",
-    ) -> dict:
-        res = domain_mark_relation_pair_not_duplicate(project, rel_a, rel_b, note=note)
-        self.json_repo.save_project(project)
-        return res
+    def preview_clustering_prompt(self, project: dict, kind: str = "relations", custom_instructions: str = "", scope: str = "top_60") -> str:
+        return self.curation_service.preview_clustering_prompt(project, kind=kind, custom_instructions=custom_instructions, scope=scope)
 
-    def preview_clustering_prompt(
-        self,
-        project: dict,
-        kind: str = "relations",
-        custom_instructions: str = "",
-        scope: str = "top_60",
-    ) -> str:
-        """Tạo bản xem trước toàn bộ Prompt gom cụm gửi LLM cho quan hệ hoặc loại thực thể."""
-        return domain_preview_clustering_prompt(
-            project, kind=kind, custom_instructions=custom_instructions, scope=scope
-        )
+    def scan_semantic_clusters(self, project: dict, kind: str = "relations", **kwargs: Any) -> dict[str, Any]:
+        return self.curation_service.scan_semantic_clusters(project, kind=kind, **kwargs)
 
-    def scan_semantic_clusters(
-        self,
-        project: dict,
-        kind: str = "relations",
-        *,
-        scope: str = "top_60",
-        provider: str = "DeepSeek",
-        api_key: str = "",
-        model: str = "",
-        base_url: str = "",
-        client: Any = None,
-        custom_instructions: str = "",
-        prompt_override: str = "",
-    ) -> dict[str, Any]:
-        """Quét và gom cụm ngữ nghĩa thông minh qua LLM (DeepSeek) cho quan hệ hoặc loại thực thể."""
-        return domain_scan_semantic_clusters(
-            project,
-            kind=kind,
-            scope=scope,
-            provider=provider,
-            api_key=api_key,
-            model=model,
-            base_url=base_url,
-            client=client,
-            custom_instructions=custom_instructions,
-            prompt_override=prompt_override,
-        )
+    def apply_semantic_clusters(self, project: dict, kind: str, approved_clusters: list[dict], **kwargs: Any) -> CurationResultDTO:
+        return self.curation_service.apply_semantic_clusters(project, kind, approved_clusters, **kwargs)
 
-    def apply_semantic_clusters(
-        self,
-        project: dict,
-        kind: str,
-        approved_clusters: list[dict],
-        *,
-        collapse_duplicate_edges: bool = True,
-        note: str = "",
-        actor: str = "human_reviewer",
-    ) -> CurationResultDTO:
-        """Áp dụng các cụm gom ngữ nghĩa AI vào đồ thị dự án (tạo snapshot, cập nhật cạnh/node, lưu aliases)."""
-        req_hash = sha(
-            json.dumps(
-                {"kind": kind, "clusters": approved_clusters, "collapse": collapse_duplicate_edges},
-                sort_keys=True,
-                default=str,
-            )
-        )[:16]
+    def edit_edge_fact(self, project: dict, request: EdgeEditRequestDTO | dict) -> CurationResultDTO:
+        return self.curation_service.edit_edge_fact(project, request)
 
-        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            return domain_apply_semantic_clusters(
-                proj,
-                kind=kind,
-                approved_clusters=approved_clusters,
-                collapse_duplicate_edges=collapse_duplicate_edges,
-                actor=actor,
-                note=note or f"Gom cụm AI cho {len(approved_clusters)} cụm {kind}.",
-                mutate_in_place=False,
-            )
+    def edit_entity_profile(self, project: dict, request: EntityEditRequestDTO | dict) -> CurationResultDTO:
+        return self.curation_service.edit_entity_profile(project, request)
 
-        return self._commit_curation_operation(
-            project,
-            expected_revision="",
-            request_id=uid(),
-            request_hash=req_hash,
-            executor=_exec,
-        )
-
-    def edit_edge_fact(
-        self,
-        project: dict,
-        request: EdgeEditRequestDTO | dict,
-    ) -> CurationResultDTO:
-        req = EdgeEditRequestDTO.from_dict(request)
-        req_hash = compute_curation_request_hash(req)
-
-        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            rev_before = compute_project_revision(proj)
-            if req.expected_revision and req.expected_revision != rev_before:
-                raise ValueError(
-                    f"Phiên bản dự án đã thay đổi ({req.expected_revision} != {rev_before}). Vui lòng tải lại trước khi sửa cạnh."
-                )
-            candidate = copy.deepcopy(proj)
-            updated = update_edge(candidate, req.edge_id, req=req)
-            rev_after = compute_project_revision(candidate)
-            batch_id = uid()
-            request_id = req.request_id or uid()
-            candidate.setdefault("curation_decision_batches", []).append(
-                {
-                    "batch_id": batch_id,
-                    "request_id": request_id,
-                    "request_hash": req_hash,
-                    "at": now_iso(),
-                    "actor": req.actor,
-                    "operation": "edit_edge",
-                    "applied_ids": [req.edge_id],
-                    "revision_before": rev_before,
-                    "revision_after": rev_after,
-                    "snapshot_path": "",
-                }
-            )
-            res = CurationResultDTO(
-                batch_id=batch_id,
-                request_id=request_id,
-                project_id=str(candidate.get("project_id") or req.project_id),
-                operation="edit_edge",
-                status="committed",
-                apply_mode="all_or_nothing",
-                revision_before=rev_before,
-                revision_after=rev_after,
-                applied_ids=[req.edge_id],
-                skipped_ids=[],
-                applied_count=1,
-                skipped_count=0,
-                item_results=[{"edge_id": req.edge_id, "status_after": updated.get("status", "")}],
-                affected_edge_ids=[req.edge_id],
-            )
-            return candidate, res
-
-        return self._commit_curation_operation(
-            project,
-            expected_revision=req.expected_revision,
-            request_id=req.request_id,
-            request_hash=req_hash,
-            executor=_exec,
-        )
-
-    def edit_entity_profile(
-        self,
-        project: dict,
-        request: EntityEditRequestDTO | dict,
-    ) -> CurationResultDTO:
-        req = EntityEditRequestDTO.from_dict(request)
-        req_hash = compute_curation_request_hash(req)
-
-        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
-            rev_before = compute_project_revision(proj)
-            if req.expected_revision and req.expected_revision != rev_before:
-                raise ValueError(
-                    f"Phiên bản dự án đã thay đổi ({req.expected_revision} != {rev_before}). Vui lòng tải lại trước khi sửa thực thể."
-                )
-            candidate = copy.deepcopy(proj)
-            updated = update_node(candidate, req.node_id, req=req)
-            last_hist = candidate.get("curation_history", [])[-1] if candidate.get("curation_history") else {}
-            inv_edges = list(last_hist.get("affected_edge_ids") or last_hist.get("invalidated_edge_ids") or [])
-            rev_after = compute_project_revision(candidate)
-            batch_id = uid()
-            request_id = req.request_id or uid()
-            candidate.setdefault("curation_decision_batches", []).append(
-                {
-                    "batch_id": batch_id,
-                    "request_id": request_id,
-                    "request_hash": req_hash,
-                    "at": now_iso(),
-                    "actor": req.actor,
-                    "operation": "edit_entity",
-                    "applied_ids": [req.node_id],
-                    "invalidated_edge_ids": inv_edges,
-                    "revision_before": rev_before,
-                    "revision_after": rev_after,
-                    "snapshot_path": "",
-                }
-            )
-            res = CurationResultDTO(
-                batch_id=batch_id,
-                request_id=request_id,
-                project_id=str(candidate.get("project_id") or req.project_id),
-                operation="edit_entity",
-                status="committed",
-                apply_mode="all_or_nothing",
-                revision_before=rev_before,
-                revision_after=rev_after,
-                applied_ids=[req.node_id],
-                skipped_ids=[],
-                applied_count=1,
-                skipped_count=0,
-                item_results=[{"node_id": req.node_id, "kind": updated.get("kind", ""), "invalidated_edge_ids": inv_edges}],
-                affected_edge_ids=inv_edges,
-            )
-            return candidate, res
-
-        return self._commit_curation_operation(
-            project,
-            expected_revision=req.expected_revision,
-            request_id=req.request_id,
-            request_hash=req_hash,
-            executor=_exec,
-        )
-
-    def select_evidence_span(
-        self,
-        project: dict,
-        edge_id: str,
-        start_char: int,
-        end_char: int,
-        *,
-        actor: str = "human_reviewer",
-        save: bool = True,
-    ) -> dict[str, Any]:
-        ctx = select_edge_evidence_span(project, edge_id, start_char, end_char, actor=actor)
-        if save and self.json_repo.project_exists(project.get("name", "")):
-            self.save_project(project)
-        return ctx
-
-    def mark_pair_not_duplicate(
-        self,
-        project: dict,
-        node_a_id: str,
-        node_b_id: str,
-        *,
-        note: str = "",
-        actor: str = "human_reviewer",
-        save: bool = True,
-    ) -> dict[str, Any]:
-        res = domain_mark_pair_not_duplicate(project, node_a_id, node_b_id, note=note, actor=actor)
-        if save and self.json_repo.project_exists(project.get("name", "")):
-            self.save_project(project)
-        return res
-
-    def mark_pairs_not_duplicate_bulk(
-        self,
-        project: dict,
-        pairs: list[tuple[str, str] | list[str] | dict[str, Any]],
-        *,
-        note: str = "",
-        actor: str = "human_reviewer",
-        save: bool = True,
-    ) -> list[dict[str, Any]]:
-        res = domain_mark_pairs_not_duplicate_bulk(project, pairs, note=note, actor=actor)
-        if save and res and self.json_repo.project_exists(project.get("name", "")):
-            self.save_project(project)
-        return res
-
-    def mark_relation_pairs_not_duplicate_bulk(
-        self,
-        project: dict,
-        pairs: list[tuple[str, str] | list[str] | dict[str, Any]],
-        *,
-        note: str = "",
-        save: bool = True,
-    ) -> dict[str, Any]:
-        res = domain_mark_relation_pairs_not_duplicate_bulk(project, pairs, note=note)
-        if save and res.get("added_count", 0) > 0 and self.json_repo.project_exists(project.get("name", "")):
-            self.save_project(project)
-        return res
+    def select_evidence_span(self, project: dict, edge_id: str, start_char: int, end_char: int, **kwargs: Any) -> dict[str, Any]:
+        return self.curation_service.select_evidence_span(project, edge_id, start_char, end_char, **kwargs)
 
     def inspect_edge_schema_status(self, project: dict, edge: dict) -> dict[str, Any]:
-        return inspect_edge_schema_status(project, edge)
+        return self.curation_service.inspect_edge_schema_status(project, edge)
 
-    def validate_edge_for_approval(self, project: dict, edge: dict, **kwargs) -> dict[str, Any]:
-        return validate_edge_for_approval(project, edge, **kwargs)
+    def validate_edge_for_approval(self, project: dict, edge: dict, **kwargs: Any) -> dict[str, Any]:
+        return self.curation_service.validate_edge_for_approval(project, edge, **kwargs)
 
     def is_edge_exportable(self, project: dict, edge: dict) -> bool:
-        return is_edge_exportable(project, edge)
+        return self.curation_service.is_edge_exportable(project, edge)
 
     def compute_apparent_duplicate_edge_groups(self, project: dict) -> list[dict[str, Any]]:
-        return compute_apparent_duplicate_edge_groups(project)
+        return self.curation_service.compute_apparent_duplicate_edge_groups(project)
 
     def evidence_context(self, project: dict, edge: dict) -> dict:
-        return evidence_context(project, edge)
+        return self.curation_service.evidence_context(project, edge)
 
-    def set_edge_status(
-        self,
-        project: dict,
-        edge_id: str,
-        status: str,
-        override_reason: str = "",
-        reviewer: str = "",
-        *,
-        reason_code: str = "",
-        self_loop_confirmed: bool = False,
-    ) -> dict:
-        return set_edge_status(
-            project,
-            edge_id,
-            status,
-            override_reason,
-            reviewer,
-            reason_code=reason_code,
-            self_loop_confirmed=self_loop_confirmed,
-        )
+    def set_edge_status(self, project: dict, edge_id: str, status: str, **kwargs: Any) -> dict:
+        return self.curation_service.set_edge_status(project, edge_id, status, **kwargs)
 
     def set_edges_status(self, project: dict, edge_ids: list[str], status: str) -> dict:
-        return set_edges_status(project, edge_ids, status)
+        return self.curation_service.set_edges_status(project, edge_ids, status)
 
     def approvable_edges(self, project: dict) -> list[str]:
-        return approvable_edges(project)
+        return self.curation_service.approvable_edges(project)
 
-    def update_edge(self, project: dict, edge_id: str, **fields) -> dict:
-        return update_edge(project, edge_id, **fields)
+    def update_edge(self, project: dict, edge_id: str, **fields: Any) -> dict:
+        return self.curation_service.update_edge(project, edge_id, **fields)
 
-    def update_node(self, project: dict, node_id: str, **fields) -> dict:
-        return update_node(project, node_id, **fields)
+    def update_node(self, project: dict, node_id: str, **fields: Any) -> dict:
+        return self.curation_service.update_node(project, node_id, **fields)
 
     def duplicate_suggestions(self, project: dict, fuzzy_threshold: float = 0.0) -> list[dict]:
-        return duplicate_suggestions(project, fuzzy_threshold)
+        return self.curation_service.duplicate_suggestions(project, fuzzy_threshold)
 
     def merge_nodes(self, project: dict, keep: str, drop: str) -> dict:
-        return merge_nodes(project, keep, drop)
+        return self.curation_service.merge_nodes(project, keep, drop)
 
     def review_stats(self, project: dict, include_duplicates: bool = False) -> dict:
-        return review_stats(project, include_duplicates=include_duplicates)
+        return self.curation_service.review_stats(project, include_duplicates=include_duplicates)
 
     def token_totals(self, project: dict) -> dict:
-        return token_totals(project)
+        return self.curation_service.token_totals(project)
 
-    # --- Đồ thị & Xuất ---
+    # =========================================================================
+    # 5. PHÂN HỆ GRAPH QA & EXPORT (backend/modules/graph_qa)
+    # =========================================================================
+
     def validate_integrity(self, project: dict) -> list[str]:
-        return validate_integrity(project)
+        return self.graph_qa_service.validate_integrity(project)
 
     def approved_graph(self, project: dict) -> tuple[list[dict], list[dict]]:
-        return approved_graph(project)
+        return self.graph_qa_service.approved_graph(project)
 
     def approved_json_bytes(self, project: dict) -> bytes:
-        return approved_json_bytes(project)
+        return self.graph_qa_service.approved_json_bytes(project)
 
     def csv_bytes(self, records: list[dict], headers: list[str], list_fields: tuple[str, ...] = ()) -> bytes:
-        return csv_bytes(records, headers, list_fields)
+        return self.graph_qa_service.csv_bytes(records, headers, list_fields)
 
     def export_zip(self, project: dict, *, qa_max_samples: int = 2000) -> bytes:
-        return export_zip(project, qa_max_samples=qa_max_samples)
+        return self.graph_qa_service.export_zip(project, qa_max_samples=qa_max_samples)
 
-    def sync_neo4j(self, project: dict, uri: str, user: str, password: str, database: str = "neo4j", driver=None) -> dict:
-        return Neo4jGateway.sync_project(project, uri, user, password, database, driver=driver)
+    def sync_neo4j(self, project: dict, uri: str, user: str, password: str, database: str = "neo4j", driver: Any = None) -> dict:
+        return self.graph_qa_service.sync_neo4j(project, uri, user, password, database, driver=driver)
 
-    def test_neo4j(self, uri: str, user: str, password: str, database: str = "neo4j", driver=None) -> tuple[bool, str]:
-        return Neo4jGateway.test_connection(uri, user, password, database, driver=driver)
+    def test_neo4j(self, uri: str, user: str, password: str, database: str = "neo4j", driver: Any = None) -> tuple[bool, str]:
+        return self.graph_qa_service.test_neo4j(uri, user, password, database, driver=driver)
 
-    def test_llm(self, provider: str, api_key: str, model: str, base_url: str = "", client=None) -> tuple[bool, str]:
+    def test_llm(self, provider: str, api_key: str, model: str, base_url: str = "", client: Any = None) -> tuple[bool, str]:
         effective_key = (api_key or "").strip() or get_api_key(provider)
         return LLMGateway.test_connection(provider, effective_key, model, base_url=base_url, client=client)
 
-    # --- Active Learning Exporter ---
-    def export_training_datasets(self, project: dict) -> dict:
-        return self.exporter.export_project(project)
+    def retrieve_subgraph(self, project: dict, query: str, **kwargs: Any) -> SubgraphRetrievalResult:
+        return self.graph_qa_service.retrieve_subgraph(project, query, **kwargs)
 
-    # --- G-Retriever & GraphRAG Lab ---
-    def retrieve_subgraph(
-        self,
-        project: dict,
-        query: str,
-        *,
-        method: str = "pcst",
-        max_edges: int = 20,
-        approved_only: bool = True,
-        base_edge_cost: float = 0.35,
-        hub_penalty_alpha: float = 0.45,
-        expand_leaf_attributes: bool = True,
-    ) -> SubgraphRetrievalResult:
-        return retrieve_subgraph(
-            project,
-            query,
-            method=method,
-            max_edges=max_edges,
-            approved_only=approved_only,
-            base_edge_cost=base_edge_cost,
-            hub_penalty_alpha=hub_penalty_alpha,
-            expand_leaf_attributes=expand_leaf_attributes,
-        )
+    def answer_question_with_graph(self, subgraph_or_project: Any, query: str = "", **kwargs: Any) -> dict[str, Any]:
+        return self.graph_qa_service.answer_question_with_graph(subgraph_or_project, query=query, **kwargs)
 
-    def answer_question_with_graph(
-        self,
-        subgraph_or_project: SubgraphRetrievalResult | dict[str, Any],
-        query: str = "",
-        *,
-        method: str = "pcst",
-        approved_only: bool = True,
-        max_edges: int = 18,
-        provider: str = "DeepSeek",
-        api_key: str = "",
-        model: str = "deepseek-chat",
-        base_url: str = "",
-        temperature: float = 0.1,
-        max_tokens: int = 2048,
-        max_input_tokens: int = 16000,
-        max_output_tokens: int = 2048,
-        client: Any = None,
-        llm_client: Any = None,
-    ) -> dict[str, Any]:
-        effective_key = (api_key or "").strip() or get_api_key(provider)
-        return answer_question_with_graph(
-            subgraph_or_project,
-            query,
-            method=method,
-            approved_only=approved_only,
-            max_edges=max_edges,
-            provider=provider,
-            api_key=effective_key,
-            model=model,
-            base_url=base_url,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            max_input_tokens=max_input_tokens,
-            max_output_tokens=max_output_tokens,
-            client=client,
-            llm_client=llm_client,
-        )
+    def generate_qa_benchmark(self, project: dict, **kwargs: Any) -> list[dict[str, Any]]:
+        return self.graph_qa_service.generate_qa_benchmark(project, **kwargs)
 
-    def generate_qa_benchmark(
-        self,
-        project: dict,
-        *,
-        num_questions: int = 18,
-        approved_only: bool = True,
-    ) -> list[dict[str, Any]]:
-        return generate_qa_benchmark(project, num_questions=num_questions, approved_only=approved_only)
+    def generate_training_qa_dataset(self, project: dict, **kwargs: Any) -> dict[str, Any]:
+        return self.graph_qa_service.generate_training_qa_dataset(project, **kwargs)
 
-    def generate_training_qa_dataset(
-        self,
-        project: dict,
-        *,
-        max_samples: int = 2000,
-        train_ratio: float = 0.80,
-        val_ratio: float = 0.10,
-        approved_only: bool = True,
-    ) -> dict[str, Any]:
-        return generate_training_qa_dataset(
-            project,
-            max_samples=max_samples,
-            train_ratio=train_ratio,
-            val_ratio=val_ratio,
-            approved_only=approved_only,
-        )
+    def paraphrase_qa_questions_with_llm(self, items: list[dict[str, Any]], **kwargs: Any) -> list[dict[str, Any]]:
+        return self.graph_qa_service.paraphrase_qa_questions_with_llm(items, **kwargs)
 
-    def paraphrase_qa_questions_with_llm(
-        self,
-        items: list[dict[str, Any]],
-        *,
-        provider: str = "DeepSeek",
-        api_key: str = "",
-        model: str = "deepseek-chat",
-        base_url: str = "",
-        client: Any = None,
-        batch_size: int = 10,
-    ) -> list[dict[str, Any]]:
-        effective_key = (api_key or "").strip() or get_api_key(provider)
-        return paraphrase_qa_questions_with_llm(
-            items,
-            provider=provider,
-            api_key=effective_key,
-            model=model,
-            base_url=base_url,
-            client=client,
-            batch_size=batch_size,
-        )
-
-    def evaluate_retrieval_methods(
-        self,
-        project: dict,
-        benchmark_items: list[dict[str, Any]] | None = None,
-        *,
-        max_edges: int = 15,
-        approved_only: bool = True,
-    ) -> dict[str, Any]:
-        return evaluate_retrieval_methods(
-            project,
-            benchmark_items=benchmark_items,
-            max_edges=max_edges,
-            approved_only=approved_only,
-        )
+    def evaluate_retrieval_methods(self, project: dict, **kwargs: Any) -> dict[str, Any]:
+        return self.graph_qa_service.evaluate_retrieval_methods(project, **kwargs)
 
     def load_project_from_export_bytes(self, raw_bytes: bytes, filename: str = "") -> dict[str, Any]:
-        return load_project_from_export_bytes(raw_bytes, filename=filename)
+        return self.graph_qa_service.load_project_from_export_bytes(raw_bytes, filename=filename)
+
+    # =========================================================================
+    # 6. PHÂN HỆ TRAINING (backend/modules/training)
+    # =========================================================================
+
+    def export_training_datasets(self, project: dict) -> dict:
+        return self.training_service.export_project(project)
 
 
 _SINGLETON: KGStudioFacade | None = None
@@ -1728,3 +509,18 @@ def get_facade() -> KGStudioFacade:
     if _SINGLETON is None:
         _SINGLETON = KGStudioFacade()
     return _SINGLETON
+
+
+def reset_facade(facade: KGStudioFacade | None = None) -> KGStudioFacade | None:
+    global _SINGLETON
+    prev = _SINGLETON
+    _SINGLETON = facade
+    return prev
+
+
+__all__ = [
+    "KGStudioFacade",
+    "get_facade",
+    "reset_facade",
+    "compute_project_revision",
+]

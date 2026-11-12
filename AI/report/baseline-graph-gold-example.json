@@ -1,0 +1,13 @@
+[
+  {
+    "id": "synthetic-example-1",
+    "question": "Công trình A nằm ở đâu?",
+    "gold_facts": [
+      {
+        "subject": ["Công trình A"],
+        "predicate": ["nằm tại", "tọa lạc tại"],
+        "object": ["Địa điểm B"]
+      }
+    ]
+  }
+]
