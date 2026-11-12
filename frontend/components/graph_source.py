@@ -25,8 +25,36 @@ def select_graph_snapshot(project: dict, service) -> tuple[GraphSnapshotDTO, str
             key = f"p05_baseline_runs_{pid}"
             if key in st.session_state:
                 st.session_state[key] = [rid for rid in st.session_state[key] if rid in labels]
+
+            def _set_baseline_runs(target_key: str, rids: list[str]) -> None:
+                st.session_state[target_key] = rids
+
+            latest_per_chunk: dict[tuple, str] = {}
+            for r in runs:
+                c_key = (r.get("doc_id"), r.get("chunk_number"))
+                latest_per_chunk[c_key] = r["run_id"]
+            all_latest_rids = list(latest_per_chunk.values())
+
+            # Đặt các nút điều khiển trước và dùng on_click callback để an toàn tuyệt đối với vòng đời widget Streamlit
+            col_b1, col_b2 = st.columns(2)
+            col_b1.button(
+                "⚡ Chọn toàn bộ chunks (Dựng KG thô tổng)",
+                key=f"btn_all_{pid}",
+                on_click=_set_baseline_runs,
+                args=(key, all_latest_rids),
+                use_container_width=True,
+            )
+            col_b2.button(
+                "🧹 Xóa chọn",
+                key=f"btn_clear_{pid}",
+                on_click=_set_baseline_runs,
+                args=(key, []),
+                use_container_width=True,
+            )
+
             selected = st.multiselect("Chọn baseline runs (mỗi chunk một attempt)", list(labels),
                                       format_func=labels.get, key=key)
+
             st.caption("Chọn runs tường minh; giữ cả lượt lỗi trong manifest khi chúng thuộc thí nghiệm. Không tự chọn lượt tốt nhất.")
             if not selected:
                 st.info("Chọn các lượt baseline để dựng KG thô, xem và chạy cùng các thuật toán truy xuất ở trang này.")

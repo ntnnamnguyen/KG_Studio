@@ -6,6 +6,7 @@ Tích hợp trực tiếp phòng thí nghiệm G-Retriever (PCST), HippoRAG (PPR
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Any
 import streamlit as st
 
@@ -155,11 +156,64 @@ def render_graph_export_page(project: dict) -> None:
             )
 
         st.divider()
-        st.download_button("⬇️ Tải graph đang chọn (JSON + manifest)", graph_service.export_graph_json(snapshot),
-                           file_name=f"{snapshot.source}_graph.json", mime="application/json", key="p05_graph_json")
-        st.download_button("⬇️ Tải edges/observations (CSV)",
-                           graph_service.csv_bytes(edges, ["id", "source", "target", "relation", "evidence", "run_id", "triple_index", "doc_id"]),
-                           file_name=f"{snapshot.source}_edges.csv", mime="text/csv", key="p05_graph_edges_csv")
+        st.markdown(f"#### 💾 Xuất Dữ liệu Đồ thị ({source_selection} — {len(nodes):,} thực thể, {len(edges):,} quan hệ)")
+
+        nodes_by_id = {n["id"]: n for n in nodes}
+        enriched_edges = []
+        for e in edges:
+            ec = dict(e)
+            src = nodes_by_id.get(e.get("source"), {})
+            tgt = nodes_by_id.get(e.get("target"), {})
+            ec["source_name"] = src.get("name", "")
+            ec["target_name"] = tgt.get("name", "")
+            enriched_edges.append(ec)
+        std_payload = {
+            "project_id": snapshot.project_id,
+            "source": snapshot.source,
+            "thuc_the": nodes,
+            "quan_he": enriched_edges,
+        }
+        std_json_bytes = json.dumps(std_payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            st.download_button(
+                "⬇️ Tải JSON Đầy đủ (thuc_the & quan_he)",
+                data=std_json_bytes,
+                file_name=f"{snapshot.source}_thuc_the_quan_he.json",
+                mime="application/json",
+                width="stretch",
+                key="p05_std_json",
+            )
+            st.download_button(
+                "⬇️ Tải graph đang chọn (JSON + manifest)",
+                data=graph_service.export_graph_json(snapshot),
+                file_name=f"{snapshot.source}_graph.json",
+                mime="application/json",
+                width="stretch",
+                key="p05_graph_json",
+            )
+        with dl_col2:
+            st.download_button(
+                "⬇️ Tải edges/observations (CSV)",
+                data=graph_service.csv_bytes(
+                    enriched_edges,
+                    ["id", "source_name", "relation", "target_name", "evidence", "source", "target", "doc_name", "run_id"],
+                ),
+                file_name=f"{snapshot.source}_edges.csv",
+                mime="text/csv",
+                width="stretch",
+                key="p05_graph_edges_csv",
+            )
+            st.download_button(
+                "⬇️ Tải danh sách thực thể nodes (CSV)",
+                data=graph_service.csv_bytes(nodes, ["id", "name", "kind", "description"]),
+                file_name=f"{snapshot.source}_nodes.csv",
+                mime="text/csv",
+                width="stretch",
+                key="p05_nodes_csv",
+            )
+
         if snapshot.diagnostics:
             with st.expander("Diagnostics và mục không dựng được cạnh"):
                 st.json(snapshot.diagnostics)

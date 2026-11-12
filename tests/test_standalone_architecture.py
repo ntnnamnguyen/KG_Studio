@@ -436,6 +436,47 @@ class StandaloneArchitectureTests(unittest.TestCase):
         self.assertEqual(len(parsed_types), 1)
         self.assertEqual(parsed_types[0]["name"], "cổ vật")
 
+    def test_add_document_via_facade_and_extraction_service(self) -> None:
+        """Kiểm tra add_document và document_chunks qua facade và extraction_service."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            json_repo = JsonProjectRepository(tmp_path / "projects")
+            sqlite_repo = SQLiteProjectRepository(tmp_path / "test.db")
+            vector_repo = VectorIndexRepository(tmp_path / "vectors")
+            facade = KGStudioFacade(
+                json_repo=json_repo,
+                sqlite_repo=sqlite_repo,
+                vector_repo=vector_repo,
+            )
+            proj = empty_project("DocTestProj")
+            sample_content = "Đình Kim Liên thờ phụng Cao Sơn Đại Vương tại phường Phương Liên, Đống Đa, Hà Nội."
+
+            # 1. Gọi qua facade với bytes
+            ok, msg = facade.add_document(proj, "dinh_kim_lien.txt", sample_content.encode("utf-8"), "Hà Nội", "Hồ sơ 2024")
+            self.assertTrue(ok)
+            self.assertIn("Đã thêm dinh_kim_lien.txt", msg)
+            self.assertEqual(len(proj.get("documents", [])), 1)
+            doc = proj["documents"][0]
+            self.assertEqual(doc["name"], "dinh_kim_lien.txt")
+            self.assertEqual(doc["place_scope"], "Hà Nội")
+            self.assertEqual(doc["source_label"], "Hồ sơ 2024")
+
+            # 2. Gọi lại với nội dung trùng -> False
+            ok2, msg2 = facade.add_document(proj, "dinh_kim_lien.txt", sample_content.encode("utf-8"))
+            self.assertFalse(ok2)
+            self.assertIn("Tài liệu trùng nội dung", msg2)
+
+            # 3. Gọi qua extraction_service trực tiếp bằng string
+            sample_content_2 = "Chùa Một Cột tọa lạc tại quận Ba Đình, Hà Nội. Được xây dựng năm 1049."
+            ok3, msg3 = facade.extraction_service.add_document(proj, "chua_mot_cot.txt", sample_content_2)
+            self.assertTrue(ok3)
+            self.assertEqual(len(proj["documents"]), 2)
+
+            # 4. Kiểm tra document_chunks
+            chunks = facade.document_chunks(doc, limit=500, overlap=50)
+            self.assertGreater(len(chunks), 0)
+            self.assertEqual(chunks[0]["doc_id"], doc["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -85,20 +85,31 @@ class ExtractionApplicationService:
         self,
         project: dict,
         name: str,
-        content: str,
-        chunk_size: int = 1500,
-        chunk_overlap: int = 200,
-    ) -> dict:
+        data: bytes | str,
+        place_scope: str = "",
+        source_label: str = "",
+    ) -> tuple[bool, str]:
+        raw_data = data.encode("utf-8") if isinstance(data, str) else data
         return domain_add_document(
             project,
             name=name,
-            content=content,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
+            data=raw_data,
+            place_scope=place_scope,
+            source_label=source_label,
         )
 
-    def document_chunks(self, document: dict) -> list[dict]:
-        return domain_document_chunks(document)
+    def document_chunks(
+        self,
+        document: dict,
+        limit: int | None = None,
+        overlap: int | None = None,
+    ) -> list[dict]:
+        kwargs: dict[str, Any] = {}
+        if limit is not None:
+            kwargs["limit"] = limit
+        if overlap is not None:
+            kwargs["overlap"] = overlap
+        return domain_document_chunks(document, **kwargs)
 
     # --- Prompt Versioning ---
 

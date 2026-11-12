@@ -214,7 +214,7 @@ class KGStudioFacade:
         return self.extraction_service.add_document(project, name, data, place_scope, source_label)
 
     def document_chunks(self, doc: dict, limit: int = 3200, overlap: int = 250) -> list[dict]:
-        return self.extraction_service.document_chunks(doc)
+        return self.extraction_service.document_chunks(doc, limit=limit, overlap=overlap)
 
     def available_extraction_modes(self) -> list[dict]:
         return self.engine_registry.available_modes()

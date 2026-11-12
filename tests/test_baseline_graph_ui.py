@@ -121,6 +121,15 @@ with patch("streamlit.file_uploader", side_effect=upload):
         self.assertNotEqual(first["dataset_fingerprint"], second["dataset_fingerprint"])
         self.assertTrue(all(row["Facts có trong graph (%)"] == 0 for row in second["summary_table"]))
 
+    def test_select_all_baseline_runs_button_works(self):
+        """Kiểm tra nút chọn toàn bộ baseline runs hoạt động an toàn qua on_click callback."""
+        app = AppTest.from_string(PAGE).run(timeout=20)
+        self.assertEqual(len(app.exception), 0)
+        btn_all = next(b for b in app.button if str(b.key).startswith("btn_all_"))
+        btn_all.click().run(timeout=20)
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(any(button.key == "p05_graph_json" for button in app.get("download_button")))
+
 
 if __name__ == "__main__":
     unittest.main()
