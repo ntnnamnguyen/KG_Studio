@@ -7,6 +7,7 @@ import streamlit as st
 
 from backend.facade import get_facade
 from backend.integrations.llm import LLMGateway
+from frontend.components.gazetteer_panel import render_gazetteer_setup_tab
 from frontend.components.ml_lab_panel import render_ml_lab_panel
 from frontend.components.pipeline_banner import render_step_next_action
 from frontend.components.prompt_editor import render_prompt_management_panel
@@ -21,24 +22,38 @@ from frontend.state.session import (
     on_p02_llm_url_change,
     switch_llm_provider,
 )
-from shared.catalog_utils import apply_relations, catalog_bytes, parse_catalog, relation_catalog
+from shared.catalog_utils import (
+    apply_relations,
+    catalog_bytes,
+    catalog_csv_bytes,
+    parse_catalog,
+    relation_catalog,
+)
 from shared.config_loader import CONFIG, save_llm_token_config_to_toml
-from shared.secrets_manager import delete_api_key, get_api_key, has_persisted_key, mask_api_key, save_api_key
+from shared.constants import MODE_FREE_TRIPLES
+from shared.secrets_manager import delete_api_key, get_api_key, has_persisted_key, save_api_key
 
 
 def render_catalogs_prompts_page(project: dict) -> None:
     facade = get_facade()
 
-    st.subheader(f"⚙️ 2. Thiết lập Phương pháp & Danh mục — Dự án: {project.get('name', '')}")
-    st.caption("Cấu hình kết nối mô hình LLM, chọn phương pháp trích xuất (EDC / EDC+R / Closed), và quản lý danh mục tri thức.")
+    st.subheader(f"⚙️ 2. Thiết lập Kết nối, Phương pháp & Danh mục — Dự án: {project.get('name', '')}")
+    st.caption("Đây là nơi cấu hình duy nhất cho kết nối AI, phương pháp trích xuất và danh mục tri thức của dự án.")
 
     # 1. HÀNH ĐỘNG GỢI Ý TIẾP THEO (Next Action Callout)
     render_step_next_action("setup", project)
 
-    # 2. VÙNG 1: KẾT NỐI MÔ HÌNH & LLM (Centralized LLM Connection Card - Thu gọn mặc định)
+    # 2. VÙNG 1: KẾT NỐI MÔ HÌNH & LLM (Single Editing Source of Truth)
     current_provider = st.session_state.get("llm_provider", LLMGateway.DEFAULT_PROVIDER)
     current_model = st.session_state.setdefault("llm_model", LLMGateway.DEFAULT_MODELS.get(current_provider, "deepseek-chat"))
-    with st.expander(f"🤖 1. Kết nối Mô hình Ngôn ngữ (LLM Connection) — {current_provider} ({current_model})", expanded=False):
+    has_key = bool((st.session_state.get("llm_api_key") or get_api_key(current_provider) or "").strip())
+    key_badge = "🔒 Đã lưu" if has_persisted_key(current_provider) else ("🔑 Phiên tạm" if has_key else "⚠️ Chưa có Key")
+
+    with st.expander(f"🤖 1. Kết nối Mô hình AI — {current_provider} ({current_model}) · {key_badge}", expanded=False):
+        st.caption(
+            "Phạm vi cấu hình: Thao tác đổi trong khung này áp dụng cho phiên làm việc hiện tại. "
+            "**Lưu cấu hình mặc định** ghi vào `config/default.toml` (dùng chung mọi dự án khi mở mới); "
+        )
         c_p, c_m = st.columns([1.5, 2.5])
         c_p.selectbox(
             "Nhà cung cấp LLM",
@@ -151,43 +166,59 @@ def render_catalogs_prompts_page(project: dict) -> None:
     st.divider()
     render_prompt_management_panel(project)
 
-    # 4. VÙNG 3: DANH MỤC TRI THỨC TOÀN CHIỀU NGANG (Full-width Catalog Tabs)
+    # 4. VÙNG 3: DANH MỤC TRI THỨC & TỪ ĐIỂN MIỀN CỦA DỰ ÁN (Full-width Catalog & Gazetteer Tabs)
     st.divider()
-    st.markdown("#### 📚 3. Danh mục Lược đồ Tri thức của Dự án")
-    st.caption("Quản lý danh mục loại thực thể và quan hệ chuẩn hóa. Mỗi dự án sở hữu danh mục độc lập.")
+    st.markdown("#### 📚 3. Danh mục Lược đồ & Từ điển Tri thức của Dự án")
+    applied_mode = str(project.get("extraction_mode") or "closed")
+    if applied_mode == MODE_FREE_TRIPLES:
+        st.warning(
+            "⚠️ **Lưu ý phạm vi tác dụng:** Dự án đang áp dụng chế độ **Baseline B (Bộ ba tự do)**. "
+            "Engine Baseline B **KHÔNG sử dụng** danh mục loại đối tượng, quan hệ hay từ điển bí danh bên dưới khi trích xuất. "
+            "Dữ liệu bạn lưu ở đây vẫn được giữ nguyên nếu sau này chuyển sang `closed`, `edc` hoặc `edc_plus_r`."
+        )
+    else:
+        st.caption(
+            f"Danh mục này **đang có hiệu lực** với phương pháp `{applied_mode}`: định hình các loại đối tượng, quan hệ chuẩn và ánh xạ bí danh cho dự án hiện tại."
+        )
 
     rel_rows = relation_catalog(project)
     type_rows = project.get("entity_types", [])
+    gaz_rows = facade.list_gazetteer_entries(project)
 
-    cat_tab1, cat_tab2 = st.tabs([
+    cat_tab1, cat_tab2, cat_tab3 = st.tabs([
         f"🏷️ Loại thực thể / Đối tượng ({len(type_rows)} loại)",
         f"🔗 Loại quan hệ ({len(rel_rows)} quan hệ)",
+        f"📚 Từ điển Bí danh & Địa danh ({len(gaz_rows)} mục)",
     ])
 
     with cat_tab1:
         st.caption("Danh sách các phân loại đối tượng hợp lệ trong đồ thị (ví dụ: di tích, nhân vật, địa danh, niên đại...).")
-        up_type = st.file_uploader("📥 Tải lên file JSON Loại thực thể", type=["json"], key="p02_up_type")
+        up_type = st.file_uploader(
+            "📥 Tải lên file JSON hoặc CSV Loại thực thể (cột: name, description, definition)",
+            type=["json", "csv"],
+            key="p02_up_type",
+        )
         if up_type is not None:
             t_c1, t_c2 = st.columns(2)
             if t_c1.button("⚡ Nạp đè toàn bộ", key="btn_apply_type_replace", width="stretch"):
                 try:
-                    parsed = parse_catalog(up_type.getvalue(), "entity_types")
+                    parsed = parse_catalog(up_type.getvalue(), "entity_types", filename=up_type.name)
                     facade.create_snapshot(project)
                     project["entity_types"] = parsed
                     facade.save_project(project)
-                    st.success(f"Đã nạp {len(parsed)} loại thực thể từ file JSON!")
+                    st.success(f"Đã nạp {len(parsed)} loại thực thể từ `{up_type.name}`!")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Lỗi đọc file: {exc}")
             if t_c2.button("➕ Gộp thêm vào mục cũ", key="btn_apply_type_merge", width="stretch"):
                 try:
-                    parsed = parse_catalog(up_type.getvalue(), "entity_types")
+                    parsed = parse_catalog(up_type.getvalue(), "entity_types", filename=up_type.name)
                     existing = {t["name"].strip().lower() for t in type_rows if t.get("name")}
                     added = [p for p in parsed if p["name"].strip().lower() not in existing]
                     facade.create_snapshot(project)
                     project["entity_types"] = type_rows + added
                     facade.save_project(project)
-                    st.success(f"Đã gộp thêm {len(added)} loại thực thể mới!")
+                    st.success(f"Đã gộp thêm {len(added)} loại thực thể mới từ `{up_type.name}`!")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Lỗi gộp file: {exc}")
@@ -204,38 +235,52 @@ def render_catalogs_prompts_page(project: dict) -> None:
             },
         )
         if type_rows:
-            st.download_button(
-                "📤 Tải entity_types.json về máy",
+            d_c1, d_c2 = st.columns(2)
+            d_c1.download_button(
+                "📤 Tải entity_types.json",
                 data=catalog_bytes(type_rows, "entity_types"),
                 file_name=f"{project.get('name', 'project')}_entity_types.json",
                 mime="application/json",
                 key="btn_dl_types",
+                width="stretch",
+            )
+            d_c2.download_button(
+                "📤 Tải entity_types.csv (Excel)",
+                data=catalog_csv_bytes(type_rows, "entity_types"),
+                file_name=f"{project.get('name', 'project')}_entity_types.csv",
+                mime="text/csv",
+                key="btn_dl_types_csv",
+                width="stretch",
             )
 
     with cat_tab2:
         st.caption("Danh sách các nhãn quan hệ kết nối giữa các thực thể (ví dụ: tọa lạc tại, thờ phụng, xây dựng vào...).")
-        up_rel = st.file_uploader("📥 Tải lên file JSON Quan hệ", type=["json"], key="p02_up_rel")
+        up_rel = st.file_uploader(
+            "📥 Tải lên file JSON hoặc CSV Quan hệ (cột: name, description, definition)",
+            type=["json", "csv"],
+            key="p02_up_rel",
+        )
         if up_rel is not None:
             r_c1, r_c2 = st.columns(2)
             if r_c1.button("⚡ Nạp đè toàn bộ", key="btn_apply_rel_replace", width="stretch"):
                 try:
-                    parsed = parse_catalog(up_rel.getvalue(), "relations")
+                    parsed = parse_catalog(up_rel.getvalue(), "relations", filename=up_rel.name)
                     facade.create_snapshot(project)
                     apply_relations(project, parsed)
                     facade.save_project(project)
-                    st.success(f"Đã nạp {len(parsed)} quan hệ từ file JSON!")
+                    st.success(f"Đã nạp {len(parsed)} quan hệ từ `{up_rel.name}`!")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Lỗi đọc file: {exc}")
             if r_c2.button("➕ Gộp thêm vào mục cũ", key="btn_apply_rel_merge", width="stretch"):
                 try:
-                    parsed = parse_catalog(up_rel.getvalue(), "relations")
+                    parsed = parse_catalog(up_rel.getvalue(), "relations", filename=up_rel.name)
                     existing = {r["name"].strip().lower() for r in rel_rows if r.get("name")}
                     added = [p for p in parsed if p["name"].strip().lower() not in existing]
                     facade.create_snapshot(project)
                     apply_relations(project, rel_rows + added)
                     facade.save_project(project)
-                    st.success(f"Đã gộp thêm {len(added)} quan hệ mới!")
+                    st.success(f"Đã gộp thêm {len(added)} quan hệ mới từ `{up_rel.name}`!")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Lỗi gộp file: {exc}")
@@ -252,13 +297,26 @@ def render_catalogs_prompts_page(project: dict) -> None:
             },
         )
         if rel_rows:
-            st.download_button(
-                "📤 Tải relations.json về máy",
+            dr_c1, dr_c2 = st.columns(2)
+            dr_c1.download_button(
+                "📤 Tải relations.json",
                 data=catalog_bytes(rel_rows, "relations"),
                 file_name=f"{project.get('name', 'project')}_relations.json",
                 mime="application/json",
                 key="btn_dl_rels",
+                width="stretch",
             )
+            dr_c2.download_button(
+                "📤 Tải relations.csv (Excel)",
+                data=catalog_csv_bytes(rel_rows, "relations"),
+                file_name=f"{project.get('name', 'project')}_relations.csv",
+                mime="text/csv",
+                key="btn_dl_rels_csv",
+                width="stretch",
+            )
+
+    with cat_tab3:
+        edited_gaz = render_gazetteer_setup_tab(project)
 
     # Nút Lưu Danh mục
     save_c1, save_c2 = st.columns([2, 1])
@@ -270,7 +328,21 @@ def render_catalogs_prompts_page(project: dict) -> None:
             prompt_text = project.get("prompt", "")
             facade.save_prompt_settings(project, prompt_text, clean_rels, clean_types)
             facade.save_project(project)
-            st.success("✅ Đã lưu hai danh mục của dự án thành công!")
+
+            cur_gaz_sig = [(r["alias"], r["canonical_name"], r["kind"]) for r in gaz_rows]
+            new_gaz_sig = sorted(
+                [(r["alias"], r["canonical_name"], r["kind"]) for r in edited_gaz],
+                key=lambda x: (x[1].lower(), x[0].lower()),
+            )
+            if sorted(cur_gaz_sig, key=lambda x: (x[1].lower(), x[0].lower())) != new_gaz_sig:
+                facade.replace_gazetteer_entries(
+                    project,
+                    edited_gaz,
+                    source="manual_editor",
+                    expected_revision=facade.project_revision(project),
+                )
+
+            st.success("✅ Đã lưu danh mục lược đồ và từ điển của dự án thành công!")
             st.rerun()
     with save_c2:
         if (rel_rows or type_rows) and st.button("🗑️ Xóa sạch danh mục", key="btn_clear_catalogs", width="stretch"):
@@ -280,10 +352,10 @@ def render_catalogs_prompts_page(project: dict) -> None:
             st.warning("Đã làm trống toàn bộ danh mục của dự án!")
             st.rerun()
 
-    # 5. VÙNG 4: PHÒNG THÍ NGHIỆM ACTIVE LEARNING & ML LAB (Collapsible Expander)
+    # 5. VÙNG 4: PHÒNG THÍ NGHIỆM ACTIVE LEARNING & ML LAB (Single-level Research Expander)
     st.divider()
-    with st.expander("🧪 Phòng Thí nghiệm Active Learning & ML Lab (Advanced)", expanded=False):
-        render_ml_lab_panel(project, facade.save_project)
+    with st.expander("🧪 Khu Nghiên cứu: Active Learning & ML Lab (Độc lập với luồng cơ bản)", expanded=False):
+        render_ml_lab_panel(project, facade.save_project, use_expander=False)
 
     # 6. NÚT CHUYỂN BƯỚC TIẾP THEO
     st.divider()

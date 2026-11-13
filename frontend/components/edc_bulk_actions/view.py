@@ -1,152 +1,31 @@
-"""Component Thao tác Hàng loạt, Bản nháp Quyết định, Xem trước (Preview) và Áp dụng Lô cho EDC."""
+"""Giao diện Streamlit cho Thao tác Hàng loạt, Bản nháp Quyết định, Xem trước & Áp dụng Lô EDC."""
 from __future__ import annotations
 
 from typing import Any
 
 import streamlit as st
 
-from backend.domain.catalogs.service import catalog_rows, compute_project_revision
-from frontend.client import FrontendClient, get_client
+from backend.domain.catalogs.service import catalog_rows
+from frontend.client import get_client
 from frontend.state.session import (
     assign_shared_target_to_drafts,
     fill_top1_candidate_to_drafts,
     get_edc_table_state,
     invalidate_active_preview,
-    prepare_batch_decisions_from_scope,
-    reconcile_state_after_apply,
-    store_active_preview,
     update_proposal_draft,
 )
-from shared.schemas.edc import (
-    BulkReviewPreviewDTO,
-    BulkReviewRequestDTO,
-    BulkReviewResultDTO,
-    ProposalDecisionDTO,
-)
-from shared.text_utils import uid
+from shared.schemas.edc import BulkReviewPreviewDTO, BulkReviewResultDTO
+from .logic import build_preview_for_scope, execute_batch_apply, quick_apply_proposal_batch
 
 
-def build_preview_for_scope(
+def _render_edc_last_result_and_refresh_banners(
     project: dict,
     kind: str,
-    proposal_ids: list[str],
-    *,
-    batch_action: str | None = None,
-    shared_note: str = "",
-    filter_summary: dict[str, Any] | None = None,
-    client: FrontendClient | None = None,
-    state_store: dict[str, Any] | None = None,
-) -> BulkReviewPreviewDTO:
-    """Chốt danh sách ID tại thời điểm xem trước, tạo bản nháp và gọi backend preview_proposal_decisions."""
-    svc = client or get_client()
-    decisions = prepare_batch_decisions_from_scope(
-        project,
-        kind,
-        proposal_ids,
-        batch_action=batch_action,
-        shared_note=shared_note,
-        state_store=state_store,
-    )
-    req_id = uid()
-    req = BulkReviewRequestDTO(
-        project_id=str(project.get("project_id") or project.get("name") or ""),
-        kind=kind,
-        expected_revision=compute_project_revision(project),
-        request_id=req_id,
-        decisions=decisions,
-        apply_mode="all_or_nothing",
-        filter_summary=dict(filter_summary or {}),
-    )
-    preview = svc.preview_proposal_decisions(project, req)
-    store_active_preview(project, kind, preview, decisions, request_id=req_id, state_store=state_store)
-    return preview
-
-
-def execute_batch_apply(
-    project: dict,
-    kind: str,
-    *,
-    apply_mode: str = "all_or_nothing",
-    current_filtered_ids: set[str] | None = None,
-    client: FrontendClient | None = None,
-    state_store: dict[str, Any] | None = None,
-) -> BulkReviewResultDTO:
-    """Thực thi commit lô quyết định đã xem trước và cập nhật lại session state."""
-    svc = client or get_client()
-    t_state = get_edc_table_state(project, kind, state_store)
-    active_prev_raw = t_state.get("active_preview")
-    if not active_prev_raw:
-        raise ValueError("Chưa có bản xem trước hợp lệ. Vui lòng chạy 'Xem trước quyết định' trước khi áp dụng.")
-
-    preview_dto = BulkReviewPreviewDTO.from_dict(active_prev_raw)
-    decisions = [ProposalDecisionDTO.from_dict(d) for d in t_state.get("preview_decisions", [])]
-    req_id = str(t_state.get("preview_request_id") or uid())
-
-    req = BulkReviewRequestDTO(
-        project_id=str(project.get("project_id") or project.get("name") or ""),
-        kind=kind,
-        expected_revision=preview_dto.revision,
-        request_id=req_id,
-        decisions=decisions,
-        apply_mode=apply_mode,
-        filter_summary=dict(t_state.get("filters") or {}),
-    )
-    result = svc.apply_proposal_decisions(project, req, preview=preview_dto)
-    reconcile_state_after_apply(
-        project,
-        kind,
-        result,
-        current_filtered_ids=current_filtered_ids,
-        state_store=state_store,
-    )
-    return result
-
-
-def quick_apply_proposal_batch(
-    project: dict,
-    kind: str,
-    proposal_ids: list[str],
-    batch_action: str,
-    *,
-    shared_note: str = "",
-    client: FrontendClient | None = None,
-    state_store: dict[str, Any] | None = None,
-) -> BulkReviewResultDTO:
-    """Xây dựng bản xem trước và áp dụng ngay lập tức trong 1 thao tác cho đề xuất EDC."""
-    preview = build_preview_for_scope(
-        project,
-        kind,
-        proposal_ids,
-        batch_action=batch_action,
-        shared_note=shared_note,
-        client=client,
-        state_store=state_store,
-    )
-    if not preview.can_apply_all and not preview.can_apply_valid_only:
-        err_msg = "; ".join(preview.batch_errors) if preview.batch_errors else "Không có mục hợp lệ để áp dụng."
-        raise ValueError(err_msg)
-    apply_mode = "all_or_nothing" if preview.can_apply_all else "valid_only"
-    return execute_batch_apply(project, kind, apply_mode=apply_mode, client=client, state_store=state_store)
-
-
-def render_edc_bulk_actions(
-    project: dict,
-    kind: str,
-    *,
-    selected_ids: list[str],
-    eligible_filtered: list[dict],
-    filtered_proposals: list[dict],
-    current_model_fingerprint: str = "",
+    kind_label: str,
+    t_state: dict[str, Any],
+    client: Any,
 ) -> None:
-    """Hiển thị thanh công cụ thao tác hàng loạt, bảng nháp/xem trước và báo cáo kết quả cho bảng `kind`."""
-    client = get_client()
-    t_state = get_edc_table_state(project, kind)
-    kind_label = "Loại thực thể" if kind == "entity_types" else "Quan hệ"
-    selected_count = len(selected_ids)
-    filtered_pending_count = len(eligible_filtered)
-    filtered_id_set = {str(p.get("id", "")) for p in eligible_filtered}
-
-    # Hiển thị báo cáo kết quả lô gần nhất (giữ qua rerun)
+    """Hiển thị thẻ báo cáo kết quả lô gần nhất và kết quả làm mới gợi ý."""
     if t_state.get("last_result"):
         res = BulkReviewResultDTO.from_dict(t_state["last_result"])
         with st.container(border=True):
@@ -177,7 +56,6 @@ def render_edc_bulk_actions(
                 t_state["last_result"] = None
                 st.rerun()
 
-    # Hiển thị kết quả làm mới gợi ý gần nhất
     if t_state.get("last_refresh_summary"):
         ref = t_state["last_refresh_summary"]
         with st.container(border=True):
@@ -194,9 +72,20 @@ def render_edc_bulk_actions(
                 t_state["last_refresh_summary"] = None
                 st.rerun()
 
-    st.markdown(f"#### 🛠️ Thao tác Hàng loạt — Bảng {kind_label}")
-    target_rows = catalog_rows(project, kind)
-    target_names = [r["name"] for r in target_rows]
+
+def _render_edc_top_and_quick_actions(
+    project: dict,
+    kind: str,
+    kind_label: str,
+    selected_ids: list[str],
+    eligible_filtered: list[dict],
+    current_model_fingerprint: str,
+    t_state: dict[str, Any],
+    client: Any,
+) -> None:
+    """Hiển thị 3 nút thao tác chính và hộp thao tác nhanh cho các mục đang chọn."""
+    selected_count = len(selected_ids)
+    filtered_pending_count = len(eligible_filtered)
 
     col_a, col_b, col_c = st.columns(3)
     with col_a:
@@ -301,6 +190,18 @@ def render_edc_bulk_actions(
                     except Exception as exc:
                         st.error(str(exc))
 
+
+def _render_edc_draft_and_preview_controls(
+    project: dict,
+    kind: str,
+    kind_label: str,
+    selected_ids: list[str],
+    target_names: list[str],
+    t_state: dict[str, Any],
+    client: Any,
+) -> None:
+    """Expander chuẩn bị bản nháp, gán đích chung và kích hoạt xem trước quyết định."""
+    selected_count = len(selected_ids)
     with st.expander(f"⚙️ Chuẩn bị Bản nháp & Xem trước Quyết định cho {selected_count} mục đã chọn ({kind_label})", expanded=selected_count > 0):
         m1, m2, m3 = st.columns([2.0, 1.2, 1.8])
         shared_target = m1.selectbox(
@@ -395,112 +296,147 @@ def render_edc_bulk_actions(
             )
             st.rerun()
 
-    # Hiển thị Bảng Xem trước (Preview) và Kiểm tra / Áp dụng Lô
+
+def _render_edc_active_preview_panel(
+    project: dict,
+    kind: str,
+    kind_label: str,
+    filtered_id_set: set[str],
+    t_state: dict[str, Any],
+    client: Any,
+) -> None:
+    """Hiển thị bảng xem trước cho phép sửa nháp trực tiếp và các nút áp dụng lô EDC."""
     active_prev_raw = t_state.get("active_preview")
-    if active_prev_raw:
-        preview = BulkReviewPreviewDTO.from_dict(active_prev_raw)
-        proposals_by_id = {str(p.get("id", "")): p for p in project.get("schema_proposals", [])}
+    if not active_prev_raw:
+        return
 
-        st.markdown(f"#### 🧪 Xem trước Lô Quyết định — Bảng {kind_label} (`{len(preview.locked_proposal_ids)}` mục đã chốt)")
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Hợp lệ", preview.valid_count)
-        k2.metric("Không hợp lệ (Lỗi)", preview.invalid_count)
-        k3.metric("Tổng Node ảnh hưởng (duy nhất)", len(preview.affected_node_ids))
-        k4.metric(
-            "Tổng Cạnh ảnh hưởng (duy nhất)",
-            f"{len(preview.affected_edge_ids)} ({len(preview.direct_edge_ids)} trực tiếp, {len(preview.indirect_edge_ids)} gián tiếp)",
-        )
+    preview = BulkReviewPreviewDTO.from_dict(active_prev_raw)
+    proposals_by_id = {str(p.get("id", "")): p for p in project.get("schema_proposals", [])}
 
-        if preview.batch_errors:
-            for b_err in preview.batch_errors:
-                st.error(b_err)
+    st.markdown(f"#### 🧪 Xem trước Lô Quyết định — Bảng {kind_label} (`{len(preview.locked_proposal_ids)}` mục đã chốt)")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Hợp lệ", preview.valid_count)
+    k2.metric("Không hợp lệ (Lỗi)", preview.invalid_count)
+    k3.metric("Tổng Node ảnh hưởng (duy nhất)", len(preview.affected_node_ids))
+    k4.metric(
+        "Tổng Cạnh ảnh hưởng (duy nhất)",
+        f"{len(preview.affected_edge_ids)} ({len(preview.direct_edge_ids)} trực tiếp, {len(preview.indirect_edge_ids)} gián tiếp)",
+    )
 
-        preview_rows = [
-            {
-                "ID": it["proposal_id"],
-                "Tên gốc": it["original_name"],
-                "Thao tác": it["action"],
-                "Tên chuẩn / Đích": it["canonical_name"],
-                "Mô tả": it["description"],
-                "Định nghĩa": it["definition"],
-                "Ghi chú": it["note"],
-                "Hợp lệ": "✅ Hợp lệ" if it["valid"] else f"❌ Lỗi: {'; '.join(it['errors'])}",
-                "Cảnh báo": "; ".join(it.get("warnings", [])),
-                "Node / Cạnh": (
-                    f"{len(it['affected_node_ids'])} node · {len(it['affected_edge_ids'])} cạnh "
-                    f"({len(it['indirect_edge_ids'])} gián tiếp)"
-                ),
-            }
-            for it in preview.item_previews
-        ]
+    if preview.batch_errors:
+        for b_err in preview.batch_errors:
+            st.error(b_err)
 
-        edited_preview = st.data_editor(
-            preview_rows,
-            key=f"preview_editor_{kind}_{preview.preview_id}",
+    preview_rows = [
+        {
+            "ID": it["proposal_id"],
+            "Tên gốc": it["original_name"],
+            "Thao tác": it["action"],
+            "Tên chuẩn / Đích": it["canonical_name"],
+            "Mô tả": it["description"],
+            "Định nghĩa": it["definition"],
+            "Ghi chú": it["note"],
+            "Hợp lệ": "✅ Hợp lệ" if it["valid"] else f"❌ Lỗi: {'; '.join(it['errors'])}",
+            "Cảnh báo": "; ".join(it.get("warnings", [])),
+            "Node / Cạnh": (
+                f"{len(it['affected_node_ids'])} node · {len(it['affected_edge_ids'])} cạnh "
+                f"({len(it['indirect_edge_ids'])} gián tiếp)"
+            ),
+        }
+        for it in preview.item_previews
+    ]
+
+    edited_preview = st.data_editor(
+        preview_rows,
+        key=f"preview_editor_{kind}_{preview.preview_id}",
+        width='stretch',
+        hide_index=True,
+        disabled=["ID", "Tên gốc", "Hợp lệ", "Cảnh báo", "Node / Cạnh"],
+        column_config={
+            "Thao tác": st.column_config.SelectboxColumn(
+                "Thao tác",
+                options=["approve", "merge", "reject"],
+                required=True,
+            ),
+        },
+    )
+
+    # Phát hiện chỉnh sửa trực tiếp trên bảng preview -> cập nhật bản nháp & yêu cầu kiểm tra lại
+    draft_modified = False
+    for orig_it, edited_row in zip(preview.item_previews, edited_preview):
+        if (
+            edited_row["Thao tác"] != orig_it["action"]
+            or str(edited_row["Tên chuẩn / Đích"] or "").strip() != str(orig_it["canonical_name"] or "").strip()
+            or str(edited_row["Mô tả"] or "").strip() != str(orig_it["description"] or "").strip()
+            or str(edited_row["Định nghĩa"] or "").strip() != str(orig_it["definition"] or "").strip()
+            or str(edited_row["Ghi chú"] or "").strip() != str(orig_it["note"] or "").strip()
+        ):
+            pid = orig_it["proposal_id"]
+            prop = proposals_by_id.get(pid, {"id": pid, "name": orig_it["original_name"]})
+            update_proposal_draft(
+                project,
+                kind,
+                prop,
+                action=edited_row["Thao tác"],
+                canonical_name=str(edited_row["Tên chuẩn / Đích"] or ""),
+                description=str(edited_row["Mô tả"] or ""),
+                definition=str(edited_row["Định nghĩa"] or ""),
+                note=str(edited_row["Ghi chú"] or ""),
+            )
+            draft_modified = True
+
+    if draft_modified:
+        st.warning("⚠️ Bạn vừa chỉnh sửa bản nháp quyết định. Kết quả kiểm tra cũ đã hết hiệu lực — hãy bấm 'Kiểm tra lại lô'.")
+        if st.button("🔄 Kiểm tra lại lô sau khi chỉnh sửa", type="primary", key=f"btn_repreview_{kind}"):
+            build_preview_for_scope(
+                project,
+                kind,
+                preview.locked_proposal_ids,
+                batch_action=None,
+                filter_summary=dict(t_state.get("filters") or {}),
+                client=client,
+            )
+            st.rerun()
+        return
+
+    act_col1, act_col2, act_col3 = st.columns([1.6, 2.0, 1.0])
+    with act_col1:
+        if st.button(
+            f"✅ Áp dụng toàn bộ lô ({preview.valid_count} mục)",
+            type="primary",
+            disabled=not preview.can_apply_all,
             width='stretch',
-            hide_index=True,
-            disabled=["ID", "Tên gốc", "Hợp lệ", "Cảnh báo", "Node / Cạnh"],
-            column_config={
-                "Thao tác": st.column_config.SelectboxColumn(
-                    "Thao tác",
-                    options=["approve", "merge", "reject"],
-                    required=True,
-                ),
-            },
-        )
-
-        # Phát hiện chỉnh sửa trực tiếp trên bảng preview -> cập nhật bản nháp & yêu cầu kiểm tra lại
-        draft_modified = False
-        for orig_it, edited_row in zip(preview.item_previews, edited_preview):
-            if (
-                edited_row["Thao tác"] != orig_it["action"]
-                or str(edited_row["Tên chuẩn / Đích"] or "").strip() != str(orig_it["canonical_name"] or "").strip()
-                or str(edited_row["Mô tả"] or "").strip() != str(orig_it["description"] or "").strip()
-                or str(edited_row["Định nghĩa"] or "").strip() != str(orig_it["definition"] or "").strip()
-                or str(edited_row["Ghi chú"] or "").strip() != str(orig_it["note"] or "").strip()
-            ):
-                pid = orig_it["proposal_id"]
-                prop = proposals_by_id.get(pid, {"id": pid, "name": orig_it["original_name"]})
-                update_proposal_draft(
+            key=f"btn_apply_all_{kind}",
+        ):
+            try:
+                execute_batch_apply(
                     project,
                     kind,
-                    prop,
-                    action=edited_row["Thao tác"],
-                    canonical_name=str(edited_row["Tên chuẩn / Đích"] or ""),
-                    description=str(edited_row["Mô tả"] or ""),
-                    definition=str(edited_row["Định nghĩa"] or ""),
-                    note=str(edited_row["Ghi chú"] or ""),
-                )
-                draft_modified = True
-
-        if draft_modified:
-            st.warning("⚠️ Bạn vừa chỉnh sửa bản nháp quyết định. Kết quả kiểm tra cũ đã hết hiệu lực — hãy bấm 'Kiểm tra lại lô'.")
-            if st.button("🔄 Kiểm tra lại lô sau khi chỉnh sửa", type="primary", key=f"btn_repreview_{kind}"):
-                build_preview_for_scope(
-                    project,
-                    kind,
-                    preview.locked_proposal_ids,
-                    batch_action=None,
-                    filter_summary=dict(t_state.get("filters") or {}),
+                    apply_mode="all_or_nothing",
+                    current_filtered_ids=filtered_id_set,
                     client=client,
                 )
                 st.rerun()
-            return
+            except Exception as exc:
+                st.error(str(exc))
 
-        act_col1, act_col2, act_col3 = st.columns([1.6, 2.0, 1.0])
-        with act_col1:
+    with act_col2:
+        if preview.can_apply_valid_only:
+            confirm_partial = st.checkbox(
+                f"Xác nhận chỉ áp dụng {preview.valid_count} mục hợp lệ, giữ {preview.invalid_count} mục lỗi để sửa tiếp",
+                key=f"chk_partial_{kind}_{preview.preview_id}",
+            )
             if st.button(
-                f"✅ Áp dụng toàn bộ lô ({preview.valid_count} mục)",
-                type="primary",
-                disabled=not preview.can_apply_all,
+                f"⚠️ Áp dụng {preview.valid_count} mục hợp lệ; giữ {preview.invalid_count} mục cần sửa",
+                disabled=not confirm_partial,
                 width='stretch',
-                key=f"btn_apply_all_{kind}",
+                key=f"btn_apply_partial_{kind}",
             ):
                 try:
                     execute_batch_apply(
                         project,
                         kind,
-                        apply_mode="all_or_nothing",
+                        apply_mode="valid_only",
                         current_filtered_ids=filtered_id_set,
                         client=client,
                     )
@@ -508,32 +444,50 @@ def render_edc_bulk_actions(
                 except Exception as exc:
                     st.error(str(exc))
 
-        with act_col2:
-            if preview.can_apply_valid_only:
-                confirm_partial = st.checkbox(
-                    f"Xác nhận chỉ áp dụng {preview.valid_count} mục hợp lệ, giữ {preview.invalid_count} mục lỗi để sửa tiếp",
-                    key=f"chk_partial_{kind}_{preview.preview_id}",
-                )
-                if st.button(
-                    f"⚠️ Áp dụng {preview.valid_count} mục hợp lệ; giữ {preview.invalid_count} mục cần sửa",
-                    disabled=not confirm_partial,
-                    width='stretch',
-                    key=f"btn_apply_partial_{kind}",
-                ):
-                    try:
-                        execute_batch_apply(
-                            project,
-                            kind,
-                            apply_mode="valid_only",
-                            current_filtered_ids=filtered_id_set,
-                            client=client,
-                        )
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(str(exc))
+    with act_col3:
+        if st.button("✖️ Hủy xem trước", width='stretch', key=f"btn_cancel_prev_{kind}"):
+            invalidate_active_preview(project, kind)
+            st.rerun()
 
-        with act_col3:
-            if st.button("✖️ Hủy xem trước", width='stretch', key=f"btn_cancel_prev_{kind}"):
-                invalidate_active_preview(project, kind)
-                st.rerun()
 
+def render_edc_bulk_actions(
+    project: dict,
+    kind: str,
+    *,
+    selected_ids: list[str],
+    eligible_filtered: list[dict],
+    filtered_proposals: list[dict],
+    current_model_fingerprint: str = "",
+) -> None:
+    """Hiển thị thanh công cụ thao tác hàng loạt, bảng nháp/xem trước và báo cáo kết quả cho bảng `kind`."""
+    client = get_client()
+    t_state = get_edc_table_state(project, kind)
+    kind_label = "Loại thực thể" if kind == "entity_types" else "Quan hệ"
+    filtered_id_set = {str(p.get("id", "")) for p in eligible_filtered}
+
+    _render_edc_last_result_and_refresh_banners(project, kind, kind_label, t_state, client)
+
+    st.markdown(f"#### 🛠️ Thao tác Hàng loạt — Bảng {kind_label}")
+    target_rows = catalog_rows(project, kind)
+    target_names = [r["name"] for r in target_rows]
+
+    _render_edc_top_and_quick_actions(
+        project,
+        kind,
+        kind_label,
+        selected_ids,
+        eligible_filtered,
+        current_model_fingerprint,
+        t_state,
+        client,
+    )
+    _render_edc_draft_and_preview_controls(
+        project,
+        kind,
+        kind_label,
+        selected_ids,
+        target_names,
+        t_state,
+        client,
+    )
+    _render_edc_active_preview_panel(project, kind, kind_label, filtered_id_set, t_state, client)

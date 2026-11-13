@@ -22,22 +22,15 @@ class ProjectsApplicationService:
         self.project_store = project_store
         self.read_projection = read_projection
         self.vector_repo = vector_repo
-        self._locks: dict[str, threading.RLock] = {}
-        self._locks_guard = threading.Lock()
         self._last_committed_revision: dict[str, str] = {}
         self.commit_coordinator = commit_coordinator or ProjectCommitCoordinator(
             project_store=self.project_store,
             read_projection=self.read_projection,
             vector_repo=self.vector_repo,
-            get_lock=self.get_project_lock,
         )
 
     def get_project_lock(self, project_id: str) -> threading.RLock:
-        pid = str(project_id or "default")
-        with self._locks_guard:
-            if pid not in self._locks:
-                self._locks[pid] = threading.RLock()
-            return self._locks[pid]
+        return self.commit_coordinator.get_project_lock(project_id)
 
     def list_projects(self) -> list[str]:
         return self.project_store.list_projects()
@@ -149,21 +142,33 @@ class ProjectsApplicationService:
 
     def query_edges_page(self, project_or_id: dict | str, **kwargs) -> Any:
         if not self.read_projection:
-            return {"items": [], "total": 0, "page": 1, "page_size": 50, "pages": 0}
+            return {"items": [], "total_count": 0, "page": 1, "page_size": 50, "total_pages": 0, "sync_pending": False}
         pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
-        return self.read_projection.query_edges_page(pid, **kwargs)
+        res = self.read_projection.query_edges_page(pid, **kwargs)
+        if isinstance(project_or_id, dict):
+            res["sync_pending"] = bool(project_or_id.get("sync_pending", False))
+            res["sync_error"] = str(project_or_id.get("sync_error", ""))
+        return res
 
     def query_nodes_page(self, project_or_id: dict | str, **kwargs) -> Any:
         if not self.read_projection:
-            return {"items": [], "total": 0, "page": 1, "page_size": 50, "pages": 0}
+            return {"items": [], "total_count": 0, "page": 1, "page_size": 50, "total_pages": 0, "sync_pending": False}
         pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
-        return self.read_projection.query_nodes_page(pid, **kwargs)
+        res = self.read_projection.query_nodes_page(pid, **kwargs)
+        if isinstance(project_or_id, dict):
+            res["sync_pending"] = bool(project_or_id.get("sync_pending", False))
+            res["sync_error"] = str(project_or_id.get("sync_error", ""))
+        return res
 
     def query_proposals_page(self, project_or_id: dict | str, **kwargs) -> Any:
         if not self.read_projection:
-            return {"items": [], "total": 0, "page": 1, "page_size": 50, "pages": 0}
+            return {"items": [], "total_count": 0, "page": 1, "page_size": 50, "total_pages": 0, "sync_pending": False}
         pid = str(project_or_id.get("project_id", "") if isinstance(project_or_id, dict) else project_or_id)
-        return self.read_projection.query_proposals_page(pid, **kwargs)
+        res = self.read_projection.query_proposals_page(pid, **kwargs)
+        if isinstance(project_or_id, dict):
+            res["sync_pending"] = bool(project_or_id.get("sync_pending", False))
+            res["sync_error"] = str(project_or_id.get("sync_error", ""))
+        return res
 
     def get_node_by_id(self, project_or_id: dict | str, node_id: str) -> dict[str, Any] | None:
         if not self.read_projection:

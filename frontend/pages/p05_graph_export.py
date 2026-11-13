@@ -57,8 +57,18 @@ def render_graph_export_page(project: dict) -> None:
     # =========================================================================
     # PHÂN KHU 1: BÁO CÁO SỨC KHỎE ĐỒ THỊ & CHỌN NGUỒN DỮ LIỆU KHAI THÁC
     # =========================================================================
+    source_badges = {
+        "approved": ("🟢 ĐỒ THỊ ĐÃ ĐƯỢC NGƯỜI DÙNG KIỂM DUYỆT (Approved KG)", "success"),
+        "baseline": ("🟡 ĐỒ THỊ THÔ TỪ AI — CHƯA QUA KIỂM DUYỆT (Baseline B)", "warning"),
+        "external": ("🔵 ĐỒ THỊ NẠP TỪ TỆP NGOÀI (External Snapshot)", "info"),
+    }
+    badge_text, badge_level = source_badges.get(
+        source_selection, (f"📊 Nguồn: {source_selection}", "info")
+    )
+
     with st.container(border=True):
         st.markdown(f"#### 📊 Đồ thị đang chọn: {source_selection} / {snapshot.source}")
+        getattr(st, badge_level)(badge_text)
         c1, c2, c3 = st.columns(3)
         c1.metric("Nodes", len(nodes))
         c2.metric("Edges / observations", len(edges))
@@ -79,14 +89,14 @@ def render_graph_export_page(project: dict) -> None:
     st.caption(f"Graph fingerprint: {snapshot.fingerprint}")
 
     # =========================================================================
-    # PHÂN KHU 2: 4 TAB CHỨC NĂNG (G-RETRIEVER QA, BENCHMARK, TRAINING QA STUDIO, BẢN ĐỒ & XUẤT FILE)
+    # PHÂN KHU 2: TÁCH BẠCH KHÁM PHÁ & NGHIÊN CỨU
     # =========================================================================
-    tab_qa, tab_bench, tab_train_studio, tab_export = st.tabs(
+    tab_qa, tab_export, tab_bench, tab_train_studio = st.tabs(
         [
-            "🧠 1. Hỏi đáp Đồ thị (G-Retriever PCST • HippoRAG • Naive)",
-            "📊 2. Thực nghiệm Đối sánh (Benchmark Báo cáo)",
-            "🧬 3. Sinh Dữ liệu Huấn luyện G-Retriever (Training QA Studio)",
-            "📦 4. Bản đồ Toàn cục, Gói Sao lưu & Neo4j",
+            "🔍 1. Khám phá & Hỏi đáp (G-Retriever)",
+            "📦 2. Bản đồ, Bảng Quan hệ & Xuất tệp",
+            "🧪 3. Nghiên cứu: Đối sánh Thuật toán (Benchmark)",
+            "🧬 4. Nghiên cứu: Sinh Dữ liệu Huấn luyện (QA Studio)",
         ]
     )
 
@@ -103,6 +113,7 @@ def render_graph_export_page(project: dict) -> None:
             st.info("Graph thô dùng để đánh giá; không tự coi observations là nhãn đúng để sinh dữ liệu huấn luyện.")
 
     with tab_export:
+        nodes_by_id = {n["id"]: n for n in nodes}
         if edges:
             with st.container(border=True):
                 st.markdown("#### 🗺️ Bản đồ Trực quan hóa Đồ thị (Graph Visualization)")
@@ -145,11 +156,28 @@ def render_graph_export_page(project: dict) -> None:
                 displayed_edges = edges[:display_limit]
                 displayed_node_ids = {x for e in displayed_edges for x in (e["source"], e["target"])}
                 st.caption(
-                    f"ℹ️ Đang hiển thị **{len(displayed_edges)}/{total_edges}** cạnh của nguồn đang chọn "
-                    f"(tương ứng **{len(displayed_node_ids)}/{len(nodes)}** thực thể)."
+                    f"ℹ️ Đang hiển thị **{len(displayed_edges)}/{total_edges}** cạnh trên sơ đồ minh họa "
+                    f"(tương ứng **{len(displayed_node_ids)}/{len(nodes)}** thực thể). "
+                    "Giới hạn cạnh hiển thị chỉ áp dụng cho sơ đồ minh họa; mọi tệp xuất bên dưới vẫn giữ đủ toàn bộ dữ liệu của nguồn đang chọn."
                 )
 
                 st.graphviz_chart(build_graph_dot([n for n in nodes if n["id"] in displayed_node_ids], displayed_edges))
+
+                with st.expander(
+                    f"📋 Bảng quan hệ & Bằng chứng đầy đủ (hỗ trợ bàn phím, {len(edges)} cạnh)",
+                    expanded=False,
+                ):
+                    edge_table_rows = [
+                        {
+                            "Nguồn": nodes_by_id.get(e.get("source"), {}).get("name", e.get("source", "")),
+                            "Quan hệ": e.get("relation", ""),
+                            "Đích": nodes_by_id.get(e.get("target"), {}).get("name", e.get("target", "")),
+                            "Bằng chứng": e.get("evidence", ""),
+                            "Tài liệu": e.get("doc_name", ""),
+                        }
+                        for e in edges
+                    ]
+                    st.dataframe(edge_table_rows, width="stretch", hide_index=True)
         else:
             st.info(
                 "Nguồn đang chọn chưa có cạnh để hiển thị. Xem lựa chọn runs hoặc diagnostics phía trên."
@@ -158,7 +186,6 @@ def render_graph_export_page(project: dict) -> None:
         st.divider()
         st.markdown(f"#### 💾 Xuất Dữ liệu Đồ thị ({source_selection} — {len(nodes):,} thực thể, {len(edges):,} quan hệ)")
 
-        nodes_by_id = {n["id"]: n for n in nodes}
         enriched_edges = []
         for e in edges:
             ec = dict(e)

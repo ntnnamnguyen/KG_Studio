@@ -1,117 +1,181 @@
-## graphify
+# Hướng dẫn làm việc với KG Studio
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+Áp dụng cho toàn repository. Cập nhật: **2026-11-13**.
 
-When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+## 1. Định hướng và cách đọc tài liệu
 
-Rules:
-- When graphify-out/graph.json exists, run `graphify query "<question>"` before your first grep, search or source-file read for a codebase question, and put this rule in every subagent prompt that explores code. Read raw files only for lines the graph or an earlier read already located. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.
+KG Studio là ứng dụng Python theo **Modular Monolith theo nghiệp vụ/use case, với Ports & Adapters có chọn lọc**. Giữ in-process execution mặc định. Mục tiêu: dễ hiểu, dễ kiểm thử, mở rộng có ranh giới và bảo toàn dữ liệu; không giảm LOC bằng cách che dependency hoặc mất semantics.
 
-## Kiến trúc và tối ưu mã nguồn — quy tắc bắt buộc
+- **PHẢI/KHÔNG ĐƯỢC** là yêu cầu cho code mới và phần được migrate.
+- **Hiện trạng/legacy** mô tả giới hạn đang tồn tại, không cấp phép sao chép vi phạm sang code mới.
+- Chỉ công bố một bất biến đã đạt khi đã kiểm chứng implementation và kiểm thử tương ứng. Quy tắc trong file này không tự chứng minh source đã tuân thủ.
+- Không rewrite toàn dự án trong một đợt cleanup. Tách refactor khỏi thay thuật toán/prompt, schema lưu trữ và nâng dependency.
 
-Kế hoạch chuyển đổi: [AI/report/code-optimization-architecture-plan.md](AI/report/code-optimization-architecture-plan.md). Bản đồ hiện trạng: [AI/structure.md](AI/structure.md). Phải kiểm chứng nguồn khi tài liệu hoặc graph khác implementation; không coi số test PASS trong báo cáo cũ là kết quả hiện tại.
+| Tài liệu | Cách sử dụng |
+| --- | --- |
+| [Bản đồ dự án](AI/structure.md) | Định vị luồng/file; có phần mô tả legacy, cần đối chiếu source |
+| [Kế hoạch P0–P7](AI/report/code-optimization-architecture-plan.md) | Gate migration và hiệu năng; không coi mọi gate đã hoàn tất |
+| [Phản biện kiến trúc](AI/report/architecture-review-2026-11-13.md) | Bằng chứng và ưu tiên F1–F8/R0–R5 tại thời điểm audit |
+| [Kế hoạch UI/UX](AI/layout/ui-ux-improvement-plan.md) | Định hướng UI, kiểm tra tiến độ thực tế trước triển khai |
+| [Đặc tả UI](AI/layout/current_ui_layout_spec.md) | Điểm bắt đầu định vị giao diện, không thay cho source hiện tại |
 
-### 1. Phạm vi áp dụng và chuyển đổi
+Source và phép kiểm chứng quyết định hiện trạng. Khi tài liệu/graph khác source, ghi sai khác và cập nhật trong phạm vi nhiệm vụ. Không dùng tuyên bố “100%”, “production-ready” hoặc số test trong báo cáo cũ thay bằng chứng mới.
 
-- Kiến trúc đích là **Modular Monolith theo nghiệp vụ/use case, với Ports & Adapters có chọn lọc**. Áp dụng cho code mới và phần được migrate; không rewrite toàn dự án trong một đợt cleanup.
-- Thực hiện theo các gate P0–P7 trong kế hoạch. Chỉ tạo package/layer khi có chức năng thật; không thêm mediator, generic service/repository, event bus hoặc microservices nếu chưa có nhu cầu cụ thể và lý do được ghi lại.
-- Tồn tại legacy không cho phép phát sinh vi phạm mới. Architecture tests phải quản lý ngoại lệ theo cạnh import cụ thể, kèm lý do và đợt gỡ; không bỏ qua cả package. Rút ngoại lệ khi migrate xong.
-- Giữ nguyên thay đổi sẵn có của người dùng. Refactor, thay thuật toán/prompt, đổi schema lưu trữ và nâng dependency phải tách phạm vi để review và rollback được.
+## 2. Graphify và khám phá code
 
-### 2. Ranh giới trách nhiệm và chiều phụ thuộc
+Repository có knowledge graph tại graphify-out/.
 
-- Domain chứa quy tắc/thuật toán nghiệp vụ; không import Streamlit, HTTP framework, concrete repositories, SDK gateway, filesystem/config I/O hoặc frontend. Code đang ở `backend/domain` nhưng làm orchestration/I/O phải được phân loại trước khi chuyển; không chỉ đổi tên thư mục.
-- Application điều phối use case qua ports thuộc core. Concrete adapters được dựng ở composition root (`backend/bootstrap.py` khi triển khai), rồi inject; application/domain mới không tự tạo gateway/repository hoặc lấy global singleton.
-- UI, HTTP và CLI chỉ mapping input/output và gọi public application APIs. Không đưa validation nghiệp vụ, merge, snapshot/save sequence hoặc transaction policy vào UI/transport.
-- Module khác chỉ dùng public API/contracts được công bố; không import implementation private của nhau. Không tạo import cycle; kiểm tra cycle graph bằng nguồn/import test trước khi kết luận lỗi.
-- `shared` không import `backend`, `frontend` hoặc `ml_lab`. Chỉ đưa vào shared contract/helper có cùng ý nghĩa và dùng xuyên phân hệ; I/O/config/secrets phải có owner rõ ràng, không lan vào pure domain.
-- `KGStudioFacade` là boundary legacy cần thu nhỏ khi migrate; không bổ sung nghiệp vụ mới vào facade hoặc tạo một god service thay thế. ML UI gọi application boundary; training code không phụ thuộc frontend/facade.
+1. Khi người dùng gọi /graphify, đọc và áp dụng skill/instructions Graphify được cài trước các thao tác khác.
+2. Khi graphify-out/graph.json tồn tại, chạy **graphify query "<câu hỏi>" trước lần grep/search/đọc source đầu tiên** cho câu hỏi về codebase. Nếu có giao việc cho subagent khám phá code, đưa quy tắc này vào prompt; mục này không yêu cầu tự tạo subagent.
+3. Dùng graphify path "<A>" "<B>" cho quan hệ; graphify explain "<khái niệm>" cho nội dung hẹp. Chỉ đọc source có phạm vi tại vị trí graph hoặc lần đọc trước đã định vị.
+4. Nếu có graphify-out/wiki/index.md, dùng để điều hướng tổng quan. Đọc GRAPH_REPORT.md khi review kiến trúc rộng hoặc query/path/explain chưa đủ.
+5. Graph dirty là bình thường, không phải lý do bỏ Graphify. Chỉ bỏ khi nhiệm vụ là sửa/đánh giá graph sai, stale hoặc người dùng yêu cầu không dùng.
+6. Nếu CLI không chạy: báo lệnh/lỗi, kiểm tra môi trường cài đặt được phép; dùng graph JSON/report có phạm vi làm fallback và kiểm chứng source. Không lặp vô ích executable đã thất bại. Trước deletion phải đối chiếu trạng thái graph với HEAD và callers hiện tại.
+7. Sau thay đổi **mã nguồn**, chạy **graphify update .** (AST-only, không gọi LLM). Nếu bị chặn, ghi phần chưa cập nhật và lý do; không sửa generated graph bằng tay hoặc báo đã cập nhật.
+8. graph.json có thể được rewrite toàn bộ; diff lớn do build không tự nó là lỗi hay lý do bỏ hooks/rebuild. Không xóa graphify-out/ để giảm diff. Sửa tài liệu đơn thuần không yêu cầu rebuild source graph.
 
-### 3. Tái sử dụng và quản lý độ phức tạp
+## 3. Hiện trạng và nợ migration
 
-- Kiểm tra implementation hiện có trước khi viết helper. Tái sử dụng `merge_core`, `selection_core`, shared pagination/action bar, extraction lifecycle và train/serve formatting khi cùng semantics.
-- Mỗi rule nghiệp vụ và lifecycle commit phải có một owner chuẩn. Chỉ trích abstraction khi có consumer/test seam cụ thể; không gom code chỉ vì giống cú pháp hoặc tên.
-- Không dùng wildcard import hoặc `__getattr__` delegation trong code mới để che dependency. Public re-export phải tường minh và có consumer/compatibility purpose.
-- File >500 dòng hoặc một class xử lý nhiều capability phải được review trách nhiệm khi sửa đáng kể; ghi lý do giữ hoặc kế hoạch tách. LOC không là hard gate; không chia file cơ học để đạt ngưỡng.
+Đã có 6 modules, backend/bootstrap.py, ProjectCommitCoordinator, ports/public APIs, snapshot đồ thị dùng chung và bộ kiểm thử offline. **Migration chưa hoàn tất.** Các điểm dưới đây được đối chiếu source ngày cập nhật; phải kiểm tra lại trước khi sửa, không mặc định lỗi còn tồn tại mãi.
 
-### 4. Tính toàn vẹn dữ liệu và commit
+| Hiện trạng | Vị trí cần kiểm tra | Quy tắc khi can thiệp | Trạng thái (2026-11-13) |
+| --- | --- | --- | --- |
+| Đã loại bỏ fallback ghi thiếu coordinator trong curation/schema | curation/schema application services | Yêu cầu commit_coordinator bắt buộc; cấm bypass commit lifecycle | ĐÃ GIẢI QUYẾT (L03) |
+| Extraction và Projects dùng chung lock từ coordinator | extraction service, commit coordinator | Thống nhất get_project_lock trên CommitCoordinatorPort | ĐÃ GIẢI QUYẾT (L02, L03) |
+| Projection queries đã có freshness guard | projects service (query_*_page) | Trả về cờ sync_pending và sync_error rõ ràng | ĐÃ GIẢI QUYẾT (L04) |
+| Cross-module private import & wiring rải rác đã được dọn sạch | bootstrap, facade, frontend composition | 100% qua .public; AST guard Quy tắc 5, 6, 7 bảo vệ | ĐÃ GIẢI QUYẾT (L01, L02) |
+| Domain còn cạnh infrastructure được allowlist (13 cạnh) | architecture tests | Giữ lý do/gate gỡ cụ thể, không phát sinh cạnh mới | ĐANG KIỂM SOÁT (L05) |
+| Architecture tests được mở rộng thành 8 rules | tests/test_architecture_boundaries.py | Bắt cross-module private import, repo direct import, public only | ĐÃ MỞ RỘNG (L01) |
+| Runner offline thiếu tài nguyên tại lần audit cũ | tools/run_isolated_tests.py | Khai báo fixture/theme chính xác (.streamlit, hanoi gazetteer) | ĐÃ GIẢI QUYẾT (L00) — 239/239 PASS |
 
-- Giữ JSON project bundle là authoritative, SQLite là read projection và vector index là dữ liệu dẫn xuất cho đến khi có migration riêng. Không tự đổi nguồn sự thật trong cleanup.
-- Preview không mutate/ghi dữ liệu nghiệp vụ. Apply phải kiểm tra lại project scope, expected revision, stale state, request hash/idempotency và semantics `all_or_nothing`/`valid_only`.
-- Bảo toàn khóa, snapshot, atomic JSON commit/rollback và thời điểm cập nhật state. SQLite sync lỗi phải báo `sync_pending` và hỗ trợ resync; query không được âm thầm dùng projection stale như dữ liệu mới nhất.
-- Dùng lifecycle commit chuẩn sau khi coordinator được triển khai; không sao chép lock/revision/idempotency/snapshot/save sang use case mới. Trước đó phải đi qua commit path hiện có tương ứng.
-- Merge phải bảo toàn observations, evidence/offsets, aliases, redirects, document links, trạng thái và audit history; chỉ collapse/self-loop theo policy đã được kiểm chứng.
-- Giữ prompt version pinning, prepared-request parity/hash, provenance từng attempt/run, token accounting, cache fingerprint/invalidation và train/serve formatting đồng nhất.
-- Không ghi API key/secret vào project, snapshot, trace, log hoặc fixture. `RLock` trong process không được mô tả là bảo đảm multi-process concurrency.
+Không bắt buộc sửa toàn bộ legacy trong một nhiệm vụ nhỏ. Giữ hành vi còn consumer, ghi nợ ngoài phạm vi. Nếu chức năng mới cần invariant còn thiếu, hoàn thiện phần đó hoặc báo rõ giới hạn; không dựa vào bảo đảm chưa tồn tại.
 
-### 5. Contracts và transport
+## 4. Ownership và chiều phụ thuộc
 
-- Dùng Pydantic v2 hiện có cho contracts tại biên phù hợp; không ép toàn bộ project dict qua DTO thiếu trường rồi ghi đè storage. Phải test unknown fields, default/null, ID, Unicode và serialization trước khi thay conversion.
-- Không đổi global `extra` policy hoặc xóa `.from_dict/.to_dict` chỉ để rút ngắn code. Các hành vi compatibility còn consumer phải có kế hoạch migrate và test tương đương.
-- Giữ in-process execution mặc định. Transport local/HTTP phải được chọn tường minh; không fallback từ lỗi HTTP sang local mutation. Capability remote chưa hỗ trợ phải trả lỗi rõ ràng.
-- Giữ public API/CLI/engine registrations và định dạng export đang được hỗ trợ trong migration. Chỉ bỏ compatibility shim sau khi migrate callers và giải quyết nghĩa vụ tương thích; ghi điều kiện gỡ, không giữ vô hạn.
-- UI giữ session keys/selection theo ID, draft invalidation, phân trang, hai bảng EDC và return context. Khi sửa UI, đối chiếu Streamlit version thực tế và quy ước tại `AI/structure.md`; không nâng framework kèm refactor.
+### 4.1. Sáu module nghiệp vụ
 
-### 6. Điều kiện bắt buộc trước khi xóa
+Mỗi use case mới có một module chịu trách nhiệm chính. public.py công bố exports tường minh; application/ điều phối use cases. Chỉ thêm ports/domain/adapters/package khi có nhu cầu thật, không tạo layer rỗng.
 
-- Phải có bằng chứng caller/import và audit `__all__`, dynamic import, registry, CLI, config, side effects, test seams và public consumers. Graph không có cạnh, ít caller hoặc static analyzer báo unused chỉ tạo ứng viên điều tra.
-- Ghi deletion ledger trong báo cáo của đợt: path/symbol, lý do, consumers đã kiểm tra, thay thế, compatibility condition và tests/kết quả. Migrate caller trước rồi mới xóa implementation cũ.
-- Không xóa test còn bảo vệ hành vi để làm suite xanh; chuyển test sang public boundary mới. Không xóa package marker/re-export hợp lệ chỉ vì file ngắn.
-- Cleanup source không cho phép xóa project data, snapshots, catalogs/history, prompt versions, training exports, model artifacts hoặc `graphify-out`. Giữ báo cáo lịch sử; chỉ rõ trạng thái cũ khi khác hiện tại.
+| Module | Trách nhiệm |
+| --- | --- |
+| projects | Project lifecycle, identity/revision, commit coordinator, snapshots, freshness/resync của projection |
+| schema_intelligence | Danh mục, đề xuất và quyết định EDC, retrieval/alignment, invalidation liên quan |
+| extraction | Tài liệu/chunking, phiên bản prompt, prepared request, engine registry, attempts/runs, orchestration trích xuất |
+| curation | Duyệt/sửa dữ kiện/hồ sơ, bằng chứng, gộp thực thể/quan hệ/bộ ba, bí danh và phản hồi từ điển hiện có |
+| graph_qa | Graph snapshots, baseline KG dẫn xuất, retrieval/QA, benchmark, graph export và Neo4j |
+| training | Boundary xuất dữ liệu huấn luyện và tích hợp ml_lab; train/serve formatting thống nhất |
 
-### 7. Kiểm chứng và nghiệm thu
+UI đặt quản lý từ điển ở trang nào không đổi ownership nghiệp vụ. Phối hợp liên module qua public contracts, không gọi implementation private.
 
-- Dùng interpreter Python >=3.11 thực tế của KG Studio, ưu tiên `.venv-win`; không thêm dependency runtime vào source hoặc venv của `KG_Studio_MVP`. Ghi lệnh/version thực tế; không tuyên bố PASS khi chưa chạy.
-- Chạy tests đúng phạm vi; thay commit/merge/contracts cần fault/concurrency/replay hoặc lossless parity tests phù hợp. Trước khi kết thúc đợt refactor phải chạy full offline suite và architecture checks; live LLM/Neo4j chỉ opt-in.
-- Tests và benchmarks dùng thư mục tạm/fake adapters; không sửa dữ liệu dự án, cấu hình hoặc secrets thật. Chỉ thêm test bảo vệ contract/invariant/rủi ro thực tế, không mirror implementation.
-- Thay đường nóng phải có baseline và phép đo sau cùng fixture/seed/environment. Hồi quy p95/peak memory >10% cần điều tra và giải thích tradeoff theo kế hoạch; không suy đoán hiệu năng từ LOC.
-- Cập nhật `AI/structure.md`, README, imports/exports và contract documentation khi implementation thay đổi. Không viết kiến trúc đích thành hiện trạng trước khi triển khai.
-- Sau code changes, bắt buộc `graphify update .` theo quy tắc phía trên. Nếu CLI/runtime bị chặn: thử xác định môi trường cài đặt được phép, ghi lệnh/lỗi và phần chưa xác minh; không tự sửa generated graph bằng tay hoặc bỏ qua rồi báo hoàn tất.
-- Nếu `graphify query` không khả dụng, phải báo rõ và dùng graph JSON/report có phạm vi để định vị; so graph commit với HEAD, kiểm chứng source/callers trước mọi deletion. Đây là fallback khi công cụ không chạy được, không phải ngoại lệ để bỏ graph khi graph bị dirty.
+### 4.2. Ranh giới bắt buộc
 
-### 8. Quy tắc bắt buộc cho Modular Monolith và Ports & Adapters (Architectural Invariants)
+- **Domain:** quy tắc/thuật toán thuần; không import UI/framework, concrete repository/gateway/SDK, không đọc config/secrets/filesystem. Phân loại code legacy theo trách nhiệm trước khi chuyển, không chỉ đổi thư mục.
+- **Application:** orchestration qua ports/core contracts; không tự tạo concrete adapters hoặc lấy global singleton để giải quyết dependency mới.
+- **Adapters:** I/O và chuyển đổi cho ports; không tự quyết định policy nghiệp vụ thuộc use case.
+- **Composition root:** backend/bootstrap.py wiring concrete dependencies, được import implementation cần thiết cho wiring; không chứa thuật toán nghiệp vụ. Quyền này không áp dụng cho module tùy ý import nhau.
+- **Frontend composition:** frontend/composition.py cung cấp application boundaries đã được root dựng, không tạo root nghiệp vụ thứ hai. UI/HTTP/CLI mới gọi public application APIs; không chứa merge, business validation, snapshot/save sequence hoặc transaction policy.
+- **Public boundary:** module A chỉ dùng backend.modules.B.public hoặc contract B công bố. Không cross-module internal import. Không wildcard import hoặc __getattr__ delegation để che dependency.
+- **Shared:** không import backend/frontend/ml_lab. Chỉ chia sẻ helper/contract cùng semantics thực sự; config/secrets/I/O legacy phải có owner, không lan vào pure domain.
+- **Facade:** KGStudioFacade là compatibility boundary, không bổ sung nghiệp vụ. Giữ forwarding và mapping tương thích tối thiểu; không ép “một dòng” nếu mất semantics. Migrate callers/test seams rồi mới bỏ shim hoặc nhánh wiring cũ.
+- **ML:** training code không phụ thuộc frontend/facade. Dùng contracts/formatters chung với serving; không khẳng định zero skew khi chưa test parity.
+- Không tạo import cycle; kiểm tra import graph/AST/runtime phù hợp trước khi kết luận. Không thêm mediator, event bus, generic repository/service hoặc microservices khi chưa có nhu cầu cụ thể được ghi lại.
 
-Bất kỳ AI Agent nào can thiệp mã nguồn KG Studio đều **PHẢI TUÂN THỦ TUYỆT ĐỐI** các bất biến kiến trúc sau đây, không có ngoại lệ:
+## 5. Dữ liệu, khóa và commit
 
-1. **Hệ thống 6 Module Nghiệp vụ Chuẩn (`backend/modules/`)**:
-   - Toàn bộ use case và nghiệp vụ hệ thống bắt buộc phải thuộc quyền sở hữu của đúng 1 trong 6 modules:
-     - `backend/modules/projects/`: Quản lý dự án, revision tracking, SSOT read projection và trọng tài commit duy nhất (`ProjectCommitCoordinator`).
-     - `backend/modules/schema_intelligence/`: Quản lý danh mục, đề xuất EDC, xem trước/áp dụng quyết định duyệt schema, Target Alignment và Schema Retrieval (+R).
-     - `backend/modules/extraction/`: Quản lý tài liệu thô, chunking, phiên bản prompt bất biến, engine registry (`closed`, `edc`, `edc_plus_r`, `free_triples`) và trích xuất song song an toàn đa luồng. `free_triples` là baseline B chỉ lưu artifacts thô; không gọi EDC ingestion/definitions/retrieval/alignment/merge hoặc nhập đồ thị. Giữ nguyên nhãn, duplicates và các mục không hợp lệ kèm diagnostics để đánh giá độc lập.
-     - `backend/modules/curation/`: Duyệt cạnh, chỉnh sửa fact/profile, quy trình gộp 3 tầng (thực thể, quan hệ, bộ ba), đối chiếu bằng chứng span ký tự và gom cụm ngữ nghĩa.
-     - `backend/modules/graph_qa/`: Đồ thị đã duyệt, KG baseline dẫn xuất chỉ đọc, thuật toán G-Retriever PCST, sinh bộ câu hỏi benchmark QA, đồng bộ Cypher Neo4j và xuất dữ liệu. KG baseline lấy runs qua public API của extraction được inject bằng port; không nhập vào `project.nodes/edges`. Policy `surface-nfc-casefold-v1` chỉ dùng Unicode/khoảng trắng/casefold cho khóa node, giữ raw labels, predicate và observations; không dùng aliases, redirects hoặc catalog. Các nguồn graph dùng chung `GraphSnapshotDTO`; đường snapshot chọn nguồn tường minh, không fallback approved sang all và không giả lập human approval. So các KG phải dùng cùng gold độc lập hoặc ghi rõ chỉ là demo câu hỏi tự sinh trên từng graph.
-     - `backend/modules/training/`: Xuất 3 tập dữ liệu Active Learning chuẩn (SR Triplets, Canonicalization Pairs, SFT Extractions), đóng vai trò ranh giới an toàn duy nhất với `ml_lab/`.
-   - Mỗi module phải tuân thủ cấu trúc tối thiểu: `ports.py` (khai báo Protocol trừu tượng), `application/service.py` (Application Service điều phối nghiệp vụ), `public.py` (hợp đồng công khai export ra ngoài).
-   - **Cấm tuyệt đối cross-module internal import**: Module A không được import file nội bộ của Module B (ví dụ: cấm `from backend.modules.projects.application.commit_coordinator import ...`). Mọi giao tiếp liên module phải đi qua `backend.modules.<name>.public`.
+### 5.1. Nguồn sự thật và phạm vi lưu
 
-2. **Duy Nhất Một Composition Root (`backend/bootstrap.py`)**:
-   - `AppContainer` và singleton getter `get_container()` là Composition Root DUY NHẤT của toàn hệ thống.
-   - Toàn bộ concrete adapters (JSON repo, SQLite repo, Vector repo, Embedder gateway, Neo4j gateway, LLM gateway) được khởi tạo tại đây và inject vào 6 Application Services.
-   - **Cấm tuyệt đối**: UI components, REST API routers, CLI hay Domain logic tự ý khởi tạo concrete repositories hoặc concrete gateways.
+- **JSON project bundle là authoritative; SQLite là read projection; vector index và baseline graph là derived data.** Không gọi SQLite là nguồn sự thật thứ hai. Đổi storage cần migration riêng.
+- Mutation nghiệp vụ ghi project bundle mới hoặc được migrate phải qua lifecycle ProjectCommitCoordinator. Không truy cập coordinator.project_store.save_project() để lách commit().
+- Cấu hình ứng dụng, secrets, file export và model artifacts có adapter/use case riêng; không ép chúng vào transaction project một cách máy móc. UI không tự thực hiện nghiệp vụ I/O.
+- Project creation, restore/resync có lifecycle policy rõ thuộc projects. Không sao chép sequence lock/snapshot/save sang module khác; giữ API legacy có consumer trong giai đoạn migration.
 
-3. **Duy Nhất Một Trọng Tài Điều Phối Commit (`ProjectCommitCoordinator`)**:
-   - Mọi thao tác ghi dữ liệu, duyệt đề xuất, gộp thực thể/quan hệ, chỉnh sửa cạnh/node, hay cập nhật schema bắt buộc phải đi qua `ProjectCommitCoordinator.commit()`.
-   - **Cấm tuyệt đối**: Tạo thêm quy trình snapshot/save thứ hai, tự ý lưu file JSON hay tự ý cập nhật SQLite từ UI hoặc service con mà không qua commit coordinator.
-   - Cấm tạo snapshot thành công giả lập (fake path `/tmp/...`). Store thiếu snapshot port phải báo lỗi rõ ràng.
+### 5.2. Invariants cần bảo toàn
 
-4. **Ranh Giới Giao Diện & Transport (UI, API, CLI)**:
-   - Streamlit UI (`frontend/components/`, `frontend/pages/`) chỉ giao tiếp với backend thông qua Application Services được cung cấp bởi `frontend/composition.py` (`get_ui_composition()`) hoặc qua `FrontendClient`.
-   - **Cấm tuyệt đối**: Đưa nghiệp vụ transaction, quy trình tạo snapshot, hoặc vòng lặp ghi đĩa trực tiếp vào các tệp UI/Presenters.
-   - Khi có lỗi ở tầng transport HTTP, cấm fallback âm thầm sang ghi local mutation.
+1. Preview không mutate/ghi dữ liệu nghiệp vụ. Apply kiểm tra scope, expected revision, stale state, request hash/idempotency và policy all_or_nothing/valid_only tương ứng.
+2. Dùng cùng project identity và lock contract giữa các use case ghi. Không tạo lock độc lập rồi mô tả là khóa toàn hệ thống. RLock chỉ bảo vệ trong process; nhiều process/worker cần giải pháp và tests riêng.
+3. Candidate tách khỏi state đang sử dụng; chỉ cập nhật memory sau authoritative commit thành công. Coordinator hiện gọi executor(project), nên caller phải bảo đảm không mutate đầu vào trước save. Thay contract này cần fault tests và đo chi phí.
+4. Giữ snapshot, atomic bundle/rollback và khôi phục đã hỗ trợ. Thiếu snapshot capability phải báo lỗi, không trả đường dẫn snapshot giả.
+5. SQLite sync lỗi thể hiện sync_pending và hỗ trợ resync. Query mới/migrate xử lý freshness theo contract: kiểm tra revision, resync, đọc authoritative hoặc trả trạng thái stale rõ; không trả như dữ liệu mới khi chưa bảo đảm.
+6. Vector/cache invalidation gắn với fingerprint dữ liệu/cấu hình thực dùng. Không báo derived data hợp lệ khi cập nhật thất bại; không dùng số lượng phần tử làm cache identity duy nhất.
+7. Merge bảo toàn observations, evidence/offsets, aliases, redirects, document links, trạng thái và audit history. Collapse cạnh/self-loop chỉ theo policy đã kiểm chứng.
+8. Không ghi secrets vào project/snapshot/trace/log/export/fixture. Lỗi phải đủ thông tin chẩn đoán mà không lộ credentials.
 
-5. **Quy Tắc Tương Thích Ngược & Thu Hẹp Facade (`backend/facade.py`)**:
-   - `KGStudioFacade` chỉ là lớp compatibility forwarding duy trì tính tương thích ngược cho các consumer cũ.
-   - **Cấm tuyệt đối**: Bổ sung nghiệp vụ mới vào `KGStudioFacade` hoặc biến Facade thành một God Service mới.
-   - Mọi phương thức trong `KGStudioFacade` chỉ được phép ủy quyền (delegate) một dòng sang Application Service tương ứng trong `backend/modules/`.
+Code mới không fallback mutation thiếu coordinator. Pure transform/preview phục vụ test là API riêng, không giả lập commit thành công.
 
-6. **Bảo Vệ Ranh Giới Kiến Trúc Tự Động (Fail-Closed Architecture Guard)**:
-   - `tests/test_architecture_boundaries.py` sử dụng trình quét AST tự động kiểm tra mọi file nguồn theo nguyên tắc Fail-Closed:
-     - `shared/` tuyệt đối KHÔNG import `backend`, `frontend` hay `ml_lab`.
-     - `backend/` và `shared/` tuyệt đối KHÔNG import `frontend`.
-     - `backend/domain/` tuyệt đối KHÔNG import concrete infrastructure ngoài allowlist có lý do cụ thể.
-   - Mọi vi phạm mới sẽ khiến suite kiểm thử thất bại ngay lập tức. Cấm xóa hoặc nới lỏng allowlist mà không có sự đồng thuận bằng văn bản.
+## 6. Extraction, baseline và tính đúng đắn nghiên cứu
+
+- Giữ registrations closed, edc, edc_plus_r, free_triples và public formats đang hỗ trợ. Refactor không tự đổi thuật toán/prompt/model, ngưỡng, schema hay chuẩn hóa tên.
+- Giữ prompt version pinning, prepared-request parity/hash, actual fitted input, provenance từng attempt/run, token accounting và train/serve formatting.
+- **free_triples là baseline B:** extraction chỉ lưu artifacts thô. Không gọi EDC ingestion/definitions/retrieval/alignment/semantic merge hoặc ghi graph vào project.nodes/edges. Giữ raw labels, duplicates, failed attempts và invalid items kèm diagnostics.
+- KG baseline thuộc graph_qa, đọc runs qua public API extraction được inject bằng port. Policy surface-nfc-casefold-v1 chỉ chuẩn hóa Unicode NFC/khoảng trắng/casefold cho khóa node; giữ raw forms/predicate/observations. Không dùng catalog/aliases/redirects làm giàu baseline.
+- Không tự chọn attempt “tốt nhất” hoặc trộn nhiều attempt cùng đoạn trái policy; không giả lập human approval.
+- Dùng chung GraphSnapshotDTO và graph application APIs. Chọn nguồn tường minh; không fallback approved rỗng sang all hoặc graph cũ. Export/training kiểm tra nguồn/scope thực tế, không tin riêng metadata của file nhập.
+- So các KG cần gold độc lập và điều kiện thí nghiệm rõ. Câu hỏi tự sinh trên mỗi graph phải được ghi là demo trong graph đó. Đúng cấu trúc, đã duyệt và đúng lịch sử là ba khái niệm khác nhau.
+
+## 7. Contracts, transport và UI
+
+- Dùng Pydantic v2 tại biên phù hợp; bundle dict vẫn hợp lệ. Không ép qua DTO thiếu trường rồi ghi đè storage. Đổi conversion phải test unknown fields, default/null, IDs, Unicode và roundtrip.
+- Không đổi global extra policy hoặc xóa .from_dict/.to_dict để giảm LOC. Compatibility còn consumer cần kế hoạch migrate và parity tests.
+- Local/HTTP có lựa chọn và capability rõ. Code mới không gọi local mutation khi remote đã được chọn; lỗi HTTP không fallback ghi local. Capability chưa hỗ trợ trả lỗi rõ.
+- Giữ public API/CLI/exports. Chỉ gỡ shim sau khi migrate consumers và xử lý nghĩa vụ tương thích; ghi điều kiện gỡ.
+- UI hướng nhiệm vụ, ưu tiên người không chuyên; ẩn cấu hình nâng cao không được tự đổi semantics. Thao tác phá hủy/lô phải thể hiện phạm vi và tác động trước apply.
+- Giữ session keys hoặc có migration rõ; selection theo ID, draft invalidation, pagination, hai bảng EDC và return context. Đổi project/nguồn phải vô hiệu state không còn phù hợp.
+- Đối chiếu Streamlit version thực tế và API hỗ trợ; không nâng framework kèm refactor. Ưu tiên widget/theme chính thức, hạn chế CSS phụ thuộc DOM nội bộ.
+- AppTest chứng minh state/hành vi, không thay kiểm tra trình duyệt về bố cục/focus/accessibility hoặc usability với người thật. Ghi rõ loại kiểm thử đã thực hiện.
+
+## 8. Tái sử dụng và xóa code
+
+- Kiểm tra implementation trước viết helper. Tái sử dụng merge_core, selection_core, pagination/action bar, extraction lifecycle và formatters khi cùng semantics.
+- Một rule/lifecycle có một owner. Chỉ trích abstraction khi có consumer/test seam thật; không gom chỉ vì giống cú pháp.
+- File >500 dòng hoặc class nhiều capability cần review trách nhiệm khi sửa đáng kể. Ghi lý do giữ hoặc kế hoạch tách; LOC không là hard gate.
+- Trước xóa audit callers/imports, __all__, dynamic import, registry, CLI, config, side effects, test seams và public consumers. Graph thiếu cạnh/static analyzer báo unused chỉ tạo ứng viên điều tra.
+- Migrate caller trước; ghi **deletion ledger** trong báo cáo đợt: path/symbol, lý do, consumers đã kiểm tra, thay thế, compatibility condition, tests/kết quả.
+- Không xóa test còn bảo vệ hành vi để làm suite xanh; chuyển test sang boundary mới. Không xóa package markers/re-exports có chức năng chỉ vì ngắn.
+- Cleanup source không cho phép xóa project data, snapshots, catalogs/history, prompt versions, training exports, model artifacts, báo cáo lịch sử hoặc graphify-out/.
+
+## 9. Quy trình kiểm chứng và hoàn thành
+
+### Trước khi sửa
+
+1. Xác định phạm vi và working tree; không reset/ghi đè thay đổi sẵn có ngoài nhiệm vụ.
+2. Dùng Graphify theo mục 2, đọc public contracts/source/tests liên quan, xác định owner và caller.
+3. Chọn tiêu chí nghiệm thu. Tách refactor khỏi thay thuật toán/prompt, storage schema hoặc dependency; với lỗi cần sửa, xác định phép tái hiện.
+
+### Khi triển khai
+
+- Không nhân rộng legacy. Ngoại lệ phải theo cạnh import/đường gọi cụ thể, lý do, đợt/điều kiện gỡ và test bảo vệ; không allowlist cả package.
+- Không nới/xóa guard hoặc allowlist chỉ để PASS. Rút ngoại lệ sau migration là bắt buộc; thêm/nới ngoại lệ cần quyết định được ghi và nằm trong phạm vi người dùng cho phép.
+- Guard hiện chưa bao phủ mọi invariant. Thay boundary cần negative tests cho guard và kiểm thử hành vi cần bảo vệ; không chỉ kiểm tra chuỗi source.
+- Tests/benchmarks dùng thư mục tạm, synthetic fixtures/fake adapters; không sửa config/dữ liệu/secrets thật. Tài nguyên test công khai phải khai báo/copy chính xác, không copy toàn data/.
+
+### Chạy kiểm thử
+
+Dùng Python >=3.11 của chính KG Studio, ưu tiên .venv-win; ghi version/lệnh thực tế. Không cài dependency vào KG_Studio_MVP hoặc môi trường ngoài phạm vi nhiệm vụ.
+
+Lệnh PowerShell mẫu:
+
+```powershell
+# Test liên quan: thay module theo phạm vi thay đổi
+& .\.venv-win\Scripts\python.exe tools\run_isolated_tests.py tests.test_commit_coordinator
+
+# Architecture checks trong workspace cô lập
+& .\.venv-win\Scripts\python.exe tools\run_isolated_tests.py tests.test_architecture_boundaries
+
+# Full offline suite, đã bao gồm architecture checks
+& .\.venv-win\Scripts\python.exe tools\run_isolated_tests.py
+```
+
+Yêu cầu:
+
+- Commit/lock: fault injection, đồng thời giữa use cases, stale revision, replay/restart theo rủi ro thay đổi. Merge/contracts: lossless parity và rollback phù hợp.
+- Trước kết thúc đợt refactor source phải chạy full offline suite, bao gồm architecture checks. Không cần chạy lặp riêng khi full đã đạt nếu không có thay đổi/lo ngại mới. Live LLM/Neo4j chỉ opt-in.
+- Lỗi fixture/runner vẫn là ca chưa đạt; sửa đóng gói an toàn hoặc báo giới hạn, không skip/xóa để công bố xanh. Không lấy số test lịch sử làm mục tiêu cố định.
+- Thay đường nóng phải đo trước/sau cùng fixture/seed/environment. Hồi quy p95 hoặc peak memory >10% cần điều tra, giải thích tradeoff; không suy đoán nhanh hơn từ LOC.
+- Chỉ sửa tài liệu: kiểm tra nội dung, links và diff. Không yêu cầu suite chạy lại và không tuyên bố đã chạy nếu chưa chạy.
+
+### Trước khi báo hoàn thành
+
+1. Kiểm tra diff/phạm vi và bảo toàn thay đổi ngoài nhiệm vụ.
+2. Khi implementation đổi, cập nhật AI/structure.md, README, public exports và contract docs liên quan; không viết kiến trúc đích thành hiện trạng.
+3. Sau source changes, chạy graphify update . hoặc ghi blocker theo mục 2.
+4. Báo kết quả, lệnh/test đã chạy, lỗi/giới hạn và việc còn lại. Không gọi toàn bộ đợt hoàn tất nếu tiêu chí bắt buộc còn chưa được xác minh.

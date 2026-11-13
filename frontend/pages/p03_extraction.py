@@ -12,9 +12,9 @@ from frontend.components.pipeline_banner import render_step_next_action
 from frontend.components.step_traces_viewer import render_step_traces
 from frontend.composition import get_ui_composition
 from frontend.state.session import navigate_to_step
-from shared.config_loader import CONFIG, save_llm_token_config_to_toml
+from shared.config_loader import CONFIG
 from shared.constants import MODE_FREE_TRIPLES
-from shared.secrets_manager import get_api_key, mask_api_key
+from shared.secrets_manager import get_api_key
 
 
 def _extraction_result_summary(stats: dict, mode: str) -> str:
@@ -59,52 +59,19 @@ def render_extraction_page(project: dict) -> None:
     default_chunk = int(st.session_state.get("extraction_chunk_size", CONFIG["extraction"]["chunk_size"]))
     default_overlap = int(CONFIG["extraction"]["overlap"])
 
-    # 1. KHU VỰC THIẾT LẬP KẾT NỐI & TOKEN (Gọn gàng trong Expander)
-    with st.expander(
-        f"🎚️ Cấu hình Token & Mô hình đang kích hoạt (`{provider}` · `{model}` | In: {in_tokens:,} · Out: {out_tokens:,})",
-        expanded=False,
-    ):
-        t1, t2, t3, t4 = st.columns([1.8, 1.8, 1.0, 1.0])
-        new_in_tokens = t1.slider(
-            "📥 Lượng Token đầu vào tối đa (Input Tokens)",
-            min_value=1024,
-            max_value=128000,
-            value=in_tokens,
-            step=1024,
-            key="p03_slider_in_tokens",
+    # 1. THẺ TÓM TẮT KẾT NỐI AI & PHƯƠNG PHÁP (CHỈ ĐỌC — MỘT NGUỒN SỬA Ở BƯỚC 2)
+    spec = LLMGateway.provider_spec(provider)
+    key_ready = (not spec.requires_api_key) or bool((api_key or "").strip())
+    key_badge = "🟢 Đã cấu hình khóa" if key_ready else "🔴 Thiếu API key"
+    with st.container(border=True):
+        c_info, c_btn = st.columns([3.8, 1.4])
+        c_info.markdown(
+            f"**🤖 Kết nối AI & Phương pháp đang áp dụng:** `{mode}` · "
+            f"`{provider}` / `{model}` · Input `{in_tokens:,}` / Output `{out_tokens:,}` tokens · {key_badge}"
         )
-        new_out_tokens = t2.slider(
-            "📤 Lượng Token đầu ra tối đa (Output / max_tokens)",
-            min_value=512,
-            max_value=65536,
-            value=out_tokens,
-            step=512,
-            key="p03_slider_out_tokens",
-        )
-        st.session_state["llm_max_input_tokens"] = new_in_tokens
-        st.session_state["llm_max_output_tokens"] = new_out_tokens
-
-        if t3.button("⚡ Auto theo mô hình", width="stretch", key="p03_btn_auto_tokens"):
-            rec = LLMGateway.recommend_token_limits(provider, model)
-            st.session_state["llm_max_input_tokens"] = rec["max_input_tokens"]
-            st.session_state["llm_max_output_tokens"] = rec["max_output_tokens"]
-            st.session_state["extraction_chunk_size"] = rec["recommended_chunk_size"]
-            st.success(
-                f"Đã tự động điều chỉnh theo `{model}`: Input = {rec['max_input_tokens']} tokens, "
-                f"Output = {rec['max_output_tokens']} tokens, Kích thước đoạn = {rec['recommended_chunk_size']} ký tự."
-            )
+        if c_btn.button("⚙️ Đổi cấu hình ở Bước 2", key="p03_btn_goto_setup", width="stretch"):
+            navigate_to_step("setup")
             st.rerun()
-
-        if t4.button("💾 Lưu cấu hình", width="stretch", key="p03_btn_save_toml"):
-            saved_path = save_llm_token_config_to_toml(
-                provider_key=LLMGateway.provider_key(provider),
-                model=model,
-                base_url=base_url,
-                max_input_tokens=int(st.session_state["llm_max_input_tokens"]),
-                max_output_tokens=int(st.session_state["llm_max_output_tokens"]),
-                chunk_size=int(st.session_state.get("extraction_chunk_size", default_chunk)),
-            )
-            st.success(f"Đã lưu cấu hình vào `{saved_path}`!")
 
     if not docs:
         st.info("Chưa có tài liệu nào trong dự án. Hãy bổ sung tài liệu ở Bước 1 trước khi bắt đầu trích xuất.")
@@ -189,31 +156,62 @@ def render_extraction_page(project: dict) -> None:
                     else:
                         c3.markdown("⚪ *Chưa trích xuất*")
 
-    # 3. THIẾT LẬP THAM SỐ ĐOẠN & ĐIỀU KHIỂN CHẠY
+    # 3. PHẠM VI CHẠY & ĐIỀU KHIỂN TRÍCH XUẤT
     with st.container(border=True):
-        st.markdown("##### ⚙️ Thiết lập Phân đoạn & Kích hoạt Trích xuất")
-        c1, c2, c3, c4 = st.columns([1.5, 1.2, 1.2, 1.5])
-        chunk_size = c1.number_input("Kích thước đoạn (ký tự)", 500, 16000, default_chunk, 100)
-        st.session_state["extraction_chunk_size"] = int(chunk_size)
-        overlap = c2.number_input("Độ chồng lấp (ký tự)", 0, 1000, default_overlap, 50)
+        st.markdown("##### ⚙️ Phạm vi & Điều khiển Trích xuất")
+        default_workers = int(st.session_state.get("extraction_workers", 3))
+        default_extract_all = bool(st.session_state.get("p03_chk_extract_all", True))
 
-        extract_all = c3.checkbox(
-            "Trích xuất tất cả",
-            value=True,
-            help="Tự động chia và trích xuất toàn bộ các đoạn của các tài liệu đã chọn.",
-            key="p03_chk_extract_all",
-        )
-        if extract_all:
-            max_chunks = 9999
-            c4.caption("⚡ Sẽ xử lý **100% các đoạn** của các file đã chọn")
-        else:
-            max_chunks = c4.number_input(
-                "Số đoạn tối đa / file",
-                1,
-                200,
-                int(CONFIG["extraction"]["max_chunks_per_document"]),
-                help="Giới hạn số đoạn chạy thử nghiệm cho mỗi tài liệu.",
-                key="p03_num_max_chunks",
+        with st.expander("⚙️ Tùy chỉnh kỹ thuật (Phân đoạn & Đa luồng)", expanded=False):
+            c1, c2, c3, c4 = st.columns([1.5, 1.2, 1.2, 1.5])
+            chunk_size = c1.number_input("Kích thước đoạn (ký tự)", 500, 16000, default_chunk, 100)
+            st.session_state["extraction_chunk_size"] = int(chunk_size)
+            overlap = c2.number_input("Độ chồng lấp (ký tự)", 0, 1000, default_overlap, 50)
+
+            extract_all = c3.checkbox(
+                "Trích xuất tất cả",
+                value=default_extract_all,
+                help="Tự động chia và trích xuất toàn bộ các đoạn của các tài liệu đã chọn.",
+                key="p03_chk_extract_all",
+            )
+            if extract_all:
+                max_chunks = 9999
+                c4.caption("⚡ Sẽ xử lý **100% các đoạn** của các file đã chọn")
+            else:
+                max_chunks = c4.number_input(
+                    "Số đoạn tối đa / file",
+                    1,
+                    200,
+                    int(CONFIG["extraction"]["max_chunks_per_document"]),
+                    help="Giới hạn số đoạn chạy thử nghiệm cho mỗi tài liệu.",
+                    key="p03_num_max_chunks",
+                )
+
+            st.markdown("---")
+            th_col1, th_col2 = st.columns([2.2, 3.8])
+            workers = th_col1.slider(
+                "⚡ Số luồng gọi API đồng thời (Concurrent Threads)",
+                min_value=1,
+                max_value=16,
+                value=default_workers,
+                step=1,
+                key="p03_slider_workers",
+                help="Số lượng request gọi LLM API gửi đi song song cùng lúc.",
+            )
+            st.session_state["extraction_workers"] = workers
+
+            if workers == 1:
+                th_col2.info("🐢 **Tuần tự (1 luồng)**: An toàn khi mạng yếu hoặc chạy local GPU nhỏ.")
+            elif workers <= 5:
+                th_col2.success(f"🚀 **Đa luồng khuyến nghị ({workers} luồng)**: Phù hợp DeepSeek API & OpenAI, hạn chế chạm Rate Limit.")
+            elif workers <= 10:
+                th_col2.warning(f"⚡ **Tốc độ cao ({workers} luồng)**: Cần hạn mức RPM/TPM cao để tránh lỗi 429.")
+            else:
+                th_col2.error(f"🔥 **Siêu tốc ({workers} luồng)**: Nguy cơ cao chạm Rate Limit ở tài khoản tiêu chuẩn.")
+
+            st.caption(
+                "Khuyến nghị tham khảo: DeepSeek 3–5 luồng · OpenAI Tier 2+ 4–8 luồng · Local Ollama 1–2 luồng. "
+                "Hệ thống dùng khóa `RLock` trong tiến trình khi sáp nhập vào dự án."
             )
 
         if not selected_docs:
@@ -223,55 +221,17 @@ def render_extraction_page(project: dict) -> None:
                 len(facade.document_chunks(d, limit=int(chunk_size), overlap=int(overlap))[: int(max_chunks)])
                 for d in selected_docs
             )
+            scope_note = "100% đoạn" if extract_all else f"tối đa {int(max_chunks)} đoạn/file"
             st.info(
-                f"📊 Đang chọn **{len(selected_docs)}/{len(docs)} tài liệu** $\\rightarrow$ "
-                f"Tổng cộng **{total_chunks} đoạn** văn bản cần xử lý (mỗi đoạn ~{chunk_size} ký tự, chồng lấp {overlap} ký tự)."
-            )
-
-        # CẤU HÌNH ĐA LUỒNG (CONCURRENT EXTRACTION THREADS)
-        st.markdown("---")
-        th_col1, th_col2 = st.columns([2.2, 3.8])
-        default_workers = int(st.session_state.get("extraction_workers", 3))
-        workers = th_col1.slider(
-            "⚡ Số luồng gọi API đồng thời (Concurrent Threads)",
-            min_value=1,
-            max_value=16,
-            value=default_workers,
-            step=1,
-            key="p03_slider_workers",
-            help="Số lượng request gọi LLM API gửi đi song song cùng lúc. Tăng số luồng giúp rút ngắn thời gian trích xuất gấp nhiều lần.",
-        )
-        st.session_state["extraction_workers"] = workers
-
-        if workers == 1:
-            th_col2.info("🐢 **Chế độ Tuần tự (1 luồng)**: Xử lý lần lượt từng đoạn. An toàn tuyệt đối, phù hợp khi mạng yếu hoặc dùng GPU local nhỏ.")
-        elif workers <= 5:
-            th_col2.success(f"🚀 **Chế độ Đa luồng Khuyến nghị ({workers} luồng)**: Phù hợp nhất cho DeepSeek API & OpenAI. Tốc độ tăng ~{workers}x mà không lo chạm Rate Limit.")
-        elif workers <= 10:
-            th_col2.warning(f"⚡ **Chế độ Tốc độ cao ({workers} luồng)**: Rất nhanh. Cần tài khoản API có hạn mức RPM/TPM cao (OpenAI Tier 2+, DeepSeek Enterprise) để tránh lỗi 429.")
-        else:
-            th_col2.error(f"🔥 **Chế độ Siêu tốc ({workers} luồng)**: Nguy cơ cao bị Rate Limit nếu tài khoản tiêu chuẩn. Hãy chắc chắn nhà cung cấp của bạn cho phép throughput này.")
-
-        with st.expander("💡 Note gợi ý & Khuyến nghị thiết lập số luồng tối ưu", expanded=False):
-            st.markdown(
-                """
-- **DeepSeek API (`deepseek-chat`)**:
-  - Khuyến nghị: **3 – 5 luồng**.
-  - Lý do: DeepSeek có giới hạn tiêu chuẩn khoảng 60 requests/phút (RPM). Chạy 3–5 luồng giúp trích xuất 50 đoạn văn chỉ mất ~20–30 giây thay vì 3–4 phút, vừa an toàn vừa đạt hiệu suất đỉnh.
-- **OpenAI (`gpt-4o`, `gpt-4o-mini`)**:
-  - Khuyến nghị: **4 – 8 luồng** (nếu tài khoản Tier 2 trở lên); **2 – 3 luồng** (nếu Tier 1).
-- **Google Gemini (`gemini-1.5-flash`)**:
-  - Khuyến nghị: **3 – 6 luồng**.
-- **Mô hình cục bộ (Local Ollama / LM Studio)**:
-  - Khuyến nghị: **1 – 2 luồng**.
-  - Lý do: Chạy local tiêu tốn VRAM/RAM theo từng request song song. Để >2 luồng có thể gây nghẽn phần cứng (OOM) hoặc làm giảm tốc độ suy luận (token/s).
-- 🛡️ **Đảm bảo toàn vẹn dữ liệu (Thread Safety)**:
-  - Hệ thống sử dụng cơ chế khóa **Thread Lock** (`threading.RLock`). Khi nhiều luồng hoàn tất cùng lúc, các thực thể, quan hệ và đề xuất schema được xếp hàng sáp nhập tuần tự vào đồ thị, đảm bảo **100% không bị xung đột, trùng lặp hay ghi đè sai lệch dữ liệu**.
-                """
+                f"📊 Phạm vi chạy: **{len(selected_docs)}/{len(docs)} tài liệu** · **{total_chunks} đoạn** "
+                f"({scope_note}, ~{int(chunk_size)} ký tự/đoạn, chồng lấp {int(overlap)} ký tự) · "
+                f"Phương pháp `{mode}` · `{workers}` luồng."
             )
 
         # Hàng nút thao tác: Chạy thử 1 đoạn mẫu VS Chạy toàn bộ
         btn_col_test, btn_col_run = st.columns([1.8, 2.2])
+        btn_col_test.caption("⚠️ Chạy thử **vẫn gọi AI thực tế** trên 1 đoạn đầu, tốn token (nếu dùng API trả phí) và ghi vào nhật ký.")
+        btn_col_run.caption("▶️ Chạy toàn bộ sẽ cập nhật tiến độ theo từng đoạn hoàn tất thực tế và lưu sau mỗi đoạn.")
 
         # NÚT 1: CHẠY THỬ 1 ĐOẠN MẪU (DRY-RUN)
         if btn_col_test.button(
@@ -427,20 +387,34 @@ def render_extraction_page(project: dict) -> None:
             format_func=lambda i: f"#{len(runs) - i} · {runs[i].get('doc_name', '')} (Đoạn {runs[i].get('chunk_number', 0)}) — mode={runs[i].get('extraction_mode', '')}",
         )
         run = runs[selected_idx]
-        render_step_traces(run)
-        if run.get("extraction_mode") == MODE_FREE_TRIPLES:
+        run_status = run.get("status", "unknown")
+        status_icon = "🟢 Thành công" if run_status == "ok" else ("🔴 Lỗi" if run_status == "error" else f"⚪ {run_status}")
+        run_mode = run.get("extraction_mode", "")
+        with st.container(border=True):
+            s1, s2, s3 = st.columns([1.6, 2.2, 2.2])
+            s1.markdown(f"**Trạng thái:** {status_icon}")
+            s2.markdown(f"**Tài liệu:** `{run.get('doc_name', '')}` · Đoạn `{run.get('chunk_number', 0)}`")
+            s3.markdown(f"**Token:** In `{int(run.get('input_tokens', 0) or 0):,}` · Out `{int(run.get('output_tokens', 0) or 0):,}`")
+            stats_summary = _extraction_result_summary(run.get("ingest_stats", {}) or {}, run_mode)
+            st.caption(f"Phương pháp: `{run_mode}` | {stats_summary}")
+
+        if run_mode == MODE_FREE_TRIPLES:
             st.caption("Kết quả baseline độc lập; các số liệu dưới đây không phải số cạnh đồ thị đã duyệt.")
-            if run.get("status") == "error":
-                st.warning("Lượt baseline gặp lỗi. Metadata dưới đây giúp đối chiếu request; lượt lỗi vẫn được giữ trong bản xuất đánh giá.")
-            payload = run.get("extraction_payload")
-            report = run.get("validation_report")
-            if isinstance(payload, dict):
-                st.markdown("##### Bộ ba thô")
-                st.json(payload)
-            if isinstance(report, dict):
-                st.markdown("##### Chẩn đoán cấu trúc và bằng chứng")
-                st.json(report)
-            with st.expander("Metadata đối chứng baseline"):
+            if run_status == "error":
+                st.warning("Lượt baseline gặp lỗi. Metadata bên dưới giúp đối chiếu request; lượt lỗi vẫn được giữ trong bản xuất đánh giá.")
+
+        with st.expander("🔧 Chi tiết kỹ thuật & Nhật ký Engine", expanded=False):
+            render_step_traces(run, use_expander=False)
+            if run_mode == MODE_FREE_TRIPLES:
+                payload = run.get("extraction_payload")
+                report = run.get("validation_report")
+                if isinstance(payload, dict):
+                    st.markdown("##### Bộ ba thô")
+                    st.json(payload)
+                if isinstance(report, dict):
+                    st.markdown("##### Chẩn đoán cấu trúc và bằng chứng")
+                    st.json(report)
+                st.markdown("##### Metadata đối chứng baseline")
                 st.json({
                     key: run.get(key, "")
                     for key in (
@@ -449,7 +423,7 @@ def render_extraction_page(project: dict) -> None:
                         "prepared_request_hash", "input_tokens", "output_tokens",
                     )
                 })
-        with st.expander("Phản hồi JSON gốc từ LLM"):
+            st.markdown("##### Phản hồi JSON gốc từ LLM")
             st.code(run.get("raw_response", ""), language="json")
         if any(r.get("extraction_mode") == MODE_FREE_TRIPLES for r in runs):
             baseline_data = get_ui_composition().extraction_service.export_free_triples_results(project)

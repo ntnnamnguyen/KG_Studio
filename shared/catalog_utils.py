@@ -1,6 +1,8 @@
 """Xử lý danh mục (Catalog v2) và hợp đồng JSON EDC hoàn toàn độc lập."""
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import re
@@ -123,18 +125,125 @@ def catalog_bytes(rows: list[dict], key: str) -> bytes:
     return (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
-def parse_catalog(data: bytes | str, key: str) -> list[dict]:
-    text = data.decode("utf-8-sig") if isinstance(data, bytes) else data.lstrip("\ufeff")
-    payload = json.loads(text)
-    if isinstance(payload, list):
-        return validate_catalog(payload, key, allow_empty=True)
-    if isinstance(payload, dict):
-        if key in payload and isinstance(payload[key], list):
-            return validate_catalog(payload[key], key, allow_empty=True)
-        for alias in ("data", "items", "rows", "relation_types" if key == "relations" else "entities"):
-            if alias in payload and isinstance(payload[alias], list):
-                return validate_catalog(payload[alias], key, allow_empty=True)
-    raise ValueError(f"{key}: file JSON cần chứa danh sách {key} hoặc danh sách đối tượng có trường 'name'.")
+def catalog_csv_bytes(rows: list[dict], key: str) -> bytes:
+    """Xuất danh mục thực thể hoặc quan hệ ra định dạng CSV với UTF-8 BOM cho Excel."""
+    valid_rows = validate_catalog(rows, key, allow_empty=True)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["name", "description", "definition"])
+    for r in valid_rows:
+        writer.writerow([r.get("name", ""), r.get("description", ""), r.get("definition", "")])
+    return output.getvalue().encode("utf-8-sig")
+
+
+_CATALOG_FIELD_CANDIDATES = {
+    "name": ("name", "tên", "ten", "loại", "loai", "quan hệ", "quan_he", "quanhe", "type", "relation", "entity_type", "label"),
+    "description": ("description", "mô tả", "mo_ta", "mota", "desc", "ghi chú", "ghi_chu"),
+    "definition": ("definition", "định nghĩa", "dinh_nghia", "dinhnghia", "def", "phạm vi", "pham_vi"),
+    "example": ("example", "ví dụ", "vi_du", "vidu"),
+    "aliases": ("aliases", "bí danh", "bi_danh", "alias"),
+}
+
+
+def _parse_csv_catalog(text: str, key: str) -> list[dict]:
+    reader = csv.reader(io.StringIO(text))
+    raw_rows = [r for r in reader if any(cell.strip() for cell in r)]
+    if not raw_rows:
+        return []
+
+    first_row = [c.strip().lower() for c in raw_rows[0]]
+    name_candidates = set(_CATALOG_FIELD_CANDIDATES["name"])
+    has_name_header = any(col in name_candidates for col in first_row)
+
+    records: list[dict[str, str]] = []
+    if has_name_header:
+        dict_reader = csv.DictReader(io.StringIO(text))
+        for row in dict_reader:
+            entry: dict[str, str] = {}
+            for target_field, candidates in _CATALOG_FIELD_CANDIDATES.items():
+                for col_name, val in row.items():
+                    if col_name and col_name.strip().lower() in candidates:
+                        if val is not None and str(val).strip():
+                            entry[target_field] = str(val).strip()
+                            break
+            if entry.get("name"):
+                records.append(entry)
+    else:
+        for row in raw_rows:
+            if not row or not row[0].strip():
+                continue
+            entry = {"name": row[0].strip()}
+            if len(row) > 1 and row[1].strip():
+                entry["description"] = row[1].strip()
+            if len(row) > 2 and row[2].strip():
+                entry["definition"] = row[2].strip()
+            records.append(entry)
+    return validate_catalog(records, key, allow_empty=True)
+
+
+def decode_text_bytes(data: bytes | str) -> str:
+    """Giải mã an toàn chuỗi byte tệp tải lên (CSV/JSON/TXT) tự động thích ứng với
+    UTF-8, UTF-16, và CP1258 (Mã ANSI tiếng Việt mặc định của Excel Windows)."""
+    if isinstance(data, str):
+        return unicodedata.normalize("NFC", data.lstrip("\ufeff"))
+    if not data:
+        return ""
+
+    # 1. Thử UTF-8 / UTF-8-BOM chuẩn
+    try:
+        return unicodedata.normalize("NFC", data.decode("utf-8-sig"))
+    except UnicodeDecodeError:
+        pass
+
+    # 2. Thử UTF-16 (Excel Unicode Text)
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return unicodedata.normalize("NFC", data.decode("utf-16"))
+        except UnicodeDecodeError:
+            pass
+
+    # 3. Thử CP1258 (Mã Windows-1258 tiếng Việt mặc định của Excel Windows tại VN)
+    try:
+        decoded = data.decode("cp1258")
+        return unicodedata.normalize("NFC", decoded)
+    except UnicodeDecodeError:
+        pass
+
+    # 4. Thử CP1252 / ISO-8859-1
+    try:
+        decoded = data.decode("cp1252")
+        return unicodedata.normalize("NFC", decoded)
+    except UnicodeDecodeError:
+        pass
+
+    # 5. Fallback an toàn với replace để không crash
+    return unicodedata.normalize("NFC", data.decode("utf-8-sig", errors="replace"))
+
+
+def parse_catalog(data: bytes | str, key: str, filename: str = "") -> list[dict]:
+    text = decode_text_bytes(data).strip()
+    if not text:
+        return []
+
+    lower_name = str(filename or "").lower()
+    prefer_csv = lower_name.endswith(".csv")
+
+    if not prefer_csv and (text.startswith("{") or text.startswith("[")):
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, list):
+                return validate_catalog(payload, key, allow_empty=True)
+            if isinstance(payload, dict):
+                if key in payload and isinstance(payload[key], list):
+                    return validate_catalog(payload[key], key, allow_empty=True)
+                for alias in ("data", "items", "rows", "relation_types" if key == "relations" else "entities"):
+                    if alias in payload and isinstance(payload[alias], list):
+                        return validate_catalog(payload[alias], key, allow_empty=True)
+        except json.JSONDecodeError:
+            if not prefer_csv:
+                raise
+
+    return _parse_csv_catalog(text, key)
 
 
 def read_catalog(path: Path, key: str) -> list[dict]:

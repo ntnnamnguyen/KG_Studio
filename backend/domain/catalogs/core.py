@@ -127,11 +127,19 @@ def compute_project_revision(project: dict) -> str:
     rel_redirs = sorted((str(k), str(v)) for k, v in (project.get("relation_redirects") or {}).items())
     p_bindings = sorted((str(k), str(v)) for k, v in (project.get("prompt_bindings") or {}).items())
     p_versions = sorted(str(v.get("id", "")) for v in project.get("prompt_versions", ()))
+    gaz_items = sorted(
+        (
+            str(k),
+            str(v.get("canonical_name", "")) if isinstance(v, dict) else str(v),
+            str(v.get("kind", "")) if isinstance(v, dict) else "",
+        )
+        for k, v in (project.get("domain_gazetteer") or {}).items()
+    )
     tail = (
         f"T:{node_redirs}{sep}{rel_redirs}{sep}"
         f"{len(project.get('not_duplicate_pairs', ()))}{sep}"
         f"{len(project.get('not_duplicate_relation_pairs', ()))}{sep}"
-        f"{p_bindings}{sep}{p_versions}"
+        f"{p_bindings}{sep}{p_versions}{sep}{gaz_items}"
     )
     upd(tail.encode("utf-8"))
     return h.hexdigest()[:16]

@@ -167,9 +167,43 @@ def ensure_node(
     if not name:
         return ""
 
+    raw_name = name
     n_name = normal(name)
     n_kind = normal(kind)
     is_generic = is_generic_component_entity(name)
+
+    # 0. Tra cứu Từ điển bí danh dự án (Project Domain Gazetteer) O(1)
+    # Tự động chuẩn hóa biến thể lịch sử, tên cổ và bí danh đã được phê duyệt qua Continuous Curation Loop
+    gazetteer = project.get("domain_gazetteer", {})
+    if gazetteer and n_name in gazetteer:
+        gaz_val = gazetteer[n_name]
+        canon_name = (
+            str(gaz_val.get("canonical_name") or "")
+            if isinstance(gaz_val, dict)
+            else str(gaz_val)
+        ).strip()
+        canon_kind = (
+            str(gaz_val.get("kind") or "").strip()
+            if isinstance(gaz_val, dict)
+            else ""
+        )
+        if canon_name:
+            canon_kind_norm = normal(canon_kind)
+            kind_compatible = (
+                not canon_kind
+                or not kind
+                or (kind == UNKNOWN_KIND)
+                or (canon_kind_norm in UNKNOWN_KINDS)
+                or (n_kind in UNKNOWN_KINDS)
+                or (canon_kind_norm == n_kind)
+                or (not strict_kind)
+            )
+            if kind_compatible:
+                name = canon_name
+                n_name = normal(name)
+                if canon_kind and (kind == UNKNOWN_KIND or n_kind in UNKNOWN_KINDS):
+                    kind = canon_kind
+                    n_kind = normal(kind)
 
     nodes = project.setdefault("nodes", [])
 
@@ -224,11 +258,12 @@ def ensure_node(
                 if cur_name not in aliases:
                     aliases.append(cur_name)
 
-        # 6. Làm giàu Bí danh: Nếu tên mới khác tên chính nhưng match qua alias/casing, lưu vào aliases
-        if name and cur_name and normal(name) != normal(cur_name):
-            aliases = target_node.setdefault("aliases", [])
-            if name not in aliases:
-                aliases.append(name)
+        # 6. Làm giàu Bí danh: Nếu tên mới hoặc raw_name khác tên chính nhưng match qua alias/casing, lưu vào aliases
+        aliases = target_node.setdefault("aliases", [])
+        if name and cur_name and normal(name) != normal(cur_name) and name not in aliases:
+            aliases.append(name)
+        if raw_name and cur_name and normal(raw_name) != normal(cur_name) and raw_name not in aliases:
+            aliases.append(raw_name)
 
         # 7. Ghi nhận tài liệu xuất hiện
         if doc_id:
@@ -250,12 +285,16 @@ def ensure_node(
 
     # Không tìm thấy thực thể tương ứng: Tạo node mới
     node_id = uid()
+    initial_aliases: list[str] = []
+    if raw_name and normal(raw_name) != normal(name) and raw_name not in initial_aliases:
+        initial_aliases.append(raw_name)
+
     new_node = {
         "id": node_id,
         "name": name,
         "kind": kind,
         "description": description,
-        "aliases": [],
+        "aliases": initial_aliases,
         "documents": [doc_id] if doc_id else [],
         "created_at": now_iso(),
     }

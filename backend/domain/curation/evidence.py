@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import copy
+import math
 import re
+import unicodedata
+from collections import Counter
 from typing import Any
 
 from backend.domain.documents.processor import count_chunks, page_at
-from shared.text_utils import normal, now_iso, uid
+from shared.text_utils import normal, now_iso, tokenize_vn, uid
 
 from .common import (
     clean_display_text,
@@ -17,18 +20,166 @@ from .common import (
     resolve_active_node_id,
 )
 
+_WORD_TOKEN_RE = re.compile(r"[0-9a-zA-ZÀ-ỹ]+")
+_NON_WORD_GAP = r"[^0-9a-zA-ZÀ-ỹ]+"
+_ELLIPSIS_MAX_GAP = 600
+_SUGGESTION_MIN_COSINE = 0.40
+
+_MATCH_LABELS: dict[str, str] = {
+    "exact": "Khớp nguyên văn",
+    "normalized": "Khớp sau chuẩn hóa",
+    "near_verbatim": "Khớp gần nguyên văn",
+    "ellipsis_match": "Khớp có lược (...)",
+}
+
+
+def _map_nfc_spans(
+    raw_text: str,
+    nfc_text: str,
+    spans: list[tuple[int, int, str]],
+) -> list[tuple[int, int, str]]:
+    """Ánh xạ offset từ chuỗi đã chuẩn hóa NFC về đúng vị trí ký tự trên raw_text (bảo toàn tài liệu NFD)."""
+    if not spans or len(nfc_text) == len(raw_text):
+        return spans
+    nfc_to_raw: list[tuple[int, int]] = []
+    idx = 0
+    total = len(raw_text)
+    while idx < total:
+        end = idx + 1
+        while end < total and unicodedata.category(raw_text[end]).startswith("M"):
+            end += 1
+        for _ in unicodedata.normalize("NFC", raw_text[idx:end]):
+            nfc_to_raw.append((idx, end))
+        idx = end
+    if len(nfc_to_raw) != len(nfc_text):
+        return []
+    mapped: list[tuple[int, int, str]] = []
+    for s, e, method in spans:
+        if 0 <= s < e <= len(nfc_to_raw):
+            mapped.append((nfc_to_raw[s][0], nfc_to_raw[e - 1][1], method))
+    return mapped
+
+
+def _compile_word_gap(words: list[str]) -> re.Pattern[str]:
+    return re.compile(_NON_WORD_GAP.join(map(re.escape, words)), re.IGNORECASE)
+
+
+def _bow_cosine(a: str, b: str) -> float:
+    """Tính Lexical Cosine trên unigram + word bigram tiếng Việt (thuần miền, 0 phụ thuộc ngoài)."""
+    ta = Counter(tokenize_vn(a))
+    tb = Counter(tokenize_vn(b))
+    if not ta or not tb:
+        return 0.0
+    common = set(ta) & set(tb)
+    if not common:
+        return 0.0
+    dot = sum(ta[k] * tb[k] for k in common)
+    norm_a = math.sqrt(sum(v * v for v in ta.values()))
+    norm_b = math.sqrt(sum(v * v for v in tb.values()))
+    return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+
+
+def find_nearest_evidence_candidates(
+    text: str,
+    quote: str,
+    *,
+    base_offset: int = 0,
+    pages: list[dict] | None = None,
+    top_k: int = 2,
+    min_score: float = _SUGGESTION_MIN_COSINE,
+) -> list[dict[str, Any]]:
+    """Tầng 2 (Chỉ gợi ý): Tìm 1-2 đoạn gốc gần nhất theo Lexical Cosine trên cửa sổ 1-2 câu/dòng."""
+    clean_q = (quote or "").strip()
+    if not clean_q or not (text or "").strip():
+        return []
+
+    segments: list[tuple[int, int]] = []
+    # Tách theo dòng trước, sau đó tách tiếp câu dài theo dấu kết thúc câu (. ! ?) để vừa giữ được bullet vừa tách rõ đoạn văn xuôi
+    for line_m in re.finditer(r"[^\n]+", text):
+        ls, le = line_m.start(), line_m.end()
+        line_str = text[ls:le]
+        if not line_str.strip():
+            continue
+        cur = 0
+        for split_m in re.finditer(r"(?<=[.!?])\s+", line_str):
+            seg_raw = line_str[cur : split_m.start()]
+            if seg_raw.strip():
+                l_pad = len(seg_raw) - len(seg_raw.lstrip())
+                r_pad = len(seg_raw.rstrip())
+                segments.append((ls + cur + l_pad, ls + cur + r_pad))
+            cur = split_m.end()
+        tail = line_str[cur:]
+        if tail.strip():
+            l_pad = len(tail) - len(tail.lstrip())
+            r_pad = len(tail.rstrip())
+            segments.append((ls + cur + l_pad, ls + cur + r_pad))
+
+    if not segments:
+        return []
+
+    scored: list[tuple[float, int, int]] = []
+    for i in range(len(segments)):
+        for span_cnt in (1, 2):
+            j = i + span_cnt - 1
+            if j >= len(segments):
+                break
+            ws, we = segments[i][0], segments[j][1]
+            if we - ws > 700 or we - ws < 8:
+                continue
+            cand_txt = text[ws:we]
+            score = _bow_cosine(clean_q, cand_txt)
+            if score >= min_score:
+                scored.append((score, ws, we))
+
+    if not scored:
+        return []
+
+    # Ưu tiên điểm cao hơn; nếu bằng điểm ưu tiên đoạn gọn hơn
+    scored.sort(key=lambda item: (-round(item[0], 6), item[2] - item[1], item[1]))
+    chosen: list[dict[str, Any]] = []
+    for score, ws, we in scored:
+        gs, ge = base_offset + ws, base_offset + we
+        # Tránh gợi ý trùng lặp vùng chồng lấn >50%
+        overlaps = False
+        for prev in chosen:
+            inter = max(0, min(ge, prev["end_char"]) - max(gs, prev["start_char"]))
+            if inter > 0.5 * min(ge - gs, prev["end_char"] - prev["start_char"]):
+                overlaps = True
+                break
+        if overlaps:
+            continue
+        chosen.append(
+            {
+                "rank": len(chosen) + 1,
+                "score": round(score, 4),
+                "score_pct": int(round(score * 100)),
+                "text": text[ws:we],
+                "start_char": gs,
+                "end_char": ge,
+                "page": page_at(pages, gs) if pages else None,
+            }
+        )
+        if len(chosen) >= top_k:
+            break
+    return chosen
+
 
 def evidence_in_chunk(quote: str, chunk: str) -> bool:
     q = normal(quote or "")
-    return bool(q) and q in normal(chunk or "")
+    if not q or not chunk:
+        return False
+    if q in normal(chunk):
+        return True
+    return bool(find_all_quote_spans(chunk, quote))
 
 
 def find_all_quote_spans(text: str, quote: str) -> list[tuple[int, int, str]]:
-    """Tìm tất cả các vị trí xuất hiện của quote trong text; trả về danh sách (start, end, match_method)."""
+    """Tìm tất cả vị trí xuất hiện của quote theo Tầng 1 (4 nấc: exact -> normalized -> near_verbatim -> ellipsis_match)."""
     clean_q = (quote or "").strip()
     if not clean_q or not text:
         return []
 
+    # Nấc 1: Khớp nguyên văn tuyệt đối
     spans: list[tuple[int, int, str]] = []
     start_idx = 0
     while True:
@@ -37,17 +188,49 @@ def find_all_quote_spans(text: str, quote: str) -> list[tuple[int, int, str]]:
             break
         spans.append((pos, pos + len(clean_q), "exact"))
         start_idx = pos + max(1, len(clean_q))
-
     if spans:
         return spans
 
-    tokens = [re.escape(t) for t in clean_q.split() if t]
-    if not tokens:
+    # Nấc 2: Khớp bỏ qua khác biệt khoảng trắng & hoa/thường (trên NFC để tránh lệch NFD)
+    ntext = unicodedata.normalize("NFC", text)
+    nquote = unicodedata.normalize("NFC", clean_q)
+    ws_tokens = [re.escape(t) for t in nquote.split() if t]
+    if ws_tokens:
+        ws_pat = re.compile(r"\s+".join(ws_tokens), re.IGNORECASE | re.UNICODE)
+        ws_spans = [(m.start(), m.end(), "normalized") for m in ws_pat.finditer(ntext)]
+        if ws_spans:
+            return _map_nfc_spans(text, ntext, ws_spans)
+
+    # Nấc 3: Khớp gần nguyên văn (Word-Gap Regex: dung sai dấu câu cuối, bullet, bảng, ngoặc, khoảng trắng trước dấu)
+    has_ellipsis = "..." in nquote or "…" in nquote
+    if not has_ellipsis:
+        words = _WORD_TOKEN_RE.findall(nquote)
+        if len(words) < 3:
+            return []
+        wg_pat = _compile_word_gap(words)
+        wg_spans = [(m.start(), m.end(), "near_verbatim") for m in wg_pat.finditer(ntext)]
+        return _map_nfc_spans(text, ntext, wg_spans)
+
+    # Nấc 4: Khớp trích dẫn có lược (...) bằng Linear Anchor Chaining trong cửa sổ bounded
+    segments = [_WORD_TOKEN_RE.findall(seg) for seg in re.split(r"\.\.\.|…", nquote)]
+    segments = [seg for seg in segments if seg]
+    if len(segments) < 2 or sum(len(seg) for seg in segments) < 5 or len(segments[0]) < 2:
         return []
-    pattern = re.compile(r"\s+".join(tokens), re.IGNORECASE | re.UNICODE)
-    for match in pattern.finditer(text):
-        spans.append((match.start(), match.end(), "normalized"))
-    return spans
+    anchor_pats = [_compile_word_gap(seg) for seg in segments]
+    el_spans: list[tuple[int, int, str]] = []
+    text_len = len(ntext)
+    for m0 in anchor_pats[0].finditer(ntext):
+        cur_end = m0.end()
+        matched_all = True
+        for pat in anchor_pats[1:]:
+            m_next = pat.search(ntext, cur_end, min(text_len, cur_end + _ELLIPSIS_MAX_GAP))
+            if not m_next:
+                matched_all = False
+                break
+            cur_end = m_next.end()
+        if matched_all:
+            el_spans.append((m0.start(), cur_end, "ellipsis_match"))
+    return _map_nfc_spans(text, ntext, el_spans)
 
 
 def find_quote_span(text: str, quote: str) -> tuple[int, int] | None:
@@ -91,6 +274,7 @@ def evidence_context(
             "doc_fingerprint": "",
             "ambiguous": False,
             "candidates": [],
+            "suggestions": [],
             "reason": "Không tìm thấy tài liệu gốc",
         }
 
@@ -120,6 +304,7 @@ def evidence_context(
             "doc_fingerprint": cur_fp,
             "ambiguous": False,
             "candidates": [],
+            "suggestions": [],
             "reason": "Cạnh không có câu trích dẫn bằng chứng",
         }
 
@@ -142,6 +327,11 @@ def evidence_context(
                 elif abs((ve - vs) - len(quote_str)) <= max(64, len(quote_str)) and normal(slice_text) == normal(quote_str):
                     selected_span = (vs, ve, "normalized")
                     candidate_spans = [selected_span]
+                else:
+                    slice_matches = find_all_quote_spans(slice_text, quote_str)
+                    if len(slice_matches) == 1 and slice_matches[0][0] == 0 and slice_matches[0][1] == len(slice_text):
+                        selected_span = (vs, ve, slice_matches[0][2])
+                        candidate_spans = [selected_span]
 
         if selected_span is None:
             s_char = edge.get("start_char")
@@ -171,6 +361,29 @@ def evidence_context(
         all_spans = find_all_quote_spans(text, quote_str)
         if not all_spans:
             is_override = bool(edge.get("override"))
+            suggestions: list[dict[str, Any]] = []
+            if include_snippets:
+                sug_text = text
+                sug_base = 0
+                if fp_valid and edge.get("start_char") is not None and edge.get("end_char") is not None:
+                    cs_i, ce_i = int(edge["start_char"]), int(edge["end_char"])
+                    if 0 <= cs_i < ce_i <= len(text):
+                        sug_text = text[cs_i:ce_i]
+                        sug_base = cs_i
+                doc_pages = doc.get("pages") if has_pages else None
+                suggestions = find_nearest_evidence_candidates(
+                    sug_text,
+                    quote_str,
+                    base_offset=sug_base,
+                    pages=doc_pages,
+                )
+                if not suggestions and sug_base != 0:
+                    suggestions = find_nearest_evidence_candidates(
+                        text,
+                        quote_str,
+                        base_offset=0,
+                        pages=doc_pages,
+                    )
             return {
                 "found": False,
                 "match_method": "override" if is_override else "not_found",
@@ -185,6 +398,7 @@ def evidence_context(
                 "doc_fingerprint": cur_fp,
                 "ambiguous": False,
                 "candidates": [],
+                "suggestions": suggestions,
                 "reason": "Trích dẫn không xuất hiện nguyên văn trong tài liệu",
             }
         candidate_spans = list(all_spans)
@@ -214,10 +428,8 @@ def evidence_context(
 
     if ambiguous:
         match_label = f"Nhiều vị trí phù hợp ({len(candidate_spans)})"
-    elif method == "exact":
-        match_label = "Khớp nguyên văn"
     else:
-        match_label = "Khớp sau chuẩn hóa"
+        match_label = _MATCH_LABELS.get(method, "Khớp sau chuẩn hóa")
 
     if not include_snippets:
         return {
@@ -237,6 +449,7 @@ def evidence_context(
             "fingerprint_valid": fp_valid,
             "ambiguous": ambiguous,
             "candidates": [],
+            "suggestions": [],
             "reason": "Có nhiều vị trí khớp câu trích dẫn trong tài liệu; hãy chọn vị trí đúng." if ambiguous else "",
         }
 
@@ -278,6 +491,7 @@ def evidence_context(
         "fingerprint_valid": fp_valid,
         "ambiguous": ambiguous,
         "candidates": candidates_out,
+        "suggestions": [],
         "reason": "Có nhiều vị trí khớp câu trích dẫn trong tài liệu; hãy chọn vị trí đúng." if ambiguous else "",
     }
 

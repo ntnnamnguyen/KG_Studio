@@ -3,7 +3,30 @@ Tuân thủ Clean Architecture: Domain/Application định nghĩa Port, Infrastr
 """
 from __future__ import annotations
 
-from typing import Any, Protocol
+import threading
+from typing import Any, Callable, Protocol
+
+
+class CommitCoordinatorPort(Protocol):
+    """Cổng điều phối transaction commit và lock cho dự án."""
+
+    def get_project_lock(self, project_id: str) -> threading.RLock:
+        ...
+
+    def commit(
+        self,
+        project: dict[str, Any],
+        *,
+        request_id: str,
+        request_hash: str,
+        expected_revision: str,
+        executor: Callable[[dict[str, Any]], tuple[dict[str, Any], Any]],
+        idempotency_store_key: str = "curation_idempotency_store",
+        result_dto_cls: Any | None = None,
+        on_snapshot_created: Callable[[dict[str, Any], Any, str], None] | None = None,
+        vector_invalidation_kind: str | None = None,
+    ) -> Any:
+        ...
 
 
 class ProjectStorePort(Protocol):

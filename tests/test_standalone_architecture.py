@@ -436,6 +436,41 @@ class StandaloneArchitectureTests(unittest.TestCase):
         self.assertEqual(len(parsed_types), 1)
         self.assertEqual(parsed_types[0]["name"], "cổ vật")
 
+        # Kiểm tra nạp file CSV có tiêu đề tiếng Anh
+        from shared.catalog_utils import catalog_csv_bytes
+        csv_en = "name,description,definition\nE21 Person,Nhân vật,Con người cụ thể\nE53 Place,Địa danh,Vị trí địa lý\n".encode("utf-8-sig")
+        parsed_csv = parse_catalog(csv_en, "entity_types", filename="types.csv")
+        self.assertEqual(len(parsed_csv), 2)
+        self.assertEqual(parsed_csv[0]["name"], "E21 Person")
+        self.assertEqual(parsed_csv[0]["description"], "Nhân vật")
+        self.assertEqual(parsed_csv[0]["definition"], "Con người cụ thể")
+
+        # Kiểm tra nạp file CSV có tiêu đề tiếng Việt
+        csv_vi = "tên,mô tả,định nghĩa\nP14 carried out by,Do ai thực hiện,Quan hệ chỉ huy\nP7 took place at,Diễn ra tại,Địa điểm\n".encode("utf-8")
+        parsed_rel_csv = parse_catalog(csv_vi, "relations", filename="relations.csv")
+        self.assertEqual(len(parsed_rel_csv), 2)
+        self.assertEqual(parsed_rel_csv[0]["name"], "P14 carried out by")
+        self.assertEqual(parsed_rel_csv[1]["name"], "P7 took place at")
+
+        # Kiểm tra xuất và tái phân tích (roundtrip) CSV với BOM
+        csv_bytes = catalog_csv_bytes(parsed_csv, "entity_types")
+        self.assertTrue(csv_bytes.startswith(b"\xef\xbb\xbf"))  # UTF-8 BOM
+        reparsed = parse_catalog(csv_bytes, "entity_types", filename="exported.csv")
+        self.assertEqual(len(reparsed), 2)
+        self.assertEqual(reparsed[0]["name"], "E21 Person")
+
+        # Kiểm tra giải mã an toàn CSV mã hóa ANSI/CP1258 từ Excel Windows chứa byte 0xd0
+        # 0xd0 trong CP1258 là chữ Đ ("Địa danh")
+        cp1258_csv_bytes = bytes([
+            0x6e, 0x61, 0x6d, 0x65, 0x2c, 0x64, 0x65, 0x73, 0x63, 0x72, 0x69, 0x70, 0x74, 0x69, 0x6f, 0x6e, 0x0a,
+            0x45, 0x35, 0x33, 0x20, 0x50, 0x6c, 0x61, 0x63, 0x65, 0x2c,
+            0xd0, 0x69, 0xf2, 0x61, 0x20, 0x64, 0x61, 0x6e, 0x68, 0x0a,
+        ])
+        parsed_cp1258 = parse_catalog(cp1258_csv_bytes, "entity_types", filename="excel_ansi.csv")
+        self.assertEqual(len(parsed_cp1258), 1)
+        self.assertEqual(parsed_cp1258[0]["name"], "E53 Place")
+        self.assertEqual(parsed_cp1258[0]["description"], "Địa danh")
+
     def test_add_document_via_facade_and_extraction_service(self) -> None:
         """Kiểm tra add_document và document_chunks qua facade và extraction_service."""
         with tempfile.TemporaryDirectory() as tmp_dir:

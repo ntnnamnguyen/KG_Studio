@@ -4,8 +4,12 @@ from __future__ import annotations
 import streamlit as st
 
 
-def render_step_traces(run: dict) -> None:
-    # 1. Thẻ Provenance Nguồn gốc Prompt & Request đã chạy
+def render_step_traces(run: dict, *, use_expander: bool = True) -> None:
+    """Render prompt provenance, prepared request, and engine step traces.
+
+    Set ``use_expander=False`` when embedded inside an outer expander so
+    Streamlit never receives nested ``st.expander`` containers.
+    """
     ver_id = run.get("prompt_version_id")
     req_hash = run.get("prepared_request_hash")
     c_hash = run.get("prompt_content_hash")
@@ -20,7 +24,14 @@ def render_step_traces(run: dict) -> None:
 
     prep_req = run.get("prepared_request")
     if isinstance(prep_req, dict) and prep_req.get("system_prompt"):
-        with st.expander("👁️ Nội dung Request Thực tế đã Gửi tới LLM trong Lượt này", expanded=False):
+        req_ctx = (
+            st.expander("👁️ Nội dung Request Thực tế đã Gửi tới LLM trong Lượt này", expanded=False)
+            if use_expander
+            else st.container(border=True)
+        )
+        with req_ctx:
+            if not use_expander:
+                st.markdown("**👁️ Nội dung Request Thực tế đã Gửi tới LLM trong Lượt này**")
             st.caption("Truy vết chính xác system/user prompt được pin tại thời điểm thực thi.")
             t1, t2 = st.tabs(["System Prompt Đã gửi", "User Message Đã gửi"])
             with t1:
@@ -42,6 +53,11 @@ def render_step_traces(run: dict) -> None:
 
         st.markdown(f"- **Vòng {loop_idx} · {step_name}** ({dur} ms): {summary}")
         if details:
-            with st.expander(f"Chi tiết kỹ thuật — {step_name} (Vòng {loop_idx})", expanded=False):
-                st.json(details)
+            if use_expander:
+                with st.expander(f"Chi tiết kỹ thuật — {step_name} (Vòng {loop_idx})", expanded=False):
+                    st.json(details)
+            else:
+                with st.container(border=True):
+                    st.caption(f"Chi tiết kỹ thuật — {step_name} (Vòng {loop_idx})")
+                    st.json(details)
 

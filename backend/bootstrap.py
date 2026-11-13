@@ -10,13 +10,13 @@ from typing import Any
 from backend.integrations.embedder_gateway import EmbedderGateway, default_embedder
 from backend.integrations.llm import LLMGateway
 from backend.integrations.neo4j_gateway import Neo4jGateway
-from backend.modules.projects.application.service import ProjectsApplicationService
-from backend.modules.schema_intelligence.application.service import SchemaIntelligenceApplicationService
+from backend.modules.projects.public import ProjectsApplicationService
+from backend.modules.schema_intelligence.public import SchemaIntelligenceApplicationService
 from backend.modules.extraction.public import ExtractionApplicationService, FreeTriplesEngine
 from backend.domain.extraction.registry import EngineRegistry
-from backend.modules.curation.application.service import CurationApplicationService
-from backend.modules.graph_qa.application.service import GraphQAApplicationService
-from backend.modules.training.application.service import TrainingApplicationService
+from backend.modules.curation.public import CurationApplicationService
+from backend.modules.graph_qa.public import GraphQAApplicationService
+from backend.modules.training.public import TrainingApplicationService
 from backend.repositories.json_repo import JsonProjectRepository
 from backend.repositories.sqlite_repo import SQLiteProjectRepository
 from backend.repositories.vector_repo import VectorIndexRepository

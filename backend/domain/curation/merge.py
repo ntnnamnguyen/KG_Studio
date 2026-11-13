@@ -25,6 +25,7 @@ from shared.text_utils import normal, now_iso, sha, uid
 
 from .common import clean_aliases, clean_display_text
 from .entities import clear_duplicate_suggestions_cache, compute_apparent_duplicate_edge_groups
+from .gazetteer import enrich_gazetteer_from_merge
 from .merge_core import (
     DisjointSetUnion,
     _clone_project_for_merge_mutation,
@@ -317,6 +318,17 @@ def apply_entity_merge(
         )
     target_node["merged_from"] = merged_from
 
+    # Tự động làm giàu Từ điển bí danh dự án (Continuous Curation & Gazetteer Feedback Loop)
+    dropped_nodes_list = [nodes_by_id[d_id] for d_id in drop_ids if d_id in nodes_by_id]
+    added_gaz = enrich_gazetteer_from_merge(
+        candidate,
+        canonical_name=preview_node["name"],
+        canonical_kind=preview_node["kind"],
+        absorbed_nodes=dropped_nodes_list,
+        merge_id=fresh_preview.request_hash or now_iso(),
+        actor=req.actor,
+    )
+
     drop_to_keep = {d_id: keep_id for d_id in drop_ids}
     (
         affected_edge_ids,
@@ -379,6 +391,7 @@ def apply_entity_merge(
         "changed_endpoints": changed_endpoints,
         "new_self_loop_ids": new_self_loop_ids,
         "merged_duplicate_edges": merged_dup_count,
+        "gazetteer_aliases_added": [v.get("alias", k) for k, v in added_gaz.items()],
         "note": req.note,
     }
     candidate.setdefault("entity_merges", []).append(merge_record)
@@ -529,6 +542,7 @@ def apply_bulk_entity_merges(
 
     total_applied_clusters = 0
     all_dropped_ids: list[str] = []
+    all_gaz_aliases_added: list[str] = []
     merge_time = now_iso()
     batch_id = uid()
     request_id = uid()
@@ -556,12 +570,22 @@ def apply_bulk_entity_merges(
         for d_id in drop_ids:
             drop_to_keep[d_id] = keep_id
 
+        dropped_nodes = [nodes_by_id[d] for d in drop_ids]
         consolidate_node_attributes(
             keep_node,
-            [nodes_by_id[d] for d in drop_ids],
+            dropped_nodes,
             merge_time=merge_time,
             batch_id=batch_id,
         )
+        added_gaz = enrich_gazetteer_from_merge(
+            candidate,
+            canonical_name=str(keep_node.get("name", "")),
+            canonical_kind=str(keep_node.get("kind", "")),
+            absorbed_nodes=dropped_nodes,
+            merge_id=batch_id,
+            actor=actor,
+        )
+        all_gaz_aliases_added.extend(v.get("alias", k) for k, v in added_gaz.items())
         total_applied_clusters += 1
 
     all_affected_edge_ids: list[str] = []
@@ -610,6 +634,7 @@ def apply_bulk_entity_merges(
             "affected_edge_count": len(all_affected_edge_ids),
             "changed_endpoints": total_changed_endpoints,
             "merged_duplicate_edges": merged_dup_count,
+            "gazetteer_aliases_added": all_gaz_aliases_added,
             "note": note or f"Gộp hàng loạt {len(normalized_pairs)} cặp thực thể qua DSU.",
         }
     )

@@ -7,11 +7,8 @@ from typing import Any
 import streamlit as st
 
 from backend.domain.catalogs.service import compute_project_revision
-from backend.domain.curation.service import (
-    compute_apparent_duplicate_edge_groups,
-    relation_duplicate_suggestions,
-)
-from backend.integrations.llm.providers import DEFAULT_MODELS, PROVIDERS
+from backend.domain.curation.service import compute_apparent_duplicate_edge_groups
+from backend.integrations.llm.providers import DEFAULT_MODELS
 from frontend.client import FrontendClient
 from frontend.components.merge.provenance_view import render_relation_provenance_panel
 from frontend.state.session import (
@@ -20,13 +17,8 @@ from frontend.state.session import (
 )
 
 
-def render_relation_merge_tab(
-    project: dict,
-    client: FrontendClient,
-    m_state: dict[str, Any],
-) -> None:
-    """Nội dung Tab 2: Phát hiện quan hệ nghi trùng, Gộp quan hệ hàng loạt & Bàn gộp quan hệ thủ công."""
-    # --- PHẦN 1: QUÉT & GOM CỤM QUAN HỆ NGỮ NGHĨA BẰNG AI (DEEPSEEK) ---
+def _render_ai_semantic_relation_section(project: dict, client: FrontendClient) -> None:
+    """Phần 1: Quét & gom cụm quan hệ ngữ nghĩa bằng LLM."""
     with st.container(border=True):
         st.markdown("#### 🤖 1. Quét & Gom cụm Quan hệ Ngữ nghĩa bằng AI (DeepSeek Semantic Clustering)")
         st.caption(
@@ -62,7 +54,6 @@ def render_relation_merge_tab(
         )
         st.session_state[sel_rel_scope_key] = chosen_rel_scope
 
-        # --- KHU VỰC ĐIỀU CHỈNH PROMPT & CHỈ DẪN GOM NHÓM THEO Ý MUỐN ---
         with st.expander("📝 Tùy chỉnh Prompt & Chỉ dẫn Gom cụm Quan hệ theo ý muốn (Custom Instructions)", expanded=False):
             st.caption(
                 "Bạn có thể bổ sung các quy tắc gom nhóm cụ thể cho quan hệ (ví dụ: chỉ gộp các quan hệ về vị trí địa lý, "
@@ -186,9 +177,13 @@ def render_relation_merge_tab(
                     with st.expander("📄 Xem lại Prompt đã gửi", expanded=False):
                         st.code(ai_res["used_prompt"], language="markdown")
 
-    st.divider()
 
-    # --- PHẦN 2: PHÁT HIỆN QUAN HỆ NGHI TRÙNG THEO KÝ TỰ (FUZZY MATCHING) ---
+def _render_fuzzy_relation_matching_section(
+    project: dict,
+    client: FrontendClient,
+    m_state: dict[str, Any],
+) -> None:
+    """Phần 2: Phát hiện & gộp quan hệ nghi trùng theo ký tự (Fuzzy Matching)."""
     with st.container(border=True):
         st.markdown("#### 🔍 2. Phát hiện & Gộp Quan hệ Tương đồng theo Ký tự (Fuzzy Matching)")
         st.caption(
@@ -351,9 +346,9 @@ def render_relation_merge_tab(
         else:
             st.info("Không có cặp quan hệ nghi trùng nào ở ngưỡng tương đồng hiện tại.")
 
-    st.divider()
 
-    # --- PHẦN 3: BÀN GỘP QUAN HỆ THỦ CÔNG ---
+def _render_manual_relation_and_dedup_section(project: dict, client: FrontendClient) -> None:
+    """Phần 3: Bàn gộp quan hệ thủ công và tiện ích khử trùng cạnh lặp."""
     with st.container(border=True):
         st.markdown("#### 🔀 3. Bàn Gộp Quan hệ Thủ công (Manual Relation Merge)")
         st.caption("Cho phép chọn thủ công nhiều quan hệ nguồn và chỉ định một quan hệ đích chuẩn để hợp nhất toàn bộ dữ kiện.")
@@ -414,7 +409,6 @@ def render_relation_merge_tab(
                 except Exception as exc:
                     st.error(str(exc))
 
-    # --- TIỆN ÍCH: KHỬ TRÙNG CẠNH TRÙNG BỘ BA ---
     dup_groups = compute_apparent_duplicate_edge_groups(project.get("edges", []))
     if dup_groups:
         total_dup_edges = sum(g.get("count", 1) - 1 for g in dup_groups)
@@ -434,7 +428,9 @@ def render_relation_merge_tab(
                 st.success(f"Đã hợp nhất thành công {res.merged_duplicate_edges} cạnh trùng bộ ba!")
                 st.rerun()
 
-    # --- PHẦN 4: LỊCH SỬ GỘP QUAN HỆ & BẢNG CHUYỂN HƯỚNG ---
+
+def _render_relation_merge_history_section(project: dict, client: FrontendClient) -> None:
+    """Phần 4: Lịch sử gộp quan hệ, bảng relation_aliases/relation_redirects và khôi phục snapshot."""
     rel_merges = list(reversed(project.get("relation_merges", [])))
     rel_redirects = project.get("relation_redirects", {})
     rel_aliases = project.get("relation_aliases", {})
@@ -479,3 +475,17 @@ def render_relation_merge_tab(
                     reset_curation_state_if_project_changed(project)
                     st.success("Đã khôi phục dự án về snapshot trước khi gộp quan hệ.")
                     st.rerun()
+
+
+def render_relation_merge_tab(
+    project: dict,
+    client: FrontendClient,
+    m_state: dict[str, Any],
+) -> None:
+    """Nội dung Tab 2: Phát hiện quan hệ nghi trùng, Gộp quan hệ hàng loạt & Bàn gộp quan hệ thủ công."""
+    _render_ai_semantic_relation_section(project, client)
+    st.divider()
+    _render_fuzzy_relation_matching_section(project, client, m_state)
+    st.divider()
+    _render_manual_relation_and_dedup_section(project, client)
+    _render_relation_merge_history_section(project, client)

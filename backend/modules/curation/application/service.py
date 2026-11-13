@@ -14,22 +14,31 @@ from backend.domain.curation.service import (
     apply_semantic_clusters as domain_apply_semantic_clusters,
     approvable_edges,
     bulk_apply_relation_merges as domain_bulk_apply_relation_merges,
+    clear_gazetteer as domain_clear_gazetteer,
     collapse_duplicate_edges as domain_collapse_duplicate_edges,
     compute_apparent_duplicate_edge_groups,
     compute_curation_request_hash,
+    delete_gazetteer_entry as domain_delete_gazetteer_entry,
     duplicate_suggestions,
     evidence_context,
+    gazetteer_to_csv_bytes as domain_gazetteer_to_csv_bytes,
+    gazetteer_to_json_bytes as domain_gazetteer_to_json_bytes,
     inspect_edge_schema_status,
     is_edge_exportable,
+    list_gazetteer_entries as domain_list_gazetteer_entries,
     mark_pair_not_duplicate as domain_mark_pair_not_duplicate,
     mark_pairs_not_duplicate_bulk as domain_mark_pairs_not_duplicate_bulk,
     mark_relation_pair_not_duplicate as domain_mark_relation_pair_not_duplicate,
     mark_relation_pairs_not_duplicate_bulk as domain_mark_relation_pairs_not_duplicate_bulk,
+    merge_gazetteer_entries as domain_merge_gazetteer_entries,
     merge_nodes,
+    parse_gazetteer_bytes as domain_parse_gazetteer_bytes,
+    preload_gazetteer_template as domain_preload_gazetteer_template,
     preview_clustering_prompt as domain_preview_clustering_prompt,
     preview_curation_decisions as domain_preview_curation_decisions,
     preview_entity_merge as domain_preview_entity_merge,
     relation_duplicate_suggestions as domain_relation_duplicate_suggestions,
+    replace_gazetteer_entries as domain_replace_gazetteer_entries,
     review_stats,
     scan_semantic_clusters as domain_scan_semantic_clusters,
     select_edge_evidence_span,
@@ -38,6 +47,7 @@ from backend.domain.curation.service import (
     token_totals,
     update_edge,
     update_node,
+    upsert_gazetteer_entry as domain_upsert_gazetteer_entry,
     validate_edge_for_approval,
 )
 from shared.schemas.curation import (
@@ -94,13 +104,10 @@ class CurationApplicationService:
                 result_dto_cls=CurationResultDTO,
                 on_snapshot_created=_on_snapshot,
             )
-        else:
-            proj_copy, res = executor(project)
-            project.clear()
-            project.update(proj_copy)
-            if self.project_store:
-                self.project_store.save_project(project)
-            return res
+        raise RuntimeError(
+            "Thao tác kiểm duyệt có lưu trữ (persistent curation command) yêu cầu ProjectCommitCoordinator; "
+            "không cho phép fallback ghi trực tiếp hoặc mutate thiếu coordinator. Dùng preview_* cho mô phỏng thuần túy."
+        )
 
     # --- Curation Review Operations ---
 
@@ -649,3 +656,281 @@ class CurationApplicationService:
 
     def token_totals(self, project: dict) -> dict:
         return token_totals(project)
+
+    # --- Project Gazetteer & Continuous Curation ---
+
+    def list_gazetteer_entries(self, project: dict) -> list[dict[str, Any]]:
+        """Lấy danh sách các mục từ điển bí danh đã học của dự án."""
+        return domain_list_gazetteer_entries(project)
+
+    def parse_gazetteer_bytes(self, raw_bytes: bytes, filename: str = "") -> list[dict[str, str]]:
+        """Phân tích tệp JSON hoặc CSV từ điển bí danh tải lên."""
+        return domain_parse_gazetteer_bytes(raw_bytes, filename=filename)
+
+    def gazetteer_to_json_bytes(self, project: dict) -> bytes:
+        """Xuất từ điển bí danh dự án ra tệp JSON UTF-8."""
+        return domain_gazetteer_to_json_bytes(project)
+
+    def gazetteer_to_csv_bytes(self, project: dict) -> bytes:
+        """Xuất từ điển bí danh dự án ra tệp CSV (UTF-8 BOM cho Excel)."""
+        return domain_gazetteer_to_csv_bytes(project)
+
+    def _commit_gazetteer_mutation(
+        self,
+        project: dict,
+        *,
+        operation: str,
+        request_id: str,
+        request_hash: str,
+        expected_revision: str,
+        actor: str,
+        audit_target: str,
+        mutator: Callable[[dict], dict[str, Any]],
+    ) -> CurationResultDTO:
+        """Điều phối mutation từ điển trên bản sao an toàn, ghi audit trail và commit qua coordinator."""
+        req_id = request_id or uid()
+
+        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
+            rev_before = compute_project_revision(proj)
+            candidate = copy.deepcopy(proj)
+            meta = mutator(candidate)
+            rev_after = compute_project_revision(candidate)
+            applied_count = int(meta.get("applied_count", 0))
+            skipped_count = int(meta.get("skipped_count", 0))
+            status = str(meta.get("status") or ("applied" if applied_count > 0 or rev_after != rev_before else "skipped"))
+            item_results = list(meta.get("item_results") or [])
+
+            candidate.setdefault("curation_history", []).append(
+                {
+                    "id": uid(),
+                    "at": now_iso(),
+                    "actor": actor or "user",
+                    "decision_origin": "human",
+                    "action": operation,
+                    "target_id": audit_target,
+                    "note": str(meta.get("note") or ""),
+                    "before": None,
+                    "after": meta.get("after"),
+                }
+            )
+
+            res = CurationResultDTO(
+                batch_id=req_id,
+                request_id=req_id,
+                project_id=str(candidate.get("project_id") or candidate.get("name") or ""),
+                operation=operation,
+                status=status,
+                revision_before=rev_before,
+                revision_after=rev_after,
+                applied_count=applied_count,
+                skipped_count=skipped_count,
+                item_results=item_results,
+            )
+            return candidate, res
+
+        return self._commit_curation_operation(
+            project,
+            expected_revision=expected_revision,
+            request_id=req_id,
+            request_hash=request_hash,
+            executor=_exec,
+        )
+
+    def upsert_gazetteer_entry(
+        self,
+        project: dict,
+        alias: str,
+        canonical_name: str,
+        kind: str = "",
+        *,
+        source: str = "manual",
+        expected_revision: str = "",
+        request_id: str = "",
+        actor: str = "",
+    ) -> CurationResultDTO:
+        """Thêm hoặc cập nhật một mục trong từ điển bí danh dự án qua Commit Coordinator."""
+        alias_clean = alias.strip()
+        canon_clean = canonical_name.strip()
+        req_hash = sha(f"upsert_gazetteer::{alias_clean}::{canon_clean}::{kind}")[:16]
+
+        def _mutate(cand: dict) -> dict[str, Any]:
+            entry = domain_upsert_gazetteer_entry(
+                cand,
+                alias=alias_clean,
+                canonical_name=canon_clean,
+                kind=kind,
+                source=source,
+                actor=actor,
+            )
+            return {"applied_count": 1, "item_results": [entry], "after": entry}
+
+        return self._commit_gazetteer_mutation(
+            project,
+            operation="upsert_gazetteer_entry",
+            request_id=request_id,
+            request_hash=req_hash,
+            expected_revision=expected_revision,
+            actor=actor,
+            audit_target=alias_clean,
+            mutator=_mutate,
+        )
+
+    def delete_gazetteer_entry(
+        self,
+        project: dict,
+        alias: str,
+        *,
+        expected_revision: str = "",
+        request_id: str = "",
+        actor: str = "",
+    ) -> CurationResultDTO:
+        """Xóa một mục khỏi từ điển bí danh dự án qua Commit Coordinator (van an toàn khi gộp nhầm)."""
+        alias_clean = alias.strip()
+        req_hash = sha(f"delete_gazetteer::{alias_clean}")[:16]
+
+        def _mutate(cand: dict) -> dict[str, Any]:
+            deleted = domain_delete_gazetteer_entry(cand, alias=alias_clean, actor=actor)
+            return {
+                "applied_count": 1 if deleted else 0,
+                "skipped_count": 0 if deleted else 1,
+                "status": "applied" if deleted else "skipped",
+            }
+
+        return self._commit_gazetteer_mutation(
+            project,
+            operation="delete_gazetteer_entry",
+            request_id=request_id,
+            request_hash=req_hash,
+            expected_revision=expected_revision,
+            actor=actor,
+            audit_target=alias_clean,
+            mutator=_mutate,
+        )
+
+    def replace_gazetteer_entries(
+        self,
+        project: dict,
+        entries: dict[str, Any] | list[dict[str, Any]],
+        *,
+        source: str = "manual_editor",
+        expected_revision: str = "",
+        request_id: str = "",
+        actor: str = "",
+    ) -> CurationResultDTO:
+        """Thay thế toàn bộ từ điển bí danh dự án từ bảng biên tập hoặc file JSON/CSV tải lên."""
+        req_hash = sha(f"replace_gazetteer::{json.dumps(entries, ensure_ascii=False, sort_keys=True, default=str)}")[:16]
+
+        def _mutate(cand: dict) -> dict[str, Any]:
+            count = domain_replace_gazetteer_entries(
+                cand,
+                entries=entries,
+                source=source,
+                actor=actor,
+            )
+            return {"applied_count": count, "status": "applied", "note": f"total={count}"}
+
+        return self._commit_gazetteer_mutation(
+            project,
+            operation="replace_gazetteer_entries",
+            request_id=request_id,
+            request_hash=req_hash,
+            expected_revision=expected_revision,
+            actor=actor,
+            audit_target="domain_gazetteer",
+            mutator=_mutate,
+        )
+
+    def merge_gazetteer_entries(
+        self,
+        project: dict,
+        entries: dict[str, Any] | list[dict[str, Any]],
+        *,
+        source: str = "imported_file",
+        overwrite_existing: bool = False,
+        expected_revision: str = "",
+        request_id: str = "",
+        actor: str = "",
+    ) -> CurationResultDTO:
+        """Gộp thêm các mục mới vào từ điển bí danh dự án qua Commit Coordinator."""
+        req_hash = sha(
+            f"merge_gazetteer::{overwrite_existing}::{json.dumps(entries, ensure_ascii=False, sort_keys=True, default=str)}"
+        )[:16]
+
+        def _mutate(cand: dict) -> dict[str, Any]:
+            summary = domain_merge_gazetteer_entries(
+                cand,
+                entries=entries,
+                source=source,
+                actor=actor,
+                overwrite_existing=overwrite_existing,
+            )
+            return {
+                "applied_count": summary["added"] + summary["updated"],
+                "skipped_count": summary["skipped"],
+                "status": "applied",
+                "item_results": [summary],
+                "after": summary,
+            }
+
+        return self._commit_gazetteer_mutation(
+            project,
+            operation="merge_gazetteer_entries",
+            request_id=request_id,
+            request_hash=req_hash,
+            expected_revision=expected_revision,
+            actor=actor,
+            audit_target="domain_gazetteer",
+            mutator=_mutate,
+        )
+
+    def clear_gazetteer(
+        self,
+        project: dict,
+        *,
+        expected_revision: str = "",
+        request_id: str = "",
+        actor: str = "",
+    ) -> CurationResultDTO:
+        """Xóa sạch toàn bộ từ điển bí danh của dự án qua Commit Coordinator."""
+        req_hash = sha("clear_gazetteer")[:16]
+
+        def _mutate(cand: dict) -> dict[str, Any]:
+            cleared = domain_clear_gazetteer(cand)
+            return {
+                "applied_count": cleared,
+                "status": "applied" if cleared > 0 else "skipped",
+                "note": f"cleared={cleared}",
+            }
+
+        return self._commit_gazetteer_mutation(
+            project,
+            operation="clear_gazetteer",
+            request_id=request_id,
+            request_hash=req_hash,
+            expected_revision=expected_revision,
+            actor=actor,
+            audit_target="domain_gazetteer",
+            mutator=_mutate,
+        )
+
+    def preload_gazetteer_template(
+        self,
+        project: dict,
+        template_entries: dict[str, Any] | list[dict[str, Any]],
+        *,
+        source: str = "preloaded_template",
+        overwrite_existing: bool = False,
+        expected_revision: str = "",
+        request_id: str = "",
+        actor: str = "",
+    ) -> CurationResultDTO:
+        """Nạp bộ từ điển bí danh mẫu vào dự án qua Commit Coordinator."""
+        return self.merge_gazetteer_entries(
+            project,
+            template_entries,
+            source=source,
+            overwrite_existing=overwrite_existing,
+            expected_revision=expected_revision,
+            request_id=request_id,
+            actor=actor,
+        )

@@ -15,32 +15,36 @@ from frontend.state.session import (
 )
 
 
+_BADGE_TEXT = {
+    "✓": "✓ Sẵn sàng",
+    "●": "● Đang chờ",
+    "!": "! Cần chú ý",
+    "○": "○ Chưa làm",
+}
+
+
 def render_pipeline_header(project: dict) -> None:
-    """Hiển thị dải tiến trình 5 bước trực quan và trạng thái tổng quan ở đầu màn hình làm việc."""
+    """Hiển thị thanh tóm tắt dự án, bước hiện tại và tiến độ 5 bước (Sidebar là điều hướng chính)."""
     active_step_id, active_idx, active_label = get_active_step()
     readiness = compute_pipeline_readiness(project)
+    proj_name = str(project.get("name") or "Chưa đặt tên")
+    mode = str(project.get("extraction_mode") or "closed")
 
-    # Dải Breadcrumbs 5 bước
-    cols = st.columns(5)
-    for idx, (step_id, label) in enumerate(zip(PIPELINE_STEPS, PAGE_LABELS)):
-        badge = readiness.get(step_id, {}).get("badge", "○")
-        is_active = (idx == active_idx)
-        step_title = label.split(". ", 1)[-1]
+    with st.container(border=True):
+        c_title, c_step = st.columns([2.2, 1.8])
+        c_title.markdown(f"📁 **Dự án:** `{proj_name}` &nbsp;·&nbsp; ⚙️ Phương pháp: `{mode}`")
+        c_step.markdown(f"🧭 **Bước hiện tại ({active_idx + 1}/5):** `{active_label}`")
 
-        with cols[idx]:
-            # Đổi kiểu nút cho bước hiện tại
-            btn_type = "primary" if is_active else "secondary"
-            btn_label = f"{idx + 1}. {step_title} [{badge}]"
-            if st.button(
-                btn_label,
-                key=f"pipe_nav_btn_{step_id}",
-                type=btn_type,
-                width="stretch",
-                help=f"Chuyển nhanh tới Bước {idx + 1}: {step_title}",
-            ):
-                if not is_active:
-                    navigate_to_step(idx)
-                    st.rerun()
+        step_chips: list[str] = []
+        for idx, (step_id, label) in enumerate(zip(PIPELINE_STEPS, PAGE_LABELS)):
+            badge = readiness.get(step_id, {}).get("badge", "○")
+            step_title = label.split(". ", 1)[-1]
+            status_lbl = _BADGE_TEXT.get(badge, badge)
+            if idx == active_idx:
+                step_chips.append(f"**[{idx + 1}. {step_title}: {status_lbl}]**")
+            else:
+                step_chips.append(f"{idx + 1}. {step_title}: {status_lbl}")
+        st.caption(" · ".join(step_chips))
 
 
 def render_step_next_action(current_step_id: str, project: dict) -> None:
@@ -105,8 +109,13 @@ def render_step_next_action(current_step_id: str, project: dict) -> None:
     with st.container(border=True):
         c_info, c_btn = st.columns([3.5, 1.5])
         if action_info["condition"]:
-            c_info.markdown(f"🎯 **Hành động gợi ý**: {action_info['title']} — *{action_info['desc']}*")
-            if c_btn.button(action_info["btn_text"], width="stretch", type="primary", key=f"btn_next_action_{current_step_id}"):
+            c_info.markdown(f"🎯 **Gợi ý bước tiếp theo**: {action_info['title']} — *{action_info['desc']}*")
+            if c_btn.button(
+                action_info["btn_text"],
+                width="stretch",
+                type="secondary",
+                key=f"btn_next_action_{current_step_id}",
+            ):
                 navigate_to_step(action_info["target_step"])
                 st.rerun()
         else:

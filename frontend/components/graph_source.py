@@ -20,8 +20,17 @@ def select_graph_snapshot(project: dict, service) -> tuple[GraphSnapshotDTO, str
             return service.graph_snapshot(project, source="approved"), source
         if source == "baseline":
             runs = service.baseline_run_options(project)
-            labels = {run["run_id"]: f"{run.get('doc_name')} · đoạn {run.get('chunk_number')} · {run.get('status')} · {run['run_id']}"
-                      for run in runs}
+            sorted_runs = sorted(
+                runs,
+                key=lambda r: (str(r.get("doc_name") or ""), int(r.get("chunk_number") or 0), str(r.get("run_id") or "")),
+            )
+            labels = {
+                run["run_id"]: (
+                    f"{run.get('doc_name')} · Đoạn {run.get('chunk_number')} · "
+                    f"[{run.get('status')}] · Attempt: {run['run_id']}"
+                )
+                for run in sorted_runs
+            }
             key = f"p05_baseline_runs_{pid}"
             if key in st.session_state:
                 st.session_state[key] = [rid for rid in st.session_state[key] if rid in labels]
@@ -30,7 +39,7 @@ def select_graph_snapshot(project: dict, service) -> tuple[GraphSnapshotDTO, str
                 st.session_state[target_key] = rids
 
             latest_per_chunk: dict[tuple, str] = {}
-            for r in runs:
+            for r in sorted_runs:
                 c_key = (r.get("doc_id"), r.get("chunk_number"))
                 latest_per_chunk[c_key] = r["run_id"]
             all_latest_rids = list(latest_per_chunk.values())
@@ -42,14 +51,14 @@ def select_graph_snapshot(project: dict, service) -> tuple[GraphSnapshotDTO, str
                 key=f"btn_all_{pid}",
                 on_click=_set_baseline_runs,
                 args=(key, all_latest_rids),
-                use_container_width=True,
+                width="stretch",
             )
             col_b2.button(
                 "🧹 Xóa chọn",
                 key=f"btn_clear_{pid}",
                 on_click=_set_baseline_runs,
                 args=(key, []),
-                use_container_width=True,
+                width="stretch",
             )
 
             selected = st.multiselect("Chọn baseline runs (mỗi chunk một attempt)", list(labels),

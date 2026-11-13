@@ -53,49 +53,32 @@ class KGStudioFacade:
         engine_registry: Any | None = None,
         exporter: Any | None = None,
     ) -> None:
-        from backend.bootstrap import get_container
-        app_c = container or (get_container() if json_repo is None and sqlite_repo is None and vector_repo is None else None)
-
-        if app_c is not None:
-            self._container = app_c
-            self.json_repo = app_c.json_repo
-            self.sqlite_repo = app_c.sqlite_repo
-            self.vector_repo = app_c.vector_repo
-            self.projects_service = app_c.projects_service
-            self.schema_service = app_c.schema_service
-            self.extraction_service = app_c.extraction_service
-            self.curation_service = app_c.curation_service
-            self.graph_qa_service = app_c.graph_qa_service
-            self.training_service = app_c.training_service
+        from backend.bootstrap import AppContainer, get_container
+        if container is not None:
+            app_c = container
+        elif json_repo is None and sqlite_repo is None and vector_repo is None:
+            app_c = get_container()
         else:
-            from backend.repositories.json_repo import JsonProjectRepository
-            from backend.repositories.sqlite_repo import SQLiteProjectRepository
-            from backend.repositories.vector_repo import VectorIndexRepository
-            self.json_repo = json_repo or JsonProjectRepository()
-            self.sqlite_repo = sqlite_repo or SQLiteProjectRepository()
-            self.vector_repo = vector_repo or VectorIndexRepository()
-            self.projects_service = ProjectsApplicationService(
-                project_store=self.json_repo,
-                read_projection=self.sqlite_repo,
-                vector_repo=self.vector_repo,
+            app_c = AppContainer(
+                json_repo=json_repo,
+                sqlite_repo=sqlite_repo,
+                vector_repo=vector_repo,
             )
-            self.schema_service = SchemaIntelligenceApplicationService(
-                commit_coordinator=self.projects_service.commit_coordinator,
-                vector_repo=self.vector_repo,
-            )
-            self.extraction_service = ExtractionApplicationService(
-                engine_registry=engine_registry,
-                llm_gateway=LLMGateway,
-                schema_service=self.schema_service,
-                project_store=self.json_repo,
-                commit_coordinator=self.projects_service.commit_coordinator,
-            )
-            self.curation_service = CurationApplicationService(
-                commit_coordinator=self.projects_service.commit_coordinator,
-                project_store=self.json_repo,
-            )
-            self.graph_qa_service = GraphQAApplicationService()
-            self.training_service = TrainingApplicationService(exporter=exporter)
+            if engine_registry is not None:
+                app_c.extraction_service.engine_registry = engine_registry
+            if exporter is not None:
+                app_c.training_service.exporter = exporter
+
+        self._container = app_c
+        self.json_repo = app_c.json_repo
+        self.sqlite_repo = app_c.sqlite_repo
+        self.vector_repo = app_c.vector_repo
+        self.projects_service = app_c.projects_service
+        self.schema_service = app_c.schema_service
+        self.extraction_service = app_c.extraction_service
+        self.curation_service = app_c.curation_service
+        self.graph_qa_service = app_c.graph_qa_service
+        self.training_service = app_c.training_service
 
         # Compatibility attributes for legacy inspection
         self.commit_coordinator = self.projects_service.commit_coordinator
@@ -442,6 +425,36 @@ class KGStudioFacade:
 
     def token_totals(self, project: dict) -> dict:
         return self.curation_service.token_totals(project)
+
+    def list_gazetteer_entries(self, project: dict) -> list[dict]:
+        return self.curation_service.list_gazetteer_entries(project)
+
+    def parse_gazetteer_bytes(self, raw_bytes: bytes, filename: str = "") -> list[dict[str, str]]:
+        return self.curation_service.parse_gazetteer_bytes(raw_bytes, filename=filename)
+
+    def gazetteer_to_json_bytes(self, project: dict) -> bytes:
+        return self.curation_service.gazetteer_to_json_bytes(project)
+
+    def gazetteer_to_csv_bytes(self, project: dict) -> bytes:
+        return self.curation_service.gazetteer_to_csv_bytes(project)
+
+    def upsert_gazetteer_entry(self, project: dict, alias: str, canonical_name: str, kind: str = "", **kwargs: Any) -> Any:
+        return self.curation_service.upsert_gazetteer_entry(project, alias, canonical_name, kind, **kwargs)
+
+    def delete_gazetteer_entry(self, project: dict, alias: str, **kwargs: Any) -> Any:
+        return self.curation_service.delete_gazetteer_entry(project, alias, **kwargs)
+
+    def replace_gazetteer_entries(self, project: dict, entries: Any, **kwargs: Any) -> Any:
+        return self.curation_service.replace_gazetteer_entries(project, entries, **kwargs)
+
+    def merge_gazetteer_entries(self, project: dict, entries: Any, **kwargs: Any) -> Any:
+        return self.curation_service.merge_gazetteer_entries(project, entries, **kwargs)
+
+    def clear_gazetteer(self, project: dict, **kwargs: Any) -> Any:
+        return self.curation_service.clear_gazetteer(project, **kwargs)
+
+    def preload_gazetteer_template(self, project: dict, template_entries: Any, **kwargs: Any) -> Any:
+        return self.curation_service.preload_gazetteer_template(project, template_entries, **kwargs)
 
     # =========================================================================
     # 5. PHÂN HỆ GRAPH QA & EXPORT (backend/modules/graph_qa)

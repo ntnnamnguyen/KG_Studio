@@ -9,12 +9,12 @@ from typing import Any
 
 from backend.bootstrap import AppContainer, get_container
 from backend.facade import KGStudioFacade, get_facade
-from backend.modules.projects.application.service import ProjectsApplicationService
-from backend.modules.schema_intelligence.application.service import SchemaIntelligenceApplicationService
-from backend.modules.extraction.application.service import ExtractionApplicationService
-from backend.modules.curation.application.service import CurationApplicationService
-from backend.modules.graph_qa.application.service import GraphQAApplicationService
-from backend.modules.training.application.service import TrainingApplicationService
+from backend.modules.projects.public import ProjectsApplicationService
+from backend.modules.schema_intelligence.public import SchemaIntelligenceApplicationService
+from backend.modules.extraction.public import ExtractionApplicationService
+from backend.modules.curation.public import CurationApplicationService
+from backend.modules.graph_qa.public import GraphQAApplicationService
+from backend.modules.training.public import TrainingApplicationService
 
 
 class FrontendComposition:

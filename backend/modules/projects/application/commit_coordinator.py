@@ -42,6 +42,10 @@ class ProjectCommitCoordinator:
         self._last_committed_revision: dict[str, str] = {}
         self._last_disk_stat: dict[str, tuple[int, int]] = {}
 
+    def get_project_lock(self, project_id: str) -> threading.RLock:
+        """Trả về khóa đồng bộ tiến trình (process-wide RLock) cho dự án."""
+        return self._get_lock(str(project_id or "default"))
+
     def _get_internal_lock(self, project_id: str) -> threading.RLock:
         pid = str(project_id or "default")
         with self._locks_guard:

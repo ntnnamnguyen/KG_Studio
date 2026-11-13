@@ -30,7 +30,7 @@ from backend.domain.catalogs.review import (
 from backend.domain.schema_intelligence.aligner import TargetAligner
 from backend.domain.schema_intelligence.retriever import SchemaRetriever
 from backend.integrations.embedder_gateway import default_embedder
-from backend.modules.projects.application.commit_coordinator import ProjectCommitCoordinator
+from backend.modules.projects.public import ProjectCommitCoordinator
 from shared.schemas.edc import (
     BulkReviewPreviewDTO,
     BulkReviewRequestDTO,
@@ -162,11 +162,10 @@ class SchemaIntelligenceApplicationService:
                 on_snapshot_created=_on_snapshot,
                 vector_invalidation_kind=req.kind if req.kind in ("relations", "entity_types") else None,
             )
-        else:
-            proj_copy, res = _exec(project)
-            project.clear()
-            project.update(proj_copy)
-            return res
+        raise RuntimeError(
+            "Thao tác áp dụng quyết định lược đồ có lưu trữ yêu cầu ProjectCommitCoordinator; "
+            "không cho phép mutate bộ nhớ khi thiếu coordinator."
+        )
 
     def decide_proposal(
         self,

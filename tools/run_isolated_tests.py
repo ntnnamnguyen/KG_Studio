@@ -122,9 +122,16 @@ def main() -> int:
         ignored = shutil.ignore_patterns("__pycache__", "*.pyc", ".env*", ".secrets*", ".venv*", ".pytest_cache")
         for name in ("backend", "frontend", "shared", "ml_lab", "tests", "tools", "config"):
             shutil.copytree(source / name, shadow / name, ignore=ignored)
+        if (source / ".streamlit").is_dir():
+            shutil.copytree(source / ".streamlit", shadow / ".streamlit", ignore=ignored)
         for name in ("AGENTS.md", "README.md", "pyproject.toml", ".gitignore", "app.py", "run_app.py", "run_windows.cmd"):
             if (source / name).is_file():
                 shutil.copy2(source / name, shadow / name)
+        # Khai báo fixture/template công khai chính xác theo AGENTS.md, không copy toàn bộ data/
+        (shadow / "data").mkdir(exist_ok=True)
+        sample_gazetteer = source / "data" / "hanoi_historical_gazetteer.json"
+        if sample_gazetteer.is_file():
+            shutil.copy2(sample_gazetteer, shadow / "data" / "hanoi_historical_gazetteer.json")
         config = shadow / "config" / "default.toml"
         text = config.read_text(encoding="utf-8-sig")
         storage = {

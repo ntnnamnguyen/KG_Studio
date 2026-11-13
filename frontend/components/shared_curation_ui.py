@@ -170,7 +170,7 @@ def render_selection_action_bar(
             c4.write("")
 
         text = summary_text or (
-            f"**Đã chọn `{selected_count}`** / `{filtered_eligible_count}` kết quả lọc / `{total_count}` tổng số {item_noun}"
+            f"**Đã chọn `{selected_count}`** (đã lưu theo ID) · `{filtered_eligible_count}` hợp lệ trong bộ lọc / `{total_count}` tổng số {item_noun}"
         )
         c5.markdown(text)
         return int(new_page)

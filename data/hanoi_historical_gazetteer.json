@@ -1,0 +1,140 @@
+{
+  "diên hựu tự": {
+    "alias": "Diên Hựu Tự",
+    "canonical_name": "Chùa Một Cột",
+    "kind": "Di tích",
+    "source": "historical_template"
+  },
+  "chùa mật": {
+    "alias": "Chùa Mật",
+    "canonical_name": "Chùa Một Cột",
+    "kind": "Di tích",
+    "source": "historical_template"
+  },
+  "trấn vũ quán": {
+    "alias": "Trấn Vũ Quán",
+    "canonical_name": "Đền Quán Thánh",
+    "kind": "Di tích",
+    "source": "historical_template"
+  },
+  "chùa trấn vũ": {
+    "alias": "Chùa Trấn Vũ",
+    "canonical_name": "Đền Quán Thánh",
+    "kind": "Di tích",
+    "source": "historical_template"
+  },
+  "hồ lục thủy": {
+    "alias": "Hồ Lục Thủy",
+    "canonical_name": "Hồ Hoàn Kiếm",
+    "kind": "Địa danh",
+    "source": "historical_template"
+  },
+  "hồ tả vọng": {
+    "alias": "Hồ Tả Vọng",
+    "canonical_name": "Hồ Hoàn Kiếm",
+    "kind": "Địa danh",
+    "source": "historical_template"
+  },
+  "hồ thủy quân": {
+    "alias": "Hồ Thủy Quân",
+    "canonical_name": "Hồ Hoàn Kiếm",
+    "kind": "Địa danh",
+    "source": "historical_template"
+  },
+  "hồ gươm": {
+    "alias": "Hồ Gươm",
+    "canonical_name": "Hồ Hoàn Kiếm",
+    "kind": "Địa danh",
+    "source": "historical_template"
+  },
+  "chùa khai quốc": {
+    "alias": "Chùa Khai Quốc",
+    "canonical_name": "Chùa Trấn Quốc",
+    "kind": "Di tích",
+    "source": "historical_template"
+  },
+  "chùa an quốc": {
+    "alias": "Chùa An Quốc",
+    "canonical_name": "Chùa Trấn Quốc",
+    "kind": "Di tích",
+    "source": "historical_template"
+  },
+  "văn miếu": {
+    "alias": "Văn Miếu",
+    "canonical_name": "Văn Miếu - Quốc Tử Giám",
+    "kind": "Di tích",
+    "source": "historical_template"
+  },
+  "quốc tử giám": {
+    "alias": "Quốc Tử Giám",
+    "canonical_name": "Văn Miếu - Quốc Tử Giám",
+    "kind": "Di tích",
+    "source": "historical_template"
+  },
+  "thành hà nội": {
+    "alias": "Thành Hà Nội",
+    "canonical_name": "Hoàng thành Thăng Long",
+    "kind": "Di tích",
+    "source": "historical_template"
+  },
+  "thành thăng long": {
+    "alias": "Thành Thăng Long",
+    "canonical_name": "Hoàng thành Thăng Long",
+    "kind": "Di tích",
+    "source": "historical_template"
+  },
+  "đoan môn": {
+    "alias": "Đoan Môn",
+    "canonical_name": "Đoan Môn - Hoàng thành Thăng Long",
+    "kind": "Di tích",
+    "source": "historical_template"
+  },
+  "viện bttlh": {
+    "alias": "Viện BTTLH",
+    "canonical_name": "Bảo tàng Dân tộc học Việt Nam",
+    "kind": "Địa điểm",
+    "source": "historical_template"
+  },
+  "bảo tàng dth": {
+    "alias": "Bảo tàng DTH",
+    "canonical_name": "Bảo tàng Dân tộc học Việt Nam",
+    "kind": "Địa điểm",
+    "source": "historical_template"
+  },
+  "ubnd tp hà nội": {
+    "alias": "UBND TP Hà Nội",
+    "canonical_name": "Ủy ban nhân dân thành phố Hà Nội",
+    "kind": "Tổ chức",
+    "source": "historical_template"
+  },
+  "ubnd thành phố hà nội": {
+    "alias": "UBND Thành phố Hà Nội",
+    "canonical_name": "Ủy ban nhân dân thành phố Hà Nội",
+    "kind": "Tổ chức",
+    "source": "historical_template"
+  },
+  "vua lý thái tổ": {
+    "alias": "Vua Lý Thái Tổ",
+    "canonical_name": "Lý Thái Tổ",
+    "kind": "Nhân vật",
+    "source": "historical_template"
+  },
+  "lý công uẩn": {
+    "alias": "Lý Công Uẩn",
+    "canonical_name": "Lý Thái Tổ",
+    "kind": "Nhân vật",
+    "source": "historical_template"
+  },
+  "vua lê thái tổ": {
+    "alias": "Vua Lê Thái Tổ",
+    "canonical_name": "Lê Lợi",
+    "kind": "Nhân vật",
+    "source": "historical_template"
+  },
+  "lê thái tổ": {
+    "alias": "Lê Thái Tổ",
+    "canonical_name": "Lê Lợi",
+    "kind": "Nhân vật",
+    "source": "historical_template"
+  }
+}

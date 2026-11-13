@@ -75,6 +75,7 @@ def empty_project(name: str) -> dict:
         "entity_merges": [],
         "node_redirects": {},
         "not_duplicate_pairs": [],
+        "domain_gazetteer": {},
         "prompt_history_schema_version": 1,
         "prompt_bindings": {},
         "prompt_versions": [],
@@ -113,6 +114,8 @@ def ensure_project_shape(project: dict, name: str = "") -> dict:
         project["node_redirects"] = {}
     if not isinstance(project.get("not_duplicate_pairs"), list):
         project["not_duplicate_pairs"] = []
+    if not isinstance(project.get("domain_gazetteer"), dict):
+        project["domain_gazetteer"] = {}
 
     for doc in project.get("documents", []):
         doc.setdefault("place_scope", "")

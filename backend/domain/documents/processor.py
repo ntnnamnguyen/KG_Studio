@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import unicodedata
 from pathlib import Path
 
 from shared.config_loader import CONFIG
@@ -31,7 +32,7 @@ def document_payload(file_name: str, binary: bytes) -> dict:
     warnings: list[str] = []
 
     if suffix == ".txt":
-        text = binary.decode("utf-8-sig", errors="replace")
+        text = unicodedata.normalize("NFC", binary.decode("utf-8-sig", errors="replace"))
         if "\ufffd" in text:
             warnings.append("Tệp có ký tự không giải mã được bằng UTF-8.")
         return {"text": text.strip(), "pages": [], "warnings": warnings}
@@ -40,10 +41,10 @@ def document_payload(file_name: str, binary: bytes) -> dict:
         from docx import Document
 
         doc = Document(stream)
-        out = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        out = [unicodedata.normalize("NFC", p.text.strip()) for p in doc.paragraphs if p.text.strip()]
         for table in doc.tables:
             for row in table.rows:
-                line = " | ".join(cell.text.strip() for cell in row.cells)
+                line = " | ".join(unicodedata.normalize("NFC", cell.text.strip()) for cell in row.cells)
                 if line.strip(" |"):
                     out.append(line)
         return {"text": "\n".join(out), "pages": [], "warnings": warnings}
@@ -57,7 +58,7 @@ def document_payload(file_name: str, binary: bytes) -> dict:
         pos = 0
         empty_pages = 0
         for index, page in enumerate(pdf.pages):
-            page_text = (page.extract_text() or "").strip()
+            page_text = unicodedata.normalize("NFC", (page.extract_text() or "").strip())
             if not page_text:
                 empty_pages += 1
             if index:

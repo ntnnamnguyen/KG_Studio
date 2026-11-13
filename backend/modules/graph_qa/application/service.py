@@ -24,9 +24,8 @@ from backend.domain.graph.service import (
     export_zip,
     validate_integrity,
 )
-from backend.integrations.neo4j_gateway import Neo4jGateway
 from ..domain.baseline_graph import build_baseline_graph
-from ..ports import BaselineRunSourcePort
+from ..ports import BaselineRunSourcePort, Neo4jPort
 from shared.schemas.graph_input import BaselineGraphRequestDTO, GraphSnapshotDTO, graph_fingerprint
 from shared.secrets_manager import get_api_key
 
@@ -34,9 +33,9 @@ from shared.secrets_manager import get_api_key
 class GraphQAApplicationService:
     """Dịch vụ ứng dụng quản lý Đồ thị tri thức, G-Retriever Subgraph, QA Generator và Xuất Neo4j/Files."""
 
-    def __init__(self, *, neo4j_gateway: Neo4jGateway | None = None,
+    def __init__(self, *, neo4j_gateway: Neo4jPort | None = None,
                  baseline_source: BaselineRunSourcePort | None = None) -> None:
-        self.neo4j_gateway = neo4j_gateway or Neo4jGateway()
+        self.neo4j_gateway = neo4j_gateway
         self.baseline_source = baseline_source
 
     def baseline_run_options(self, project: dict) -> list[dict]:
@@ -111,6 +110,8 @@ class GraphQAApplicationService:
         database: str = "neo4j",
         driver: Any = None,
     ) -> dict:
+        if self.neo4j_gateway is None:
+            raise RuntimeError("Neo4j Gateway chưa được inject vào GraphQAApplicationService")
         return self.neo4j_gateway.sync_project(project, uri, user, password, database, driver=driver)
 
     def test_neo4j(
@@ -121,6 +122,8 @@ class GraphQAApplicationService:
         database: str = "neo4j",
         driver: Any = None,
     ) -> tuple[bool, str]:
+        if self.neo4j_gateway is None:
+            raise RuntimeError("Neo4j Gateway chưa được inject vào GraphQAApplicationService")
         return self.neo4j_gateway.test_connection(uri, user, password, database, driver=driver)
 
     # --- G-Retriever & Question Answering ---

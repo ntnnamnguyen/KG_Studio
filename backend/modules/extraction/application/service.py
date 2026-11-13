@@ -66,7 +66,7 @@ class ExtractionApplicationService:
         self._locks_guard = threading.Lock()
 
     def get_project_lock(self, project_id: str) -> threading.RLock:
-        if self.commit_coordinator and hasattr(self.commit_coordinator, "get_project_lock"):
+        if self.commit_coordinator is not None and hasattr(self.commit_coordinator, "get_project_lock"):
             return self.commit_coordinator.get_project_lock(project_id)
         with self._locks_guard:
             if project_id not in self._project_locks:
@@ -74,10 +74,20 @@ class ExtractionApplicationService:
             return self._project_locks[project_id]
 
     def _save_project_safe(self, project: dict) -> None:
-        if self.commit_coordinator and hasattr(self.commit_coordinator, "project_store"):
-            self.commit_coordinator.project_store.save_project(project)
-        elif self.project_store:
-            self.project_store.save_project(project)
+        proj_id = str(project.get("project_id") or project.get("name") or "default")
+        with self.get_project_lock(proj_id):
+            if self.commit_coordinator and hasattr(self.commit_coordinator, "project_store"):
+                self.commit_coordinator.project_store.save_project(project)
+                if hasattr(self.commit_coordinator, "read_projection") and self.commit_coordinator.read_projection:
+                    try:
+                        self.commit_coordinator.read_projection.sync_project(project)
+                        project["sync_pending"] = False
+                        project["sync_error"] = ""
+                    except Exception as exc:
+                        project["sync_pending"] = True
+                        project["sync_error"] = str(exc)
+            elif self.project_store:
+                self.project_store.save_project(project)
 
     # --- Documents Management ---
 

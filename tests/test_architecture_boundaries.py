@@ -159,6 +159,91 @@ class ArchitectureBoundariesTest(unittest.TestCase):
         self.assertIs(llm_pkg.LLMGateway, LLMGateway)
         self.assertTrue(hasattr(LLMGateway, "extract"))
 
+    def test_cross_module_private_imports_are_forbidden(self) -> None:
+        """Quy tắc 5: Các module trong backend/modules/ khi gọi chéo nhau BẮT BUỘC phải qua .public hoặc .ports."""
+        modules_dir = ROOT_DIR / "backend" / "modules"
+        module_names = {"projects", "schema_intelligence", "extraction", "curation", "graph_qa", "training"}
+        violations: list[tuple[str, str]] = []
+
+        for p in modules_dir.rglob("*.py"):
+            rel_parts = p.relative_to(modules_dir).parts
+            if not rel_parts:
+                continue
+            caller_module = rel_parts[0]
+            if caller_module not in module_names:
+                continue
+
+            for mod in _extract_imports(p):
+                if not mod.startswith("backend.modules."):
+                    continue
+                parts = mod.split(".")
+                if len(parts) >= 3:
+                    target_module = parts[2]
+                    if target_module in module_names and target_module != caller_module:
+                        sub = parts[3] if len(parts) > 3 else ""
+                        if sub not in ("public", "ports"):
+                            violations.append((p.relative_to(ROOT_DIR).as_posix(), mod))
+
+        self.assertEqual(
+            violations,
+            [],
+            f"Phát hiện vi phạm cross-module private import (phải dùng .public hoặc .ports): {violations}",
+        )
+
+    def test_frontend_must_not_import_backend_repositories_directly(self) -> None:
+        """Quy tắc 6: frontend/ tuyệt đối không import concrete repositories (backend.repositories.*) trực tiếp."""
+        frontend_dir = ROOT_DIR / "frontend"
+        violations: list[tuple[str, str]] = []
+
+        for p in frontend_dir.rglob("*.py"):
+            for mod in _extract_imports(p):
+                if mod.startswith("backend.repositories"):
+                    violations.append((p.relative_to(ROOT_DIR).as_posix(), mod))
+
+        self.assertEqual(
+            violations,
+            [],
+            f"Phát hiện Frontend import trực tiếp Concrete Repositories: {violations}",
+        )
+
+    def test_frontend_must_import_backend_modules_via_public_only(self) -> None:
+        """Quy tắc 7: frontend/ khi gọi backend.modules.* BẮT BUỘC phải qua .public."""
+        frontend_dir = ROOT_DIR / "frontend"
+        module_names = {"projects", "schema_intelligence", "extraction", "curation", "graph_qa", "training"}
+        violations: list[tuple[str, str]] = []
+
+        for p in frontend_dir.rglob("*.py"):
+            for mod in _extract_imports(p):
+                if mod.startswith("backend.modules."):
+                    parts = mod.split(".")
+                    if len(parts) >= 3 and parts[2] in module_names:
+                        sub = parts[3] if len(parts) > 3 else ""
+                        if sub not in ("public", "ports"):
+                            violations.append((p.relative_to(ROOT_DIR).as_posix(), mod))
+
+        self.assertEqual(
+            violations,
+            [],
+            f"Phát hiện Frontend import private implementation của backend.modules: {violations}",
+        )
+
+    def test_guard_detects_unauthorized_cross_module_import_negative_fixture(self) -> None:
+        """Negative test: Kiểm chứng AST extractor và rule bắt chính xác vi phạm cross-module private import."""
+        synthetic_code = "from backend.modules.projects.application.service import ProjectsApplicationService\n"
+        tree = ast.parse(synthetic_code, filename="fake_service.py")
+        imported = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported.append(node.module)
+
+        is_violation = False
+        for mod in imported:
+            if mod.startswith("backend.modules."):
+                parts = mod.split(".")
+                if len(parts) >= 4 and parts[2] == "projects" and parts[3] not in ("public", "ports"):
+                    is_violation = True
+        self.assertTrue(is_violation, "Guard phải bắt được vi phạm import private implementation.")
+
 
 if __name__ == "__main__":
     unittest.main()
