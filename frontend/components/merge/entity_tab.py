@@ -11,9 +11,11 @@ from backend.domain.curation.service import duplicate_suggestions
 from frontend.client import FrontendClient
 from frontend.components.merge.provenance_view import render_entity_provenance_panel
 from frontend.state.session import (
+    bump_sync_nonce,
     reset_curation_state_if_project_changed,
     reset_edc_state_if_project_changed,
     stage_entities_for_merge,
+    sync_keyed_value,
     update_merge_draft,
 )
 from shared.text_utils import normal
@@ -37,12 +39,17 @@ def _render_bulk_duplicate_entity_section(
             "Hệ thống phát hiện các cặp thực thể trùng tên chuẩn hóa, giao nhau tên/bí danh hoặc gần giống chuỗi. "
             "Hỗ trợ **chọn nhiều và gộp hàng loạt** an toàn theo thuật toán cụm liên thông (DSU) bảo toàn bậc kết nối."
         )
+        proj_id = str(project.get("project_id") or project.get("name") or "default")
         sc1, sc2 = st.columns([1.6, 2.4])
+        sync_keyed_value(
+            "merge_fuzzy_slider",
+            float(m_state.get("fuzzy_threshold", 0.82)),
+            (proj_id, "ent_fuzzy"),
+        )
         fuzzy_val = sc1.slider(
             "Ngưỡng tương đồng tên thực thể (Fuzzy threshold)",
             min_value=0.0,
             max_value=0.98,
-            value=float(m_state.get("fuzzy_threshold", 0.82)),
             step=0.02,
             key="merge_fuzzy_slider",
         )
@@ -155,9 +162,9 @@ def _render_bulk_duplicate_entity_section(
             if selected_pairs_to_merge:
                 with st.container(border=True):
                     st.markdown(f"##### ⚡ Thao tác Nhanh cho **{len(selected_pairs_to_merge)}** Cặp Thực thể Đang Chọn")
+                    sync_keyed_value("cb_bulk_ent_collapse", False, (proj_id, "bulk_ent_collapse"))
                     cb_bulk_ent_collapse = st.checkbox(
                         "Tự động hợp nhất các cạnh trùng bộ ba (dồn bằng chứng đầy đủ)",
-                        value=False,
                         key="cb_bulk_ent_collapse",
                         help="Nếu việc đổi đầu mút dẫn tới các cạnh có cùng nguồn, quan hệ và đích, hệ thống sẽ tự động dồn bằng chứng nguyên văn và xóa cạnh thừa.",
                     )
@@ -247,10 +254,19 @@ def _render_three_step_entity_workbench(
         st.markdown("##### Bước 1 — Chọn và so sánh các thực thể cần gộp")
         all_node_ids = [str(n["id"]) for n in nodes if n.get("id")]
         cur_members = [nid for nid in m_state.get("member_ids", []) if nid in nodes_by_id]
+        cur_proj_id = str(m_state.get("project_id") or project.get("project_id") or project.get("name") or "")
+        target_sync_tag = (cur_proj_id, int(m_state.get("sync_nonce") or 0))
+        if st.session_state.get("_merge_members_synced_tag") != target_sync_tag or "merge_multiselect_members" not in st.session_state:
+            st.session_state["merge_multiselect_members"] = list(cur_members)
+            st.session_state["_merge_members_synced_tag"] = target_sync_tag
+        else:
+            st.session_state["merge_multiselect_members"] = [
+                nid for nid in st.session_state.get("merge_multiselect_members", []) if nid in nodes_by_id
+            ]
+
         selected_members = st.multiselect(
             "Chọn từ 2 thực thể trở lên để so sánh và gộp thành 1 thực thể duy nhất",
             all_node_ids,
-            default=cur_members,
             format_func=lambda nid: (
                 f"{nodes_by_id[nid].get('name', nid)} [{nodes_by_id[nid].get('kind', '?')}] "
                 f"(Bậc: {degrees.get(nid, {'total': 0})['total']} · ID: {nid})"
@@ -260,6 +276,10 @@ def _render_three_step_entity_workbench(
         if selected_members != cur_members:
             m_state["member_ids"] = []
             stage_entities_for_merge(project, selected_members, switch_to_merge=False)
+            st.session_state["_merge_members_synced_tag"] = (
+                cur_proj_id,
+                int(m_state.get("sync_nonce") or 0),
+            )
             st.rerun()
 
         if len(selected_members) < 2:
@@ -298,30 +318,36 @@ def _render_three_step_entity_workbench(
                 approved_types.insert(0, k)
 
         c_keep, c_name, c_kind = st.columns(3)
+        need_step2_sync = st.session_state.get("_merge_step2_synced_tag") != target_sync_tag
         cur_keep = str(m_state.get("keep_id") or selected_members[0])
         if cur_keep not in selected_members:
             cur_keep = selected_members[0]
+        if need_step2_sync or st.session_state.get("merge_keep_id_select") not in selected_members:
+            st.session_state["merge_keep_id_select"] = cur_keep
         chosen_keep = c_keep.selectbox(
             "Thực thể đích giữ lại ID (`keep_id`)",
             selected_members,
-            index=selected_members.index(cur_keep),
             format_func=lambda nid: f"{nodes_by_id[nid].get('name', nid)} ({nid})",
             key="merge_keep_id_select",
         )
 
         name_suggestions = list(dict.fromkeys(str(n.get("name", "")) for n in member_nodes if n.get("name")))
         cur_canon_name = str(m_state.get("canonical_name") or nodes_by_id[chosen_keep].get("name", ""))
+        if need_step2_sync or "merge_canon_name_input" not in st.session_state:
+            st.session_state["merge_canon_name_input"] = cur_canon_name
         chosen_name = c_name.text_input(
             f"Tên chuẩn hiển thị (Gợi ý: {', '.join(name_suggestions[:3])})",
-            value=cur_canon_name,
             key="merge_canon_name_input",
         )
 
+        kind_choices = approved_types if approved_types else [""]
         cur_canon_kind = str(m_state.get("canonical_kind") or nodes_by_id[chosen_keep].get("kind", ""))
+        fallback_kind = cur_canon_kind if cur_canon_kind in kind_choices else kind_choices[0]
+        if need_step2_sync or st.session_state.get("merge_canon_kind_select") not in kind_choices:
+            st.session_state["merge_canon_kind_select"] = fallback_kind
         chosen_kind = c_kind.selectbox(
             "Loại thực thể chuẩn sau khi gộp",
-            approved_types if approved_types else [""],
-            index=approved_types.index(cur_canon_kind) if cur_canon_kind in approved_types else 0,
+            kind_choices,
             key="merge_canon_kind_select",
         )
 
@@ -331,23 +357,28 @@ def _render_three_step_entity_workbench(
                 f"⚠️ **Xung đột loại thực thể:** Các thực thể đang chọn có loại khác nhau ({', '.join(distinct_kinds)}). "
                 "Bắt buộc nhập lý do chọn loại chuẩn; các cạnh nối với thực thể đổi loại sẽ chuyển về **Cần kiểm tra**."
             )
+            if need_step2_sync or "merge_kind_note_input" not in st.session_state:
+                st.session_state["merge_kind_note_input"] = kind_note
             kind_note = st.text_input(
                 "Lý do giải quyết xung đột loại thực thể (bắt buộc khi gộp thực thể khác loại)",
-                value=kind_note,
                 key="merge_kind_note_input",
             )
 
+        if need_step2_sync or "merge_canon_desc_input" not in st.session_state:
+            st.session_state["merge_canon_desc_input"] = str(m_state.get("canonical_description") or "")
         chosen_desc = st.text_area(
             "Mô tả tổng hợp sau khi gộp",
-            value=str(m_state.get("canonical_description") or ""),
             height=80,
             key="merge_canon_desc_input",
         )
+        if need_step2_sync or "merge_note_input" not in st.session_state:
+            st.session_state["merge_note_input"] = str(m_state.get("note") or "")
         merge_note = st.text_input(
             "Ghi chú phiên gộp thực thể",
-            value=str(m_state.get("note") or ""),
             key="merge_note_input",
         )
+        if need_step2_sync:
+            st.session_state["_merge_step2_synced_tag"] = target_sync_tag
 
         if (
             chosen_keep != m_state.get("keep_id")
@@ -408,10 +439,13 @@ def _render_three_step_entity_workbench(
                 )
             st.caption("Toàn bộ ID cạnh và bằng chứng được giữ nguyên 100% (không tự xóa ngầm bất kỳ cạnh nào).")
 
+            proj_id = str(project.get("project_id") or project.get("name") or "default")
+            collapse_nonce_key = f"_ent_manual_collapse_nonce_{proj_id}"
+            collapse_nonce = int(st.session_state.get(collapse_nonce_key) or 0)
+            sync_keyed_value("cb_manual_ent_collapse", False, (proj_id, collapse_nonce))
             n_count = len(active_prev.get("member_ids", []))
             cb_manual_ent_collapse = st.checkbox(
                 "Tự động hợp nhất các cạnh trùng bộ ba (dồn bằng chứng đầy đủ)",
-                value=False,
                 key="cb_manual_ent_collapse",
                 help="Nếu việc đổi đầu mút thực thể dẫn tới các cạnh có cùng nguồn, quan hệ và đích, hệ thống sẽ tự động gộp thành 1 cạnh duy nhất và dồn toàn bộ trích dẫn nguyên văn lại.",
             )
@@ -424,6 +458,7 @@ def _render_three_step_entity_workbench(
             ):
                 try:
                     res = execute_entity_merge_apply(project, collapse_edges=cb_manual_ent_collapse)
+                    bump_sync_nonce(collapse_nonce_key)
                     dup_msg = f" Đã hợp nhất {res.merged_duplicate_edges} cạnh trùng bộ ba." if getattr(res, "merged_duplicate_edges", 0) > 0 else ""
                     gaz_msg = _format_gazetteer_merge_notice(project)
                     done_msg = (
@@ -479,8 +514,9 @@ def _render_entity_merge_history_section(project: dict, client: FrontendClient) 
                     key="btn_restore_entity_merge_snap",
                 ):
                     client.restore_snapshot(project, latest_snap)
-                    reset_edc_state_if_project_changed(project)
-                    reset_curation_state_if_project_changed(project)
+                    st.session_state["chk_restore_entity_merge_snap"] = False
+                    reset_edc_state_if_project_changed(project, force=True)
+                    reset_curation_state_if_project_changed(project, force=True)
                     st.success("Đã khôi phục dự án về snapshot trước khi gộp thực thể.")
                     st.rerun()
 

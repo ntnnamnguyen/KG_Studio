@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .benchmark_tab import format_benchmark_csv, format_benchmark_markdown, render_benchmark_tab
 from .g_retriever_tab import build_subgraph_dot, render_g_retriever_qa_tab
+from .gretriever_bundle_section import render_gretriever_bundle_studio
 from .training_dataset_tab import render_training_dataset_tab
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "format_benchmark_markdown",
     "render_benchmark_tab",
     "render_g_retriever_qa_tab",
+    "render_gretriever_bundle_studio",
     "render_training_dataset_tab",
 ]

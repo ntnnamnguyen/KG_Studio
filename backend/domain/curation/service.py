@@ -44,14 +44,17 @@ from .gazetteer import (
     clear_gazetteer,
     delete_gazetteer_entry,
     enrich_gazetteer_from_merge,
+    expand_grouped_gazetteer_rows,
     gazetteer_to_csv_bytes,
     gazetteer_to_json_bytes,
     list_gazetteer_entries,
+    list_grouped_gazetteer_entries,
     merge_gazetteer_entries,
     normalize_gazetteer_key,
     parse_gazetteer_bytes,
     preload_gazetteer_template,
     replace_gazetteer_entries,
+    split_gazetteer_aliases,
     upsert_gazetteer_entry,
 )
 from .merge import (
@@ -153,6 +156,7 @@ __all__ = [
     "bulk_apply_entity_type_merges",
     # Gazetteer & Continuous Curation
     "normalize_gazetteer_key",
+    "split_gazetteer_aliases",
     "parse_gazetteer_bytes",
     "gazetteer_to_json_bytes",
     "gazetteer_to_csv_bytes",
@@ -163,5 +167,7 @@ __all__ = [
     "merge_gazetteer_entries",
     "clear_gazetteer",
     "list_gazetteer_entries",
+    "list_grouped_gazetteer_entries",
+    "expand_grouped_gazetteer_rows",
     "preload_gazetteer_template",
 ]

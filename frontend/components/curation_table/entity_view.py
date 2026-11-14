@@ -10,15 +10,17 @@ from backend.domain.curation.service import duplicate_suggestions
 from backend.facade import get_facade
 from frontend.components.shared_curation_ui import paginate_items, render_selection_action_bar
 from frontend.state.session import (
+    bump_sync_nonce,
     clear_entity_selection,
     filter_edges_by_entity,
     get_curation_section_state,
     reconcile_entity_selection_with_filter,
     select_all_filtered_entities,
     select_page_entities,
-    set_active_curation_section,
     set_focused_entity,
     stage_entities_for_merge,
+    sync_keyed_choice,
+    sync_keyed_value,
     toggle_entity_selection,
 )
 from shared.constants import STATUS_APPROVED, STATUS_CHECK, STATUS_REJECTED
@@ -28,6 +30,8 @@ from .entity_logic import build_entity_table_rows, filter_and_sort_entities
 def render_entity_table(project: dict) -> dict[str, Any]:
     """Hiển thị bộ lọc và bảng danh sách thực thể ở Khu vực B (mục 6.1)."""
     e_state = get_curation_section_state(project, "entities")
+    proj_id = str(project.get("project_id") or project.get("name") or "default")
+    f_tag = (proj_id, int(e_state.get("filter_nonce") or 0))
     filters = e_state["filters"]
     docs = project.get("documents", [])
     doc_options = ["all"] + [str(d["id"]) for d in docs]
@@ -60,17 +64,17 @@ def render_entity_table(project: dict) -> dict[str, Any]:
 
     # TẦNG 1: THANH CƠ BẢN TINH GỌN (CHỈ 1 DÒNG DUY NHẤT)
     c_ent_search, c_ent_kind = st.columns([3.5, 1.5])
+    sync_keyed_value("cur_ent_f_search", filters.get("search", ""), f_tag)
     filters["search"] = c_ent_search.text_input(
         "Tìm thực thể",
-        value=filters.get("search", ""),
         placeholder="🔍 Tìm tên thực thể, bí danh, mô tả...",
         label_visibility="collapsed",
         key="cur_ent_f_search",
     )
+    sync_keyed_choice("cur_ent_f_kind", kind_options, filters.get("kind", "all"), f_tag)
     filters["kind"] = c_ent_kind.selectbox(
         "Loại thực thể",
         kind_options,
-        index=kind_options.index(filters["kind"]) if filters["kind"] in kind_options else 0,
         format_func=lambda x: "Tất cả loại" if x == "all" else f"Loại: {x}",
         label_visibility="collapsed",
         key="cur_ent_f_kind",
@@ -79,10 +83,10 @@ def render_entity_table(project: dict) -> dict[str, Any]:
     # TẦNG 2: VÙNG MỞ RỘNG BỘ LỌC NÂNG CAO (Mặc định thu gọn, mở khi có tiêu chí đang lọc)
     with st.expander(adv_ent_label, expanded=bool(adv_ent_count > 0)):
         c2, c3, c4 = st.columns([1.5, 1.2, 1.3])
+        sync_keyed_choice("cur_ent_f_doc", doc_options, filters.get("doc_id", "all"), f_tag)
         filters["doc_id"] = c2.selectbox(
             "Tài liệu nguồn",
             doc_options,
-            index=doc_options.index(filters["doc_id"]) if filters["doc_id"] in doc_options else 0,
             format_func=lambda x: doc_names.get(x, x),
             key="cur_ent_f_doc",
         )
@@ -93,39 +97,53 @@ def render_entity_table(project: dict) -> dict[str, Any]:
             "gte_1": "Có kết nối (≥ 1)",
             "gte_3": "Nút trung tâm (≥ 3)",
         }
+        sync_keyed_choice("cur_ent_f_deg", deg_opts, filters.get("degree_filter", "all"), f_tag)
         filters["degree_filter"] = c3.selectbox(
             "Số kết nối",
             deg_opts,
-            index=deg_opts.index(filters["degree_filter"]) if filters["degree_filter"] in deg_opts else 0,
             format_func=lambda x: deg_labels.get(x, x),
             key="cur_ent_f_deg",
         )
         sc_opts = ["all", "valid", "blocked"]
         sc_labels = {"all": "Mọi trạng thái danh mục", "valid": "Đã chuẩn hóa", "blocked": "Còn đề xuất chờ / Ngoài danh mục"}
+        sync_keyed_choice("cur_ent_f_schema", sc_opts, filters.get("schema_state", "all"), f_tag)
         filters["schema_state"] = c4.selectbox(
             "Trạng thái danh mục",
             sc_opts,
-            index=sc_opts.index(filters["schema_state"]) if filters["schema_state"] in sc_opts else 0,
             format_func=lambda x: sc_labels.get(x, x),
             key="cur_ent_f_schema",
         )
 
         c_chk, c_reset = st.columns([3.5, 1.5])
+        sync_keyed_value("cur_ent_f_dup", bool(filters.get("dup_candidate_only", False)), f_tag)
         filters["dup_candidate_only"] = c_chk.checkbox(
             "Chỉ hiện thực thể đang nằm trong cặp nghi trùng" + (f" ({len(dup_ids)} thực thể)" if dup_active else " (bấm để quét)"),
-            value=bool(filters.get("dup_candidate_only", False)),
             key="cur_ent_f_dup",
         )
         c_reset.write("")
-        if c_reset.button("🔄 Đặt lại lọc", key="cur_ent_btn_reset_filters", help="Xóa nhanh toàn bộ bộ lọc nâng cao"):
+        if c_reset.button("🔄 Đặt lại lọc", key="cur_ent_btn_reset_filters", help="Xóa nhanh toàn bộ bộ lọc"):
+            filters["search"] = ""
+            filters["kind"] = "all"
             filters["doc_id"] = "all"
             filters["degree_filter"] = "all"
             filters["schema_state"] = "all"
             filters["dup_candidate_only"] = False
+            filters["page"] = 1
+            e_state["filter_nonce"] = int(e_state.get("filter_nonce") or 0) + 1
+            e_state["page_nonce"] = int(e_state.get("page_nonce") or 0) + 1
             st.rerun()
 
     filtered_nodes = filter_and_sort_entities(project, filters, dup_node_ids=dup_ids)
     ent_sig = f"{filters.get('kind')}_{filters.get('doc_id')}_{filters.get('schema_state')}_{filters.get('degree_filter')}_{filters.get('dup_candidate_only')}_{filters.get('search')}"
+    prev_ent_sig = e_state.get("_prev_pagination_sig")
+    if prev_ent_sig is None:
+        e_state["_prev_pagination_sig"] = ent_sig
+    elif prev_ent_sig != ent_sig:
+        e_state["_prev_pagination_sig"] = ent_sig
+        if int(filters.get("page") or 1) != 1:
+            filters["page"] = 1
+            e_state["page_nonce"] = int(e_state.get("page_nonce") or 0) + 1
+            st.rerun()
     reconcile_entity_selection_with_filter(project, ent_sig, filtered_nodes)
 
     page_nodes, cur_page, total_pages = paginate_items(filtered_nodes, filters.get("page", 1), filters.get("page_size", 25))
@@ -137,7 +155,7 @@ def render_entity_table(project: dict) -> dict[str, Any]:
     ):
         set_focused_entity(project, str(page_nodes[0]["id"]))
 
-    render_selection_action_bar(
+    page_res = render_selection_action_bar(
         selected_count=len(e_state.get("selected_ids", [])),
         page_eligible_count=len(page_nodes),
         filtered_eligible_count=len(filtered_nodes),
@@ -147,7 +165,22 @@ def render_entity_table(project: dict) -> dict[str, Any]:
         on_select_page=lambda: select_page_entities(project, page_nodes),
         on_select_all_filtered=lambda: select_all_filtered_entities(project, filtered_nodes),
         on_clear=lambda: clear_entity_selection(project),
+        page_size=filters["page_size"],
+        current_page=cur_page,
+        total_pages=total_pages,
+        sync_tag=(proj_id, int(e_state.get("page_nonce") or 0)),
     )
+    if page_res:
+        new_page, new_size = page_res
+        old_size = int(filters.get("page_size") or 25)
+        if new_size != old_size:
+            filters["page_size"] = new_size
+            filters["page"] = 1
+            e_state["page_nonce"] = int(e_state.get("page_nonce") or 0) + 1
+            st.rerun()
+        elif new_page != cur_page:
+            filters["page"] = new_page
+            st.rerun()
 
     rows = build_entity_table_rows(project, page_nodes)
     selected_node_ids = set(e_state.get("selected_ids", []))
@@ -157,6 +190,7 @@ def render_entity_table(project: dict) -> dict[str, Any]:
     )
 
     if rows:
+        sel_nonce = int(e_state.get("sel_editor_nonce") or 0)
         table_node_rows = [
             {
                 "id": r["node_id"],
@@ -173,7 +207,7 @@ def render_entity_table(project: dict) -> dict[str, Any]:
         ]
         edited_node_rows = st.data_editor(
             table_node_rows,
-            key=f"cur_node_editor_{cur_page}_{ent_sig}",
+            key=f"cur_node_editor_{proj_id}_{sel_nonce}_{cur_page}_{ent_sig}",
             width='stretch',
             hide_index=True,
             disabled=[
@@ -209,9 +243,11 @@ def render_entity_table(project: dict) -> dict[str, Any]:
                 approved_types = [str(t["name"]) for t in catalog_rows(project, "entity_types")]
                 with b_col1:
                     bc1, bc2 = st.columns([1.5, 1.0])
+                    kind_choices = [""] + approved_types
+                    sync_keyed_choice("sel_batch_node_kind", kind_choices, "", (proj_id, sel_nonce))
                     batch_target_kind = bc1.selectbox(
                         "Loại thực thể đã duyệt để gán",
-                        options=[""] + approved_types,
+                        options=kind_choices,
                         format_func=lambda x: "— Chọn loại thực thể —" if not x else x,
                         key="sel_batch_node_kind",
                     )
@@ -237,6 +273,7 @@ def render_entity_table(project: dict) -> dict[str, Any]:
                                 if edge.get("status") not in (STATUS_REJECTED, STATUS_APPROVED):
                                     edge["status"] = STATUS_CHECK
                         facade.save_project(project)
+                        bump_sync_nonce("_inspector_action_nonce")
                         st.success(f"Đã gán loại '{batch_target_kind}' cho {updated_cnt} thực thể đã chọn.")
                         clear_entity_selection(project)
                         st.rerun()
@@ -256,22 +293,23 @@ def render_entity_table(project: dict) -> dict[str, Any]:
                         width='stretch',
                         key="btn_filter_edges_of_selected_nodes",
                     ):
-                        set_active_curation_section(project, "edges")
-                        e_edge_state = get_curation_section_state(project, "edges")
                         first_nid = next(iter(selected_node_ids))
-                        e_edge_state["filters"]["entity_id"] = first_nid
-                        st.session_state["curation_hub_active_tab"] = "edges"
+                        filter_edges_by_entity(project, first_nid)
                         st.rerun()
 
         act1, act2, act3 = st.columns([2.4, 1.2, 1.2])
         row_map = {r["node_id"]: r for r in rows}
         node_ids = [r["node_id"] for r in rows]
         cur_nid = e_state.get("focused_node_id")
-        idx = node_ids.index(cur_nid) if cur_nid in node_ids else 0
+        sync_keyed_choice(
+            "cur_focus_node_select",
+            node_ids,
+            cur_nid,
+            (proj_id, cur_page, cur_nid, int(e_state.get("focus_nonce") or 0)),
+        )
         chosen_nid = act1.selectbox(
             "🔎 Chọn thực thể để sửa hồ sơ, xem quan hệ hoặc đưa vào bàn gộp",
             node_ids,
-            index=idx,
             format_func=lambda nid: f"{row_map[nid]['name']} [{row_map[nid]['kind']}] — Kết nối: {row_map[nid]['degree_display']}",
             key="cur_focus_node_select",
         )

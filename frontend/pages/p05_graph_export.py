@@ -17,13 +17,14 @@ from frontend.components.export_tabs import (
     format_benchmark_markdown,
     render_benchmark_tab,
     render_g_retriever_qa_tab,
+    render_gretriever_bundle_studio,
     render_training_dataset_tab,
 )
 from frontend.components.pipeline_banner import render_step_next_action
 from frontend.components.graph_source import select_graph_snapshot
 from frontend.components.graph_view import build_graph_dot
 from frontend.composition import get_ui_composition
-from frontend.state.session import navigate_to_step
+from frontend.state.session import bump_sync_nonce, navigate_to_step, sync_keyed_int, sync_keyed_value
 from shared.config_loader import CONFIG
 from shared.secrets_manager import get_api_key
 
@@ -91,12 +92,13 @@ def render_graph_export_page(project: dict) -> None:
     # =========================================================================
     # PHÂN KHU 2: TÁCH BẠCH KHÁM PHÁ & NGHIÊN CỨU
     # =========================================================================
-    tab_qa, tab_export, tab_bench, tab_train_studio = st.tabs(
+    tab_qa, tab_export, tab_bench, tab_train_studio, tab_gret_5files = st.tabs(
         [
             "🔍 1. Khám phá & Hỏi đáp (G-Retriever)",
             "📦 2. Bản đồ, Bảng Quan hệ & Xuất tệp",
             "🧪 3. Nghiên cứu: Đối sánh Thuật toán (Benchmark)",
-            "🧬 4. Nghiên cứu: Sinh Dữ liệu Huấn luyện (QA Studio)",
+            "🧬 4. Nghiên cứu: Sinh QA & PyG (Bản cũ)",
+            "🎯 5. Xuất Chuẩn G-Retriever (5 Tệp)",
         ]
     )
 
@@ -112,6 +114,18 @@ def render_graph_export_page(project: dict) -> None:
         else:
             st.info("Graph thô dùng để đánh giá; không tự coi observations là nhãn đúng để sinh dữ liệu huấn luyện.")
 
+    with tab_gret_5files:
+        if current_approved:
+            render_gretriever_bundle_studio(
+                graph_service,
+                project,
+                proj_id=proj_id,
+                fingerprint=snapshot.fingerprint,
+                approved_only=True,
+            )
+        else:
+            st.info("Chuyển nguồn đồ thị sang `approved` để tạo và xuất Bộ 5 Tệp Chuẩn G-Retriever từ dữ liệu đã kiểm duyệt.")
+
     with tab_export:
         nodes_by_id = {n["id"]: n for n in nodes}
         if edges:
@@ -126,6 +140,7 @@ def render_graph_export_page(project: dict) -> None:
                 if total_edges > 1:
                     saved_limit = int(st.session_state.get(limit_state_key, default_limit))
                     clamped_limit = max(1, min(saved_limit, total_edges))
+                    slider_nonce_key = f"_p06_slider_nonce_{proj_id}"
 
                     ctrl_c1, ctrl_c2 = st.columns([4, 1], vertical_alignment="bottom")
                     if ctrl_c2.button(
@@ -136,17 +151,31 @@ def render_graph_export_page(project: dict) -> None:
                     ):
                         clamped_limit = total_edges
                         st.session_state[limit_state_key] = total_edges
-                        st.session_state.pop(slider_key, None)
+                        bump_sync_nonce(slider_nonce_key)
+                        st.rerun()
 
+                    slider_nonce = int(st.session_state.get(slider_nonce_key) or 0)
+                    sync_keyed_int(
+                        slider_key,
+                        clamped_limit,
+                        (proj_id, total_edges, slider_nonce),
+                        min_value=1,
+                        max_value=total_edges,
+                    )
+                    # Trong bare mode (không có ScriptRunContext, vd: unit test gọi thẳng render page),
+                    # widget Streamlit bỏ qua session_state nên cần truyền value= fallback.
+                    from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+                    slider_kwargs = {"value": clamped_limit} if get_script_run_ctx(suppress_warning=True) is None else {}
                     display_limit = int(
                         ctrl_c1.slider(
                             "🎚️ Kéo để tăng/giảm số lượng cạnh hiển thị",
                             min_value=1,
                             max_value=total_edges,
-                            value=clamped_limit,
                             step=1,
                             key=slider_key,
                             help=f"Chỉ giới hạn hiển thị, không cắt dữ liệu xuất ({total_edges} cạnh).",
+                            **slider_kwargs,
                         )
                     )
                     st.session_state[limit_state_key] = display_limit
@@ -304,10 +333,13 @@ def render_graph_export_page(project: dict) -> None:
         with st.expander("🗄️ Tích hợp Cơ sở dữ liệu Đồ thị Neo4j (Tùy chọn nâng cao)", expanded=False):
             st.caption("Đẩy trực tiếp các thực thể và quan hệ đã duyệt vào cơ sở dữ liệu Neo4j qua giao thức Bolt.")
             n1, n2, n3, n4 = st.columns(4)
-            uri = n1.text_input("Neo4j URI", value=CONFIG["neo4j"]["uri"], key="p06_neo4j_uri")
-            user = n2.text_input("Username", value=CONFIG["neo4j"]["username"], key="p06_neo4j_user")
+            sync_keyed_value("p06_neo4j_uri", CONFIG["neo4j"]["uri"], "init")
+            sync_keyed_value("p06_neo4j_user", CONFIG["neo4j"]["username"], "init")
+            sync_keyed_value("p06_neo4j_db", CONFIG["neo4j"]["database"], "init")
+            uri = n1.text_input("Neo4j URI", key="p06_neo4j_uri")
+            user = n2.text_input("Username", key="p06_neo4j_user")
             password = n3.text_input("Password", type="password", key="p06_neo4j_pwd")
-            database = n4.text_input("Database", value=CONFIG["neo4j"]["database"], key="p06_neo4j_db")
+            database = n4.text_input("Database", key="p06_neo4j_db")
 
             b1, b2 = st.columns(2)
             if b1.button("🔌 Kiểm tra kết nối Neo4j", width="stretch", key="p06_btn_test_neo4j"):

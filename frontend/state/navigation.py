@@ -10,7 +10,7 @@ from backend.integrations.llm import LLMGateway
 from shared.config_loader import CONFIG
 from shared.constants import MODE_FREE_TRIPLES, STATUS_APPROVED, STATUS_CHECK, STATUS_PENDING
 from shared.secrets_manager import get_api_key
-from .core import PAGE_LABELS, get_active_step, navigate_to_step, normalize_page_label
+from .core import PAGE_LABELS, bump_sync_nonce, get_active_step, navigate_to_step, normalize_page_label
 from .curation_state import reset_curation_state_if_project_changed
 from .edc_state import reset_edc_state_if_project_changed
 
@@ -197,6 +197,7 @@ def ensure_session_state() -> dict:
         proj = facade.load_project(st.session_state["active_project_name"])
         st.session_state["project"] = proj
         st.session_state["_loaded_name"] = proj.get("name", st.session_state["active_project_name"])
+        bump_sync_nonce("_proj_sync_nonce", st.session_state)
         reset_edc_state_if_project_changed(proj, st.session_state)
         reset_curation_state_if_project_changed(proj, st.session_state)
     else:

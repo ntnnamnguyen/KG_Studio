@@ -5,6 +5,7 @@ from typing import Any
 
 import streamlit as st
 
+from frontend.state.session import sync_keyed_int, sync_keyed_value
 from shared.secrets_manager import get_api_key
 
 
@@ -151,14 +152,20 @@ def _render_retrieval_params_expander(proj_id: str) -> tuple[str, int, float, bo
             format_func=lambda k: method_options[k],
             key=f"_gret_method_{proj_id}",
         )
+        max_edges_key = f"_gret_max_edges_{proj_id}"
+        hub_alpha_key = f"_gret_hub_alpha_{proj_id}"
+        expand_leaf_key = f"_gret_expand_leaf_{proj_id}"
+        sync_keyed_int(max_edges_key, 15, (proj_id, "max_edges"), min_value=5, max_value=40)
+        sync_keyed_value(hub_alpha_key, 0.22, (proj_id, "hub_alpha"))
+        sync_keyed_value(expand_leaf_key, True, (proj_id, "expand_leaf"))
+
         max_edges = int(
             cfg_c2.slider(
                 "Số cạnh tối đa (Subgraph Budget)",
                 min_value=5,
                 max_value=40,
-                value=15,
                 step=1,
-                key=f"_gret_max_edges_{proj_id}",
+                key=max_edges_key,
             )
         )
         hub_alpha = float(
@@ -166,17 +173,15 @@ def _render_retrieval_params_expander(proj_id: str) -> tuple[str, int, float, bo
                 "Hệ số phạt đỉnh Hub (α)",
                 min_value=0.0,
                 max_value=0.60,
-                value=0.22,
                 step=0.02,
-                key=f"_gret_hub_alpha_{proj_id}",
+                key=hub_alpha_key,
                 help="Phạt chi phí đường đi qua các siêu đỉnh bậc cao (như 'Hà Nội', 'Việt Nam') để tránh lối tắt giả.",
             )
         )
         expand_leaf = bool(
             cfg_c4.checkbox(
                 "Mở rộng 1-Hop Thuộc tính",
-                value=True,
-                key=f"_gret_expand_leaf_{proj_id}",
+                key=expand_leaf_key,
                 help="Tự động đính kèm các cạnh thuộc tính/định danh xung quanh hạt giống sau khi giải cây Steiner.",
             )
         )

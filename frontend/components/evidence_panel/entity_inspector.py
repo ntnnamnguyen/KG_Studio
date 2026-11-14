@@ -9,9 +9,13 @@ from backend.domain.catalogs.service import catalog_rows, compute_project_revisi
 from backend.domain.curation.service import find_node
 from frontend.client import get_client
 from frontend.state.session import (
+    bump_sync_nonce,
     filter_edges_by_entity,
+    get_curation_section_state,
     navigate_to_edc_proposal_from_curation,
     set_focused_edge,
+    sync_keyed_choice,
+    sync_keyed_value,
 )
 from shared.schemas.curation import EntityEditRequestDTO
 from shared.text_utils import uid
@@ -22,6 +26,13 @@ def _render_entity_profile_form(project: dict, client: Any, node: dict) -> None:
     approved_types = [str(t["name"]) for t in catalog_rows(project, "entity_types")]
     cur_kind = str(node.get("kind") or "")
     type_options = approved_types if cur_kind in approved_types else [cur_kind, *approved_types]
+    proj_id = str(project.get("project_id") or project.get("name") or "default")
+    n_tag = (
+        proj_id,
+        str(node["id"]),
+        compute_project_revision(project),
+        int(st.session_state.get("_inspector_action_nonce") or 0),
+    )
 
     with st.container(border=True):
         st.markdown("##### ✏️ Chỉnh sửa hồ sơ thực thể (Không cần gộp)")
@@ -29,25 +40,27 @@ def _render_entity_profile_form(project: dict, client: Any, node: dict) -> None:
             "Quy tắc toàn vẹn (mục 8.2): Đổi tên hiển thị, bí danh hoặc mô tả sẽ giữ nguyên ID thực thể và trạng thái các cạnh. "
             "Nếu đổi **Loại thực thể**, các cạnh nối với thực thể này (trừ cạnh đã Loại bỏ) sẽ chuyển về **Cần kiểm tra**."
         )
-        new_name = st.text_input("Tên chuẩn hiển thị", value=str(node.get("name", "")), key=f"ent_edit_name_{node['id']}")
+        sync_keyed_value(f"ent_edit_name_{node['id']}", str(node.get("name", "")), n_tag)
+        new_name = st.text_input("Tên chuẩn hiển thị", key=f"ent_edit_name_{node['id']}")
+        sync_keyed_choice(f"ent_edit_kind_{node['id']}", type_options, cur_kind, n_tag)
         new_kind = st.selectbox(
             "Loại thực thể (chỉ cho phép chọn loại đã có trong danh mục đã duyệt)",
             type_options,
-            index=type_options.index(cur_kind) if cur_kind in type_options else 0,
             key=f"ent_edit_kind_{node['id']}",
         )
+        sync_keyed_value(f"ent_edit_aliases_{node['id']}", "; ".join(node.get("aliases", [])), n_tag)
         new_aliases_str = st.text_input(
             "Bí danh (phân tách bằng dấu chấm phẩy `;`)",
-            value="; ".join(node.get("aliases", [])),
             key=f"ent_edit_aliases_{node['id']}",
         )
+        sync_keyed_value(f"ent_edit_desc_{node['id']}", str(node.get("description") or ""), n_tag)
         new_desc = st.text_area(
             "Mô tả tổng hợp",
-            value=str(node.get("description") or ""),
             height=90,
             key=f"ent_edit_desc_{node['id']}",
         )
-        edit_note = st.text_input("Ghi chú cập nhật hồ sơ", value="", key=f"ent_edit_note_{node['id']}")
+        sync_keyed_value(f"ent_edit_note_{node['id']}", "", n_tag)
+        edit_note = st.text_input("Ghi chú cập nhật hồ sơ", key=f"ent_edit_note_{node['id']}")
 
         if st.button("💾 Lưu hồ sơ thực thể", type="primary", key=f"btn_save_entity_{node['id']}"):
             try:
@@ -63,6 +76,9 @@ def _render_entity_profile_form(project: dict, client: Any, node: dict) -> None:
                     request_id=uid(),
                 )
                 res = client.edit_entity_profile(project, req)
+                e_state = get_curation_section_state(project, "entities")
+                e_state["sel_editor_nonce"] = int(e_state.get("sel_editor_nonce") or 0) + 1
+                bump_sync_nonce("_inspector_action_nonce")
                 inv_count = len(res.affected_edge_ids)
                 msg = f"Đã cập nhật hồ sơ thực thể `{new_name}`."
                 if inv_count > 0:

@@ -4,6 +4,8 @@ from __future__ import annotations
 from zipfile import BadZipFile
 import streamlit as st
 
+from frontend.state.session import sync_keyed_choice
+
 from shared.constants import MODE_FREE_TRIPLES
 from shared.schemas.graph_input import GRAPH_FORMAT, GraphSnapshotDTO
 
@@ -12,9 +14,25 @@ def select_graph_snapshot(project: dict, service) -> tuple[GraphSnapshotDTO, str
     pid = str(project.get("project_id") or project.get("name") or "default")
     previous_external = st.session_state.get(f"_p06_external_graph_{pid}")
     options = {"approved": "Đồ thị đã duyệt", "baseline": "Baseline B — KG thô", "external": "Graph từ file"}
-    source = st.radio("Nguồn đồ thị", list(options), format_func=options.get, horizontal=True,
-                      index=2 if previous_external else (1 if project.get("extraction_mode") == MODE_FREE_TRIPLES else 0),
-                      key=f"p05_graph_source_{pid}")
+    default_source = (
+        "external"
+        if previous_external
+        else ("baseline" if project.get("extraction_mode") == MODE_FREE_TRIPLES else "approved")
+    )
+    source_key = f"p05_graph_source_{pid}"
+    sync_keyed_choice(
+        source_key,
+        list(options),
+        default_source,
+        (pid, bool(previous_external), project.get("extraction_mode")),
+    )
+    source = st.radio(
+        "Nguồn đồ thị",
+        list(options),
+        format_func=options.get,
+        horizontal=True,
+        key=source_key,
+    )
     try:
         if source == "approved":
             return service.graph_snapshot(project, source="approved"), source

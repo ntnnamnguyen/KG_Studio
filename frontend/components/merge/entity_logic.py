@@ -77,6 +77,12 @@ def execute_entity_merge_apply(
     result = svc_client.apply_entity_merge(project, req, preview=active_prev)
     m_state["member_ids"] = []
     m_state["keep_id"] = ""
+    m_state["canonical_name"] = ""
+    m_state["canonical_kind"] = ""
+    m_state["kind_resolution_note"] = ""
+    m_state["canonical_description"] = ""
+    m_state["note"] = ""
+    m_state["sync_nonce"] = int(m_state.get("sync_nonce") or 0) + 1
     m_state["active_preview"] = None
     m_state["preview_request_id"] = ""
     m_state["last_result"] = result.to_dict()

@@ -12,7 +12,7 @@ from shared.schemas.curation import (
     EntityMergePreviewDTO,
 )
 from shared.text_utils import uid
-from .core import _apply_selection_state, _store
+from .core import _apply_selection_state, _store, bump_sync_nonce
 
 
 def _default_curation_section_state(project_id: str, section: str) -> dict[str, Any]:
@@ -29,6 +29,9 @@ def _default_curation_section_state(project_id: str, section: str) -> dict[str, 
             "last_result": None,
             "filter_prune_notice": "",
             "last_filter_sig": "",
+            "filter_nonce": 0,
+            "focus_nonce": 0,
+            "page_nonce": 0,
             "filters": {
                 "status": "all",
                 "doc_id": "all",
@@ -54,6 +57,9 @@ def _default_curation_section_state(project_id: str, section: str) -> dict[str, 
             "last_result": None,
             "filter_prune_notice": "",
             "last_filter_sig": "",
+            "filter_nonce": 0,
+            "focus_nonce": 0,
+            "page_nonce": 0,
             "filters": {
                 "kind": "all",
                 "doc_id": "all",
@@ -79,6 +85,7 @@ def _default_curation_section_state(project_id: str, section: str) -> dict[str, 
             "alias_overrides": None,
             "note": "",
             "fuzzy_threshold": 0.82,
+            "sync_nonce": 0,
             "active_preview": None,
             "preview_request_id": "",
             "last_result": None,
@@ -86,12 +93,30 @@ def _default_curation_section_state(project_id: str, section: str) -> dict[str, 
     raise ValueError(f"Phân khu Trang 5 không hợp lệ: {section}")
 
 
-def reset_curation_state_if_project_changed(project: dict, state_store: dict[str, Any] | None = None) -> bool:
-    """Khi đổi dự án: đặt lại toàn bộ lựa chọn, bộ lọc, bản nháp và xem trước của Trang 5."""
+def _sync_hub_navigation_for_section(store: dict[str, Any], section: str) -> None:
+    """Đồng bộ tab Hub Kiểm duyệt và submode Thực thể/Gộp khi chuyển phân khu bằng code."""
+    store["_curation_active_section"] = section
+    store["curation_hub_active_tab"] = "edges" if section == "edges" else "entities"
+    store["_curation_entity_submode"] = (
+        "🔀 Công cụ Gộp Thực thể Trùng lặp (Entity Merge)"
+        if section == "merge"
+        else "🏛️ Bảng Hồ sơ Thực thể & Trọng số"
+    )
+    bump_sync_nonce("_curation_hub_tab_nonce", store)
+    bump_sync_nonce("_curation_entity_submode_nonce", store)
+
+
+def reset_curation_state_if_project_changed(
+    project: dict,
+    state_store: dict[str, Any] | None = None,
+    *,
+    force: bool = False,
+) -> bool:
+    """Khi đổi dự án (hoặc force sau khôi phục snapshot): đặt lại lựa chọn, bộ lọc, bản nháp và điều hướng con."""
     store = _store(state_store)
     proj_id = str(project.get("project_id") or project.get("name") or "default")
     prev_id = store.get("_curation_active_project_id")
-    changed = prev_id != proj_id
+    changed = force or (prev_id != proj_id)
     if changed or not isinstance(store.get("_curation_sections"), dict):
         store["_curation_active_project_id"] = proj_id
         store["_curation_active_section"] = "edges"
@@ -101,6 +126,12 @@ def reset_curation_state_if_project_changed(project: dict, state_store: dict[str
             "entities": _default_curation_section_state(proj_id, "entities"),
             "merge": _default_curation_section_state(proj_id, "merge"),
         }
+        if force or (prev_id is not None and prev_id != proj_id):
+            store.pop("curation_hub_active_tab", None)
+            store.pop("_curation_entity_submode", None)
+        bump_sync_nonce("_curation_hub_tab_nonce", store)
+        bump_sync_nonce("_curation_entity_submode_nonce", store)
+        bump_sync_nonce("_curation_snapshot_nonce", store)
     return changed
 
 
@@ -134,12 +165,12 @@ def set_active_curation_section(
     section: str,
     state_store: dict[str, Any] | None = None,
 ) -> None:
-    """Chuyển phân khu đang hoạt động trong Trang Rà soát."""
+    """Chuyển phân khu đang hoạt động trong Trang Rà soát và đồng bộ điều hướng Hub."""
     if section not in ("edges", "entities", "merge"):
         raise ValueError(f"Phân khu Trang 5 không hợp lệ: {section}")
     store = _store(state_store)
     reset_curation_state_if_project_changed(project, store)
-    store["_curation_active_section"] = section
+    _sync_hub_navigation_for_section(store, section)
 
 
 def invalidate_curation_preview(
@@ -163,6 +194,7 @@ def set_focused_edge(
     """Mở xem chi tiết một cạnh mà KHÔNG tự đánh dấu chọn hoặc duyệt cạnh đó."""
     s_state = get_curation_section_state(project, "edges", state_store)
     s_state["focused_edge_id"] = str(edge_id or "").strip()
+    s_state["focus_nonce"] = int(s_state.get("focus_nonce") or 0) + 1
 
 
 def set_focused_entity(
@@ -173,6 +205,7 @@ def set_focused_entity(
     """Mở hồ sơ một thực thể để xem/sửa mà KHÔNG tự gộp hay chọn hàng loạt."""
     s_state = get_curation_section_state(project, "entities", state_store)
     s_state["focused_node_id"] = str(node_id or "").strip()
+    s_state["focus_nonce"] = int(s_state.get("focus_nonce") or 0) + 1
 
 
 def toggle_edge_selection(
@@ -379,6 +412,7 @@ def reconcile_edge_state_after_apply(
     if current_filtered_ids is not None:
         remaining = [eid for eid in remaining if eid in current_filtered_ids]
     s_state["selected_ids"] = remaining
+    s_state["sel_editor_nonce"] = int(s_state.get("sel_editor_nonce") or 0) + 1
     s_state["active_preview"] = None
     s_state["preview_decisions"] = []
     s_state["preview_request_id"] = ""
@@ -397,6 +431,8 @@ def filter_edges_by_entity(
     e_state = get_curation_section_state(project, "edges", state_store)
     e_state["filters"]["entity_id"] = str(node_id or "all")
     e_state["filters"]["page"] = 1
+    e_state["filter_nonce"] = int(e_state.get("filter_nonce") or 0) + 1
+    e_state["page_nonce"] = int(e_state.get("page_nonce") or 0) + 1
 
 
 def stage_entities_for_merge(
@@ -434,6 +470,7 @@ def stage_entities_for_merge(
         m_state["canonical_description"] = "\n".join(descs)
 
     invalidate_curation_preview(project, "merge", state_store)
+    m_state["sync_nonce"] = int(m_state.get("sync_nonce") or 0) + 1
     if switch_to_merge:
         set_active_curation_section(project, "merge", state_store)
     return m_state

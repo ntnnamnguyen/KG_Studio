@@ -10,6 +10,12 @@ from __future__ import annotations
 import streamlit as st
 
 from backend.facade import get_facade
+from frontend.state.session import (
+    bump_sync_nonce,
+    sync_keyed_choice,
+    sync_keyed_int,
+    sync_keyed_value,
+)
 from shared.catalog_utils import edc_prompt
 from shared.constants import (
     DEFAULT_EDC_PLUS_R_SETTINGS,
@@ -60,18 +66,24 @@ ENGINE_SPECS = {
 }
 
 
-def _render_mode_selector_and_apply(facade, project: dict, current_applied_mode: str) -> str:
+def _render_mode_selector_and_apply(facade, project: dict, proj_id: str, current_applied_mode: str) -> str:
     """Hiển thị radio chọn phương pháp trích xuất, thông số kỹ thuật và nút áp dụng."""
     st.markdown("#### 📐 2. Chọn Phương pháp Trích xuất")
     st.caption(
         f"Phương pháp đang áp dụng thực tế cho dự án: **`{MODE_LABELS.get(current_applied_mode, current_applied_mode)}`**."
     )
 
+    prompt_nonce = int(st.session_state.get("_prompt_editor_nonce") or 0)
+    sync_keyed_choice(
+        "p02_radio_extraction_mode",
+        EXTRACTION_MODES,
+        current_applied_mode,
+        (proj_id, current_applied_mode, prompt_nonce),
+    )
     col_mode, col_apply = st.columns([3.5, 1.5])
     selected_mode = col_mode.radio(
         "Chọn phương pháp để xem mô tả, cấu hình & soạn thảo:",
         EXTRACTION_MODES,
-        index=EXTRACTION_MODES.index(current_applied_mode),
         format_func=lambda k: MODE_LABELS[k],
         horizontal=True,
         key="p02_radio_extraction_mode",
@@ -119,21 +131,29 @@ def _render_prompt_draft_editor(
     draft_key: str,
     current_draft: str,
     has_unsaved_changes: bool,
-) -> str:
+) -> tuple[str, bool]:
     """Hiển thị trình soạn thảo bản nháp prompt và nút lưu phiên bản / hủy nháp."""
+    draft_nonce_key = f"_prompt_draft_nonce_{proj_id}_{selected_mode}"
+    prompt_nonce = int(st.session_state.get("_prompt_editor_nonce") or 0)
+    d_tag = (proj_id, selected_mode, prompt_nonce, int(st.session_state.get(draft_nonce_key) or 0))
+    txt_key = f"txt_prompt_editor_{proj_id}_{selected_mode}"
+    sync_keyed_value(txt_key, current_draft, d_tag)
+
+    effective_draft = str(st.session_state.get(txt_key, current_draft))
+    unsaved_now = effective_draft.strip() != active_content.strip()
+
     with st.container(border=True):
         hdr1, hdr2 = st.columns([3, 2])
         hdr1.markdown(f"##### ✍️ Hướng dẫn Trích xuất (Prompt cho `{selected_mode}`)")
-        if has_unsaved_changes:
+        if unsaved_now:
             hdr2.warning(f"⚠️ Có bản nháp chưa lưu (chưa áp dụng) | Bản đang pin: **v{ver_seq}** (`{active_hash}`)")
         else:
             hdr2.success(f"🔒 Đang pin: **v{ver_seq}** (`{active_hash}`) · ID: `{ver_id}`")
 
         new_text = st.text_area(
             "Nội dung Hướng dẫn Trích xuất (Base Instructions)",
-            value=current_draft,
             height=160,
-            key=f"txt_prompt_editor_{proj_id}_{selected_mode}",
+            key=txt_key,
             help=(
                 "Chỉ chứa hướng dẫn trích xuất mở. Hệ thống chỉ bổ sung cấu trúc JSON bộ ba; "
                 "không ghép danh mục miền, định nghĩa hoặc Top-K retrieval."
@@ -142,18 +162,21 @@ def _render_prompt_draft_editor(
             ),
         )
         st.session_state[draft_key] = new_text
+        unsaved_now = new_text.strip() != active_content.strip()
 
+        note_key = f"txt_note_{proj_id}_{selected_mode}"
+        sync_keyed_value(note_key, "", d_tag)
         col_note, col_btn_save, col_btn_cancel = st.columns([2.5, 1.25, 1.25])
         note_val = col_note.text_input(
             "Ghi chú thay đổi",
             placeholder="Lý do sửa đổi (ví dụ: Bổ sung nguyên tắc niên đại...)",
-            key=f"txt_note_{proj_id}_{selected_mode}",
+            key=note_key,
             label_visibility="collapsed",
         )
 
         if col_btn_save.button(
             "💾 Lưu phiên bản mới",
-            type="primary" if has_unsaved_changes else "secondary",
+            type="primary" if unsaved_now else "secondary",
             disabled=not new_text.strip(),
             width="stretch",
             key=f"btn_save_ver_{proj_id}_{selected_mode}",
@@ -168,6 +191,8 @@ def _render_prompt_draft_editor(
             )
             facade.save_project(project)
             st.session_state[draft_key] = new_v["content"]
+            bump_sync_nonce(draft_nonce_key)
+            bump_sync_nonce("_prompt_hist_nonce")
             if is_created:
                 st.success(f"✅ Đã tạo và áp dụng phiên bản mới: **v{new_v['version']}** (`{new_v['id']}`)!")
             else:
@@ -176,19 +201,21 @@ def _render_prompt_draft_editor(
 
         if col_btn_cancel.button(
             "🔄 Hủy sửa nháp",
-            disabled=not has_unsaved_changes,
+            disabled=not unsaved_now,
             width="stretch",
             key=f"btn_discard_draft_{proj_id}_{selected_mode}",
         ):
             st.session_state[draft_key] = active_content
+            bump_sync_nonce(draft_nonce_key)
             st.rerun()
 
-    return new_text
+    return new_text, unsaved_now
 
 
 def _render_prompt_request_preview(
     facade,
     project: dict,
+    proj_id: str,
     selected_mode: str,
     new_text: str,
     ver_seq: int,
@@ -211,15 +238,39 @@ def _render_prompt_request_preview(
 
     prev_c1, prev_c2, prev_c3 = st.columns([3, 1, 1])
     doc_names = {d["id"]: d["name"] for d in docs}
+    doc_keys = list(doc_names.keys())
+    sync_keyed_choice(f"prev_sel_doc_{proj_id}_{selected_mode}", doc_keys, doc_keys[0], (proj_id, selected_mode))
     selected_doc_id = prev_c1.selectbox(
         "Chọn tài liệu đối chứng",
-        list(doc_names.keys()),
+        doc_keys,
         format_func=lambda x: doc_names.get(x, x),
-        key=f"prev_sel_doc_{selected_mode}",
+        key=f"prev_sel_doc_{proj_id}_{selected_mode}",
     )
-    selected_chunk_num = prev_c2.number_input("Số thứ tự đoạn", min_value=1, max_value=100, value=1, key=f"prev_num_chunk_{selected_mode}")
-    use_draft = prev_c3.checkbox("Dùng bản nháp", value=has_unsaved_changes, key=f"prev_chk_draft_{selected_mode}")
+    sync_keyed_int(
+        f"prev_num_chunk_{proj_id}_{selected_mode}",
+        1,
+        (proj_id, selected_mode),
+        min_value=1,
+        max_value=100,
+    )
+    selected_chunk_num = prev_c2.number_input(
+        "Số thứ tự đoạn",
+        min_value=1,
+        max_value=100,
+        key=f"prev_num_chunk_{proj_id}_{selected_mode}",
+    )
+    sync_keyed_value(
+        f"prev_chk_draft_{proj_id}_{selected_mode}",
+        bool(has_unsaved_changes),
+        (proj_id, selected_mode, bool(has_unsaved_changes)),
+    )
+    use_draft = prev_c3.checkbox("Dùng bản nháp", key=f"prev_chk_draft_{proj_id}_{selected_mode}")
 
+    preview_store_key = f"last_preview_{selected_mode}"
+    preview_owner_key = f"_last_preview_proj_{selected_mode}"
+    if st.session_state.get(preview_owner_key) != proj_id:
+        st.session_state.pop(preview_store_key, None)
+        st.session_state[preview_owner_key] = proj_id
     if st.button("🔨 Dựng bản xem trước Request", width="stretch", key=f"btn_build_preview_{selected_mode}"):
         with st.spinner("Đang chuẩn bị payload theo cấu hình..."):
             in_tokens = int(st.session_state.get("llm_max_input_tokens", 16000))
@@ -237,9 +288,9 @@ def _render_prompt_request_preview(
                 max_tokens=out_tokens,
                 max_input_tokens=in_tokens,
             )
-            st.session_state[f"last_preview_{selected_mode}"] = prepared
+            st.session_state[preview_store_key] = prepared
 
-    prepared_req = st.session_state.get(f"last_preview_{selected_mode}")
+    prepared_req = st.session_state.get(preview_store_key)
     if not prepared_req:
         return
 
@@ -287,6 +338,7 @@ def _render_prompt_request_preview(
 def _render_prompt_version_history(
     facade,
     project: dict,
+    proj_id: str,
     selected_mode: str,
     active_content: str,
     ver_seq: int,
@@ -307,11 +359,14 @@ def _render_prompt_version_history(
         + (" [Đang dùng]" if v.get("id") == ver_id else "")
         for v in versions
     ]
+    hist_nonce = int(st.session_state.get("_prompt_hist_nonce") or 0)
+    hist_sel_key = f"sb_hist_ver_{proj_id}_{selected_mode}"
+    sync_keyed_choice(hist_sel_key, list(range(len(versions))), 0, (proj_id, selected_mode, len(versions), hist_nonce))
     sel_ver_idx = st.selectbox(
         "Chọn phiên bản lịch sử để kiểm tra hoặc khôi phục",
         range(len(versions)),
         format_func=lambda i: ver_labels[i],
-        key=f"sb_hist_ver_{selected_mode}",
+        key=hist_sel_key,
     )
     chosen_ver = versions[sel_ver_idx]
 
@@ -320,20 +375,21 @@ def _render_prompt_version_history(
     hist_c1.caption(f"SHA-256: `{chosen_ver.get('content_hash')}`")
 
     is_currently_active = (chosen_ver.get("id") == ver_id)
+    diff_flag_key = f"show_diff_{proj_id}_{selected_mode}"
 
     if hist_c2.button(
         "🔀 So sánh Diff với bản đang dùng",
         width="stretch",
-        key=f"btn_diff_ver_{selected_mode}",
+        key=f"btn_diff_ver_{proj_id}_{selected_mode}",
     ):
-        st.session_state[f"show_diff_{selected_mode}"] = True
+        st.session_state[diff_flag_key] = not bool(st.session_state.get(diff_flag_key, False))
 
     if hist_c3.button(
         "↩️ Khôi phục thành Bản Mới",
         width="stretch",
         type="primary" if not is_currently_active else "secondary",
         disabled=is_currently_active,
-        key=f"btn_restore_ver_{selected_mode}",
+        key=f"btn_restore_ver_{proj_id}_{selected_mode}",
     ):
         facade.create_snapshot(project)
         restored_v, _is_res = facade.restore_prompt_version(
@@ -343,10 +399,12 @@ def _render_prompt_version_history(
         )
         facade.save_project(project)
         st.session_state[draft_key] = restored_v["content"]
+        bump_sync_nonce(f"_prompt_draft_nonce_{proj_id}_{selected_mode}")
+        bump_sync_nonce("_prompt_hist_nonce")
         st.success(f"🎉 Đã khôi phục thành công! Tạo phiên bản mới: **v{restored_v['version']}**.")
         st.rerun()
 
-    if st.session_state.get(f"show_diff_{selected_mode}"):
+    if st.session_state.get(diff_flag_key):
         diff_text = facade.diff_prompt_versions(
             active_content,
             chosen_ver.get("content", ""),
@@ -359,16 +417,17 @@ def _render_prompt_version_history(
         else:
             st.code(diff_text, language="diff")
 
+    hist_txt_key = f"txt_hist_content_{proj_id}_{selected_mode}_{chosen_ver.get('id', sel_ver_idx)}"
+    sync_keyed_value(hist_txt_key, chosen_ver.get("content", ""), (proj_id, selected_mode, chosen_ver.get("id", "")))
     st.text_area(
         "Nội dung bản lịch sử đã chọn (Chỉ xem)",
-        value=chosen_ver.get("content", ""),
         height=140,
         disabled=True,
-        key=f"txt_hist_content_{selected_mode}",
+        key=hist_txt_key,
     )
 
 
-def _render_edc_plus_r_settings(facade, project: dict) -> None:
+def _render_edc_plus_r_settings(facade, project: dict, proj_id: str) -> None:
     """Hiển thị biểu mẫu cấu hình tham số Schema Retriever (+R) & Target Alignment."""
     st.divider()
     cfg = EDCPlusRSettingsDTO.from_dict(project.get("edc_plus_r_settings"))
@@ -379,28 +438,49 @@ def _render_edc_plus_r_settings(facade, project: dict) -> None:
         model_ids.append(cfg.embedder_model)
         model_names[cfg.embedder_model] = cfg.embedder_model
 
+    prompt_nonce = int(st.session_state.get("_prompt_editor_nonce") or 0)
+    cfg_tag = (proj_id, prompt_nonce)
+    sync_keyed_choice(f"edcr_cfg_embedder_{proj_id}", model_ids, cfg.embedder_model, cfg_tag)
+    sync_keyed_choice(f"edcr_cfg_loops_{proj_id}", [1, 2, 3], max(1, min(3, int(cfg.refinement_loops))), cfg_tag)
+    sync_keyed_int(
+        f"edcr_cfg_top_k_rel_{proj_id}",
+        int(cfg.top_k_relations),
+        cfg_tag,
+        min_value=3,
+        max_value=80,
+    )
+    sync_keyed_int(
+        f"edcr_cfg_top_k_type_{proj_id}",
+        int(cfg.top_k_entity_types),
+        cfg_tag,
+        min_value=3,
+        max_value=50,
+    )
+    sync_keyed_value(f"edcr_cfg_auto_align_{proj_id}", float(cfg.auto_align_threshold), cfg_tag)
+    sync_keyed_value(f"edcr_cfg_cand_thres_{proj_id}", float(cfg.candidate_threshold), cfg_tag)
+    sync_keyed_value(f"edcr_cfg_verify_llm_{proj_id}", bool(cfg.enable_llm_verifier), cfg_tag)
+
     st.markdown("##### ⚙️ Cấu hình Schema Retriever (`+R`) & Target Alignment")
     c1, c2 = st.columns(2)
     chosen_model = c1.selectbox(
         "Mô hình Embedding (Model Registry)",
         model_ids,
-        index=model_ids.index(cfg.embedder_model),
         format_func=lambda mid: model_names.get(mid, mid),
-        key="edcr_cfg_embedder",
+        key=f"edcr_cfg_embedder_{proj_id}",
     )
-    loops = c2.selectbox("Số vòng lặp Tinh chỉnh", [1, 2, 3], index=max(0, min(2, int(cfg.refinement_loops) - 1)), key="edcr_cfg_loops")
+    loops = c2.selectbox("Số vòng lặp Tinh chỉnh", [1, 2, 3], key=f"edcr_cfg_loops_{proj_id}")
 
     c3, c4 = st.columns(2)
-    top_k_rel = c3.slider("Top-K Quan hệ (+R)", 3, 80, min(80, max(3, int(cfg.top_k_relations))), key="edcr_cfg_top_k_rel")
-    top_k_type = c4.slider("Top-K Loại thực thể (+R)", 3, 50, min(50, max(3, int(cfg.top_k_entity_types))), key="edcr_cfg_top_k_type")
+    top_k_rel = c3.slider("Top-K Quan hệ (+R)", 3, 80, key=f"edcr_cfg_top_k_rel_{proj_id}")
+    top_k_type = c4.slider("Top-K Loại thực thể (+R)", 3, 50, key=f"edcr_cfg_top_k_type_{proj_id}")
 
     c5, c6 = st.columns(2)
-    auto_thres = c5.slider("Ngưỡng Tự động Chuẩn hóa", 0.50, 0.99, float(cfg.auto_align_threshold), 0.01, key="edcr_cfg_auto_align")
-    cand_thres = c6.slider("Ngưỡng Gợi ý Ứng viên", 0.20, 0.90, float(cfg.candidate_threshold), 0.05, key="edcr_cfg_cand_thres")
+    auto_thres = c5.slider("Ngưỡng Tự động Chuẩn hóa", 0.50, 0.99, step=0.01, key=f"edcr_cfg_auto_align_{proj_id}")
+    cand_thres = c6.slider("Ngưỡng Gợi ý Ứng viên", 0.20, 0.90, step=0.05, key=f"edcr_cfg_cand_thres_{proj_id}")
 
-    verify_llm = st.checkbox("Bật LLM xác thực lại ứng viên Target Alignment", value=bool(cfg.enable_llm_verifier), key="edcr_cfg_verify_llm")
+    verify_llm = st.checkbox("Bật LLM xác thực lại ứng viên Target Alignment", key=f"edcr_cfg_verify_llm_{proj_id}")
 
-    if st.button("💾 Lưu Cấu hình Tham số EDC+R", type="primary", key="btn_save_edcr_params"):
+    if st.button("💾 Lưu Cấu hình Tham số EDC+R", type="primary", key=f"btn_save_edcr_params_{proj_id}"):
         facade.create_snapshot(project)
         facade.update_edc_plus_r_settings(
             project,
@@ -427,7 +507,7 @@ def render_prompt_management_panel(project: dict) -> None:
     if current_applied_mode not in EXTRACTION_MODES:
         current_applied_mode = MODE_FIXED
 
-    selected_mode = _render_mode_selector_and_apply(facade, project, current_applied_mode)
+    selected_mode = _render_mode_selector_and_apply(facade, project, proj_id, current_applied_mode)
 
     active_ver = facade.get_active_prompt_version(project, selected_mode)
     active_content = active_ver.get("content", "") if active_ver else facade.get_active_prompt_content(project, selected_mode)
@@ -442,13 +522,9 @@ def render_prompt_management_panel(project: dict) -> None:
     current_draft = st.session_state[draft_key]
     has_unsaved_changes = (current_draft.strip() != active_content.strip())
 
-    adv_label = (
-        f"🔬 Cài đặt Nâng cao & Nghiên cứu cho `{selected_mode}` (Prompt v{ver_seq}"
-        + (" · Có bản nháp chưa lưu ⚠️" if has_unsaved_changes else "")
-        + ")"
-    )
+    adv_label = f"🔬 Cài đặt Nâng cao & Nghiên cứu cho `{selected_mode}`"
     with st.expander(adv_label, expanded=False):
-        new_text = _render_prompt_draft_editor(
+        new_text, unsaved_now = _render_prompt_draft_editor(
             facade,
             project,
             proj_id,
@@ -461,8 +537,8 @@ def render_prompt_management_panel(project: dict) -> None:
             current_draft,
             has_unsaved_changes,
         )
-        _render_prompt_request_preview(facade, project, selected_mode, new_text, ver_seq, has_unsaved_changes)
-        _render_prompt_version_history(facade, project, selected_mode, active_content, ver_seq, ver_id, draft_key)
+        _render_prompt_request_preview(facade, project, proj_id, selected_mode, new_text, ver_seq, unsaved_now)
+        _render_prompt_version_history(facade, project, proj_id, selected_mode, active_content, ver_seq, ver_id, draft_key)
         if selected_mode == MODE_EDC_PLUS_R:
-            _render_edc_plus_r_settings(facade, project)
+            _render_edc_plus_r_settings(facade, project, proj_id)
 

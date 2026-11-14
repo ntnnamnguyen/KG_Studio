@@ -314,6 +314,73 @@ class TestUIUXImprovements(unittest.TestCase):
                 at.run()
                 self.assertFalse(at.exception, f"Step {step} raised exception: {at.exception}")
 
+    def test_entity_merge_workbench_syncs_staged_members_without_session_state_warning(self) -> None:
+        import logging
+
+        script = """
+import streamlit as st
+from frontend.components.merge.entity_tab import _render_three_step_entity_workbench
+from frontend.state.session import get_curation_section_state, stage_entities_for_merge
+
+proj = st.session_state["_test_project"]
+nodes = list(proj.get("nodes") or [])
+nodes_by_id = {str(n["id"]): n for n in nodes}
+degrees = {str(n["id"]): {"total": 1} for n in nodes}
+m_state = get_curation_section_state(proj, "merge")
+
+if st.session_state.get("_trigger_stage"):
+    st.session_state["_trigger_stage"] = False
+    stage_entities_for_merge(proj, [str(nodes[0]["id"]), str(nodes[1]["id"])])
+
+_render_three_step_entity_workbench(proj, m_state, nodes, nodes_by_id, degrees)
+st.session_state["_captured_members"] = list(m_state.get("member_ids") or [])
+st.session_state["_captured_canon"] = str(m_state.get("canonical_name") or "")
+"""
+
+        class _LogRecorder(logging.Handler):
+            def __init__(self) -> None:
+                super().__init__(level=logging.WARNING)
+                self.messages: list[str] = []
+
+            def emit(self, record: logging.LogRecord) -> None:
+                self.messages.append(self.format(record))
+
+        recorder = _LogRecorder()
+        st_logger = logging.getLogger("streamlit")
+        st_logger.addHandler(recorder)
+        try:
+            proj = _sample_project(mode=MODE_EDC_PLUS_R)
+            expected_ids = [str(proj["nodes"][0]["id"]), str(proj["nodes"][1]["id"])]
+            at = AppTest.from_string(script)
+            at.session_state["_test_project"] = proj
+            at.run()
+            self.assertFalse(at.exception)
+
+            at.session_state["_trigger_stage"] = True
+            at.run()
+            self.assertFalse(at.exception)
+            self.assertEqual(list(at.session_state["merge_multiselect_members"]), expected_ids)
+            self.assertEqual(list(at.session_state["_captured_members"]), expected_ids)
+            self.assertTrue(bool(at.session_state["_captured_canon"]))
+            self.assertEqual(
+                at.session_state["merge_canon_name_input"],
+                at.session_state["_captured_canon"],
+            )
+
+            at.run()
+            self.assertFalse(at.exception)
+            self.assertEqual(list(at.session_state["merge_multiselect_members"]), expected_ids)
+            self.assertEqual(list(at.session_state["_captured_members"]), expected_ids)
+        finally:
+            st_logger.removeHandler(recorder)
+
+        offending = [
+            msg
+            for msg in recorder.messages
+            if "created with a default value" in msg or "Session State API" in msg
+        ]
+        self.assertEqual(offending, [])
+
 
 if __name__ == "__main__":
     unittest.main()

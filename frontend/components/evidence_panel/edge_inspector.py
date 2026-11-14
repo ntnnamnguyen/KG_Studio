@@ -16,9 +16,12 @@ from backend.domain.curation.service import (
 )
 from frontend.client import get_client
 from frontend.state.session import (
+    bump_sync_nonce,
     get_curation_section_state,
     navigate_to_edc_proposal_from_curation,
     set_focused_edge,
+    sync_keyed_choice,
+    sync_keyed_value,
 )
 from shared.constants import STATUS_APPROVED, STATUS_CHECK, STATUS_PENDING, STATUS_REJECTED
 from shared.schemas.curation import (
@@ -170,7 +173,9 @@ def _render_source_context_card(
                                 request_id=uid(),
                             )
                             client.edit_edge_fact(project, edit_req)
-                            st.session_state.pop(f"edit_edge_ev_{edge['id']}", None)
+                            s_state = get_curation_section_state(project, "edges")
+                            s_state["sel_editor_nonce"] = int(s_state.get("sel_editor_nonce") or 0) + 1
+                            bump_sync_nonce("_inspector_action_nonce")
                             st.success("Đã cập nhật câu bằng chứng nguyên văn và đối chiếu lại.")
                             st.rerun()
                         except Exception as exc:
@@ -198,8 +203,19 @@ def _render_source_context_card(
             if sc2.button("📌 Khóa vị trí bằng chứng này", width='stretch', key=f"btn_lock_span_{edge['id']}"):
                 cand = candidates[chosen_c_idx]
                 client.select_evidence_span(project, edge["id"], cand["start_char"], cand["end_char"])
+                bump_sync_nonce("_inspector_action_nonce")
                 st.success(f"Đã khóa vị trí bằng chứng [{cand['start_char']}:{cand['end_char']}].")
                 st.rerun()
+
+
+def _edge_inspector_sync_tag(project: dict, edge: dict) -> tuple[Any, ...]:
+    proj_id = str(project.get("project_id") or project.get("name") or "default")
+    return (
+        proj_id,
+        str(edge.get("id") or ""),
+        compute_project_revision(project),
+        int(st.session_state.get("_inspector_action_nonce") or 0),
+    )
 
 
 def _render_single_edge_decision_card(
@@ -211,6 +227,7 @@ def _render_single_edge_decision_card(
     val_check: dict[str, Any],
 ) -> None:
     """Khung ra quyết định kiểm duyệt đơn lẻ trực diện ngay dưới bằng chứng."""
+    e_tag = _edge_inspector_sync_tag(project, edge)
     with st.container(border=True):
         st.markdown("##### ⚖️ Ra quyết định kiểm duyệt cho cạnh này")
         is_self_loop = str(edge.get("source")) == str(edge.get("target"))
@@ -219,10 +236,10 @@ def _render_single_edge_decision_card(
         d_col1, d_col2 = st.columns(2)
         act_opts = [STATUS_APPROVED, STATUS_CHECK, STATUS_REJECTED]
         cur_status = edge.get("status") if edge.get("status") in act_opts else STATUS_APPROVED
+        sync_keyed_choice(f"single_edge_status_{edge['id']}", act_opts, cur_status, e_tag)
         chosen_status = d_col1.selectbox(
             "Quyết định kiểm duyệt",
             act_opts,
-            index=act_opts.index(cur_status),
             key=f"single_edge_status_{edge['id']}",
         )
 
@@ -230,10 +247,10 @@ def _render_single_edge_decision_card(
         if chosen_status == STATUS_REJECTED:
             r_keys = list(REJECTION_REASON_CODES.keys())
             cur_rc = str(edge.get("rejection_code") or "")
+            sync_keyed_choice(f"single_edge_rc_{edge['id']}", r_keys, cur_rc if cur_rc in r_keys else r_keys[0], e_tag)
             reason_code = d_col2.selectbox(
                 "Mã lý do loại bỏ (bắt buộc khi loại bỏ)",
                 r_keys,
-                index=r_keys.index(cur_rc) if cur_rc in r_keys else 0,
                 format_func=lambda k: f"{REJECTION_REASON_CODES[k]} ({k})",
                 key=f"single_edge_rc_{edge['id']}",
             )
@@ -246,32 +263,32 @@ def _render_single_edge_decision_card(
 
         override_reason = ""
         if chosen_status == STATUS_APPROVED and needs_override:
+            sync_keyed_value(f"single_edge_override_{edge['id']}", str(edge.get("override_reason") or ""), e_tag)
             override_reason = st.text_input(
                 "Lý do xác nhận ngoại lệ bằng chứng (bắt buộc vì trích dẫn không khớp nguyên văn tài liệu)",
-                value=str(edge.get("override_reason") or ""),
                 key=f"single_edge_override_{edge['id']}",
             )
 
         self_loop_confirmed = False
         if chosen_status == STATUS_APPROVED and is_self_loop:
+            sync_keyed_value(f"single_edge_selfloop_{edge['id']}", bool(edge.get("self_loop_confirmed", False)), e_tag)
             self_loop_confirmed = st.checkbox(
                 "Tôi xác nhận quan hệ tự nối (nguồn trùng đích) này có ý nghĩa thực tế trong bài toán",
-                value=bool(edge.get("self_loop_confirmed", False)),
                 key=f"single_edge_selfloop_{edge['id']}",
             )
 
         single_bypass = False
         if chosen_status == STATUS_APPROVED and schema_info.get("status_code") != "valid":
+            sync_keyed_value(f"single_edge_bypass_{edge['id']}", True, e_tag)
             single_bypass = st.checkbox(
                 "🔓 Bỏ qua chặn Lược đồ & Tự động nạp vào Danh mục chính thức (Force Approve)",
-                value=True,
                 key=f"single_edge_bypass_{edge['id']}",
                 help=f"Cạnh hiện vướng: {schema_info.get('issue')}. Bật tùy chọn này để duyệt thành công và tự động đồng bộ vào danh mục.",
             )
 
+        sync_keyed_value(f"single_edge_note_{edge['id']}", str(edge.get("review_note") or ""), e_tag)
         review_note = st.text_input(
             "Ghi chú kiểm duyệt (bắt buộc khi chọn lý do 'Khác' hoặc duyệt cạnh tự nối)",
-            value=str(edge.get("review_note") or ""),
             key=f"single_edge_note_{edge['id']}",
         )
 
@@ -297,6 +314,9 @@ def _render_single_edge_decision_card(
                     request_id=uid(),
                 )
                 client.apply_curation_decisions(project, req)
+                s_state = get_curation_section_state(project, "edges")
+                s_state["sel_editor_nonce"] = int(s_state.get("sel_editor_nonce") or 0) + 1
+                bump_sync_nonce("_inspector_action_nonce")
                 st.success(f"Đã cập nhật trạng thái cạnh `{edge['id']}` thành **{chosen_status}**.")
                 st.rerun()
             except Exception as exc:
@@ -329,42 +349,45 @@ def _render_edge_edit_and_history_tabs(
         doc_ids = [str(d["id"]) for d in project.get("documents", [])]
         doc_map = {str(d["id"]): str(d.get("name", d["id"])) for d in project.get("documents", [])}
 
+        e_tag = _edge_inspector_sync_tag(project, edge)
         ec1, ec2, ec3 = st.columns(3)
+        sync_keyed_choice(f"edit_edge_src_{edge['id']}", node_ids, edge.get("source"), e_tag)
         new_src = ec1.selectbox(
             "Thực thể nguồn",
             node_ids,
-            index=node_ids.index(edge["source"]) if edge.get("source") in node_ids else 0,
             format_func=lambda nid: f"{nodes_by_id.get(nid, {}).get('name', nid)} [{nodes_by_id.get(nid, {}).get('kind', '?')}]",
             key=f"edit_edge_src_{edge['id']}",
         )
+        sync_keyed_choice(f"edit_edge_rel_{edge['id']}", rel_names, edge.get("relation"), e_tag)
         new_rel = ec2.selectbox(
             "Loại quan hệ (trong danh mục đã duyệt)",
             rel_names,
-            index=rel_names.index(edge["relation"]) if edge.get("relation") in rel_names else 0,
             key=f"edit_edge_rel_{edge['id']}",
         )
+        sync_keyed_choice(f"edit_edge_tgt_{edge['id']}", node_ids, edge.get("target"), e_tag)
         new_tgt = ec3.selectbox(
             "Thực thể đích",
             node_ids,
-            index=node_ids.index(edge["target"]) if edge.get("target") in node_ids else 0,
             format_func=lambda nid: f"{nodes_by_id.get(nid, {}).get('name', nid)} [{nodes_by_id.get(nid, {}).get('kind', '?')}]",
             key=f"edit_edge_tgt_{edge['id']}",
         )
 
+        doc_opts_eff = doc_ids if doc_ids else [str(edge.get("doc_id", ""))]
+        sync_keyed_choice(f"edit_edge_doc_{edge['id']}", doc_opts_eff, edge.get("doc_id"), e_tag)
         new_doc_id = st.selectbox(
             "Tài liệu nguồn của bằng chứng",
-            doc_ids if doc_ids else [str(edge.get("doc_id", ""))],
-            index=doc_ids.index(edge["doc_id"]) if edge.get("doc_id") in doc_ids else 0,
+            doc_opts_eff,
             format_func=lambda did: doc_map.get(did, did),
             key=f"edit_edge_doc_{edge['id']}",
         )
+        sync_keyed_value(f"edit_edge_ev_{edge['id']}", str(edge.get("evidence") or ""), e_tag)
         new_ev = st.text_area(
             "Câu trích dẫn bằng chứng",
-            value=str(edge.get("evidence") or ""),
             height=90,
             key=f"edit_edge_ev_{edge['id']}",
         )
-        edit_note = st.text_input("Ghi chú chỉnh sửa dữ kiện", value="", key=f"edit_edge_note_{edge['id']}")
+        sync_keyed_value(f"edit_edge_note_{edge['id']}", "", e_tag)
+        edit_note = st.text_input("Ghi chú chỉnh sửa dữ kiện", key=f"edit_edge_note_{edge['id']}")
 
         if st.button("✏️ Lưu chỉnh sửa dữ kiện", key=f"btn_save_edit_edge_{edge['id']}"):
             try:
@@ -381,6 +404,9 @@ def _render_edge_edit_and_history_tabs(
                     request_id=uid(),
                 )
                 client.edit_edge_fact(project, edit_req)
+                s_state = get_curation_section_state(project, "edges")
+                s_state["sel_editor_nonce"] = int(s_state.get("sel_editor_nonce") or 0) + 1
+                bump_sync_nonce("_inspector_action_nonce")
                 st.success("Đã cập nhật dữ kiện và đối chiếu lại bằng chứng.")
                 st.rerun()
             except Exception as exc:

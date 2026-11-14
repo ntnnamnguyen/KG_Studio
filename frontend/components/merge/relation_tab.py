@@ -12,8 +12,12 @@ from backend.integrations.llm.providers import DEFAULT_MODELS
 from frontend.client import FrontendClient
 from frontend.components.merge.provenance_view import render_relation_provenance_panel
 from frontend.state.session import (
+    bump_sync_nonce,
     reset_curation_state_if_project_changed,
     reset_edc_state_if_project_changed,
+    sync_keyed_choice,
+    sync_keyed_multiselect,
+    sync_keyed_value,
 )
 
 
@@ -33,6 +37,7 @@ def _render_ai_semantic_relation_section(project: dict, client: FrontendClient) 
         key_label = "✅ Đã nạp API Key" if llm_k else "⚠️ Chưa có API Key (Vui lòng thiết lập tại Bước 2 hoặc thanh bên)"
         st.caption(f"🤖 Đang sử dụng kết nối LLM hệ thống: **{llm_prov}** (`{llm_mod}`) · {key_label}")
 
+        proj_id = str(project.get("project_id") or project.get("name") or "default")
         scope_col1, _ = st.columns([3.0, 3.0])
         scope_choices = {
             "top_50": "Top 50 quan hệ phổ biến nhất (Khuyến nghị - Nhanh, chuẩn xác)",
@@ -40,16 +45,22 @@ def _render_ai_semantic_relation_section(project: dict, client: FrontendClient) 
             "freq_ge_2": "Quan hệ có từ 2 cạnh trở lên (freq >= 2)",
             "all": "Toàn bộ quan hệ hiện có trên đồ thị (Tất cả)",
         }
-        sel_rel_scope_key = f"ai_rel_scope_{project.get('project_id', 'curr')}"
+        sel_rel_scope_key = f"ai_rel_scope_{proj_id}"
         curr_rel_scope = st.session_state.get(sel_rel_scope_key, "top_50")
         if curr_rel_scope not in scope_choices:
             curr_rel_scope = "top_50"
+        scope_widget_key = f"sb_{sel_rel_scope_key}"
+        sync_keyed_choice(
+            scope_widget_key,
+            list(scope_choices.keys()),
+            curr_rel_scope,
+            (proj_id, "rel_scope"),
+        )
         chosen_rel_scope = scope_col1.selectbox(
             "Phạm vi quan hệ gửi tới AI (Scan Scope)",
             options=list(scope_choices.keys()),
-            index=list(scope_choices.keys()).index(curr_rel_scope),
             format_func=lambda k: scope_choices[k],
-            key=f"sb_{sel_rel_scope_key}",
+            key=scope_widget_key,
             help="Giới hạn phạm vi giúp prompt ngắn gọn (~500 - 2,500 tokens), tránh vượt quá giới hạn ngữ cảnh của DeepSeek và tăng tốc độ xử lý.",
         )
         st.session_state[sel_rel_scope_key] = chosen_rel_scope
@@ -59,22 +70,32 @@ def _render_ai_semantic_relation_section(project: dict, client: FrontendClient) 
                 "Bạn có thể bổ sung các quy tắc gom nhóm cụ thể cho quan hệ (ví dụ: chỉ gộp các quan hệ về vị trí địa lý, "
                 "bỏ qua quan hệ thời gian, hoặc yêu cầu ưu tiên tên chuẩn theo chuẩn mực riêng của bạn)."
             )
+            inst_widget_key = f"ta_ai_rel_custom_inst_{proj_id}"
+            sync_keyed_value(
+                inst_widget_key,
+                str(st.session_state.get(f"ai_rel_custom_inst_{proj_id}", "")),
+                (proj_id, "init"),
+            )
             rel_custom_inst = st.text_area(
                 "Chỉ dẫn / Quy tắc gom cụm bổ sung cho AI (Prompt Instructions)",
-                value=st.session_state.get(f"ai_rel_custom_inst_{project.get('project_id', 'curr')}", ""),
                 placeholder="Ví dụ: Chỉ gom nhóm các quan hệ chỉ vị trí địa lý; Bỏ qua quan hệ năm tháng; Ưu tiên đặt tên chuẩn theo dạng 'ở_tại'...",
-                key=f"ta_ai_rel_custom_inst_{project.get('project_id', 'curr')}",
+                key=inst_widget_key,
                 help="Các chỉ dẫn này sẽ được tiêm trực tiếp vào prompt gửi cho DeepSeek/LLM với độ ưu tiên cao nhất.",
             )
-            st.session_state[f"ai_rel_custom_inst_{project.get('project_id', 'curr')}"] = rel_custom_inst
+            st.session_state[f"ai_rel_custom_inst_{proj_id}"] = rel_custom_inst
 
             col_p_btn, _ = st.columns([2.5, 3.5])
+            show_prompt_widget_key = f"cb_ai_rel_show_prompt_{proj_id}"
+            sync_keyed_value(
+                show_prompt_widget_key,
+                bool(st.session_state.get(f"ai_rel_show_prompt_{proj_id}", False)),
+                (proj_id, "init"),
+            )
             show_prompt_preview = col_p_btn.checkbox(
                 "👁️ Xem trước toàn bộ Prompt gửi LLM",
-                value=bool(st.session_state.get(f"ai_rel_show_prompt_{project.get('project_id', 'curr')}", False)),
-                key=f"cb_ai_rel_show_prompt_{project.get('project_id', 'curr')}",
+                key=show_prompt_widget_key,
             )
-            st.session_state[f"ai_rel_show_prompt_{project.get('project_id', 'curr')}"] = show_prompt_preview
+            st.session_state[f"ai_rel_show_prompt_{proj_id}"] = show_prompt_preview
 
             if show_prompt_preview:
                 preview_p = client.preview_clustering_prompt(
@@ -127,7 +148,9 @@ def _render_ai_semantic_relation_section(project: dict, client: FrontendClient) 
                     cid = c["id"]
                     c_box = st.container(border=True)
                     col_chk, col_info = c_box.columns([0.8, 5.2])
-                    is_checked = col_chk.checkbox("Chọn", value=True, key=f"chk_ai_rel_{cid}")
+                    chk_key = f"chk_ai_rel_{proj_id}_{cid}"
+                    sync_keyed_value(chk_key, True, (proj_id, str(cid)))
+                    is_checked = col_chk.checkbox("Chọn", key=chk_key)
                     with col_info:
                         st.markdown(f"**Tên chuẩn hóa:** `{c['canonical_name']}` &nbsp;|&nbsp; **Số cạnh ảnh hưởng:** `{c['affected_count']}` cạnh")
                         syns_str = ", ".join(f"`{s}`" for s in c["synonyms"])
@@ -137,16 +160,17 @@ def _render_ai_semantic_relation_section(project: dict, client: FrontendClient) 
                         selected_clusters_to_apply.append(c)
 
                 c_act1, c_act2 = st.columns([3.0, 3.0])
+                ai_collapse_key = f"cb_ai_rel_collapse_{proj_id}"
+                sync_keyed_value(ai_collapse_key, True, (proj_id, "ai_collapse"))
                 cb_collapse = c_act1.checkbox(
                     "☑️ Tự động khử trùng các bộ ba lặp nhau phát sinh sau gộp (Triple Deduplication)",
-                    value=True,
-                    key=f"cb_ai_rel_collapse_{project.get('project_id', 'curr')}",
+                    key=ai_collapse_key,
                 )
                 if c_act2.button(
                     f"🚀 Áp dụng Gom cụm cho {len(selected_clusters_to_apply)} cụm đã chọn",
                     disabled=len(selected_clusters_to_apply) == 0,
                     type="primary",
-                    key=f"btn_apply_ai_rel_{project.get('project_id', 'curr')}",
+                    key=f"btn_apply_ai_rel_{proj_id}",
                 ):
                     try:
                         res_apply = client.apply_semantic_clusters(
@@ -156,9 +180,11 @@ def _render_ai_semantic_relation_section(project: dict, client: FrontendClient) 
                             collapse_duplicate_edges=cb_collapse,
                             note="Gom cụm quan hệ tự động bằng DeepSeek AI",
                         )
-                        st.session_state.pop(f"ai_rel_clusters_{project.get('project_id', 'curr')}", None)
-                        reset_edc_state_if_project_changed(project)
-                        reset_curation_state_if_project_changed(project)
+                        st.session_state.pop(f"ai_rel_clusters_{proj_id}", None)
+                        st.session_state.pop(f"selected_rel_pairs_{proj_id}", None)
+                        bump_sync_nonce(f"_rel_merge_nonce_{proj_id}")
+                        reset_edc_state_if_project_changed(project, force=True)
+                        reset_curation_state_if_project_changed(project, force=True)
                         dup_msg = f" và khử {res_apply.merged_duplicate_edges} cạnh trùng." if res_apply.merged_duplicate_edges > 0 else "."
                         st.success(f"Đã gộp thành công {res_apply.applied_count} biến thể quan hệ, đổi {len(res_apply.affected_edge_ids)} cạnh{dup_msg}")
                         st.rerun()
@@ -192,12 +218,17 @@ def _render_fuzzy_relation_matching_section(
             "Gộp quan hệ giúp chuẩn hóa ontology, đồng nhất các cạnh và giải quyết triệt để lỗi phân mảnh schema."
         )
 
+        proj_id = str(project.get("project_id") or project.get("name") or "default")
         rc1, rc2 = st.columns([1.6, 2.4])
+        sync_keyed_value(
+            "merge_rel_fuzzy_slider",
+            float(m_state.get("rel_fuzzy_threshold", 0.75)),
+            (proj_id, "rel_fuzzy"),
+        )
         fuzzy_rel_val = rc1.slider(
             "Ngưỡng tương đồng quan hệ (Fuzzy threshold)",
             min_value=0.50,
             max_value=0.98,
-            value=float(m_state.get("rel_fuzzy_threshold", 0.75)),
             step=0.02,
             key="merge_rel_fuzzy_slider",
         )
@@ -297,9 +328,9 @@ def _render_fuzzy_relation_matching_section(
                         ))
                         render_relation_provenance_panel(project, sel_rel_names)
 
+                    sync_keyed_value("cb_bulk_rel_collapse", False, (proj_id, "bulk_rel_collapse"))
                     cb_bulk_collapse = st.checkbox(
                         "Tự động hợp nhất các cạnh trùng bộ ba (dồn bằng chứng đầy đủ)",
-                        value=False,
                         key="cb_bulk_rel_collapse",
                         help="Nếu việc gộp quan hệ dẫn tới các cạnh có cùng nguồn, quan hệ và đích, hệ thống sẽ tự động gộp thành 1 cạnh duy nhất và dồn toàn bộ trích dẫn nguyên văn lại.",
                     )
@@ -352,6 +383,9 @@ def _render_manual_relation_and_dedup_section(project: dict, client: FrontendCli
     with st.container(border=True):
         st.markdown("#### 🔀 3. Bàn Gộp Quan hệ Thủ công (Manual Relation Merge)")
         st.caption("Cho phép chọn thủ công nhiều quan hệ nguồn và chỉ định một quan hệ đích chuẩn để hợp nhất toàn bộ dữ kiện.")
+        proj_id = str(project.get("project_id") or project.get("name") or "default")
+        rel_merge_nonce_key = f"_rel_merge_nonce_{proj_id}"
+        rel_merge_nonce = int(st.session_state.get(rel_merge_nonce_key) or 0)
         all_rels = sorted(list(dict.fromkeys(
             str(e.get("relation", "")).strip()
             for e in project.get("edges", [])
@@ -360,6 +394,10 @@ def _render_manual_relation_and_dedup_section(project: dict, client: FrontendCli
         if len(all_rels) < 2:
             st.info("Dự án cần có ít nhất 2 quan hệ khác nhau để thực hiện gộp thủ công.")
         else:
+            sync_keyed_multiselect("manual_rel_merge_sources", all_rels, [], (proj_id, rel_merge_nonce))
+            st.session_state["manual_rel_merge_sources"] = [
+                r for r in st.session_state.get("manual_rel_merge_sources", []) if r in all_rels
+            ]
             m_rel_sources = st.multiselect(
                 "Chọn các quan hệ nguồn cần gộp (2 hoặc nhiều hơn)",
                 options=all_rels,
@@ -369,24 +407,28 @@ def _render_manual_relation_and_dedup_section(project: dict, client: FrontendCli
                 with st.expander("🔍 Xem Ngữ cảnh & Bằng chứng của các Quan hệ Nguồn Đã Chọn", expanded=False):
                     render_relation_provenance_panel(project, m_rel_sources)
             m_rel_col1, m_rel_col2 = st.columns([1.5, 1.5])
+            target_options = [""] + m_rel_sources + [r for r in all_rels if r not in m_rel_sources]
+            sync_keyed_choice("manual_rel_merge_target_select", target_options, "", (proj_id, rel_merge_nonce))
+            if st.session_state.get("manual_rel_merge_target_select") not in target_options:
+                st.session_state["manual_rel_merge_target_select"] = ""
             m_target_choice = m_rel_col1.selectbox(
                 "Chọn quan hệ đích từ danh sách hiện có",
-                options=[""] + m_rel_sources + [r for r in all_rels if r not in m_rel_sources],
+                options=target_options,
                 format_func=lambda x: "— Chọn từ danh sách —" if not x else x,
                 key="manual_rel_merge_target_select",
             )
+            sync_keyed_value("manual_rel_merge_target_input", "", (proj_id, rel_merge_nonce))
             m_target_custom = m_rel_col2.text_input(
                 "Hoặc nhập tên quan hệ đích chuẩn mới",
-                value="",
                 key="manual_rel_merge_target_input",
             )
             effective_target = m_target_custom.strip() or m_target_choice.strip()
             if effective_target:
                 st.caption(f"Quan hệ chuẩn đích sẽ nhận: `{effective_target}`")
 
+            sync_keyed_value("cb_manual_rel_collapse", False, (proj_id, rel_merge_nonce))
             cb_manual_collapse = st.checkbox(
                 "Tự động hợp nhất các cạnh trùng bộ ba (dồn bằng chứng đầy đủ)",
-                value=False,
                 key="cb_manual_rel_collapse",
             )
             if st.button(
@@ -400,6 +442,9 @@ def _render_manual_relation_and_dedup_section(project: dict, client: FrontendCli
                     res = client.apply_relation_merge(
                         project, m_rel_sources, effective_target, collapse_edges=cb_manual_collapse
                     )
+                    bump_sync_nonce(rel_merge_nonce_key)
+                    reset_edc_state_if_project_changed(project, force=True)
+                    reset_curation_state_if_project_changed(project, force=True)
                     dup_msg = f" Đã hợp nhất {res.merged_duplicate_edges} cạnh trùng bộ ba." if getattr(res, "merged_duplicate_edges", 0) > 0 else ""
                     st.success(
                         f"Đã gộp thành công {res.applied_count} quan hệ về `{effective_target}` · "
@@ -425,6 +470,8 @@ def _render_manual_relation_and_dedup_section(project: dict, client: FrontendCli
                 help="Giữ lại cạnh chuẩn nhất cho từng bộ ba, dồn toàn bộ bằng chứng nguyên văn và xóa các cạnh dư thừa.",
             ):
                 res = client.collapse_duplicate_edges(project)
+                reset_edc_state_if_project_changed(project, force=True)
+                reset_curation_state_if_project_changed(project, force=True)
                 st.success(f"Đã hợp nhất thành công {res.merged_duplicate_edges} cạnh trùng bộ ba!")
                 st.rerun()
 
@@ -470,9 +517,12 @@ def _render_relation_merge_history_section(project: dict, client: FrontendClient
                     disabled=not confirm_undo,
                     key="btn_restore_rel_merge_snap",
                 ):
+                    proj_id = str(project.get("project_id") or project.get("name") or "default")
                     client.restore_snapshot(project, latest_snap)
-                    reset_edc_state_if_project_changed(project)
-                    reset_curation_state_if_project_changed(project)
+                    bump_sync_nonce(f"_rel_merge_nonce_{proj_id}")
+                    st.session_state["chk_restore_rel_merge_snap"] = False
+                    reset_edc_state_if_project_changed(project, force=True)
+                    reset_curation_state_if_project_changed(project, force=True)
                     st.success("Đã khôi phục dự án về snapshot trước khi gộp quan hệ.")
                     st.rerun()
 

@@ -10,8 +10,12 @@ import streamlit as st
 from backend.integrations.llm.providers import DEFAULT_MODELS, PROVIDERS
 from frontend.client import FrontendClient
 from frontend.state.session import (
+    bump_sync_nonce,
     reset_curation_state_if_project_changed,
     reset_edc_state_if_project_changed,
+    sync_keyed_choice,
+    sync_keyed_multiselect,
+    sync_keyed_value,
 )
 
 
@@ -36,6 +40,7 @@ def render_entity_type_merge_tab(
         key_label = "✅ Đã nạp API Key" if llm_k else "⚠️ Chưa có API Key (Vui lòng thiết lập tại Bước 2 hoặc thanh bên)"
         st.caption(f"🤖 Đang sử dụng kết nối LLM hệ thống: **{llm_prov}** (`{llm_mod}`) · {key_label}")
 
+        proj_id = str(project.get("project_id") or project.get("name") or "default")
         scope_tcol1, _ = st.columns([3.0, 3.0])
         type_scope_choices = {
             "top_50": "Top 50 loại thực thể phổ biến nhất (Khuyến nghị)",
@@ -43,16 +48,22 @@ def render_entity_type_merge_tab(
             "freq_ge_2": "Loại thực thể có từ 2 node trở lên (freq >= 2)",
             "all": "Toàn bộ loại thực thể hiện có trên đồ thị (Tất cả)",
         }
-        sel_type_scope_key = f"ai_type_scope_{project.get('project_id', 'curr')}"
+        sel_type_scope_key = f"ai_type_scope_{proj_id}"
         curr_type_scope = st.session_state.get(sel_type_scope_key, "top_50")
         if curr_type_scope not in type_scope_choices:
             curr_type_scope = "top_50"
+        type_scope_widget_key = f"sb_{sel_type_scope_key}"
+        sync_keyed_choice(
+            type_scope_widget_key,
+            list(type_scope_choices.keys()),
+            curr_type_scope,
+            (proj_id, "type_scope"),
+        )
         chosen_type_scope = scope_tcol1.selectbox(
             "Phạm vi loại thực thể gửi tới AI (Scan Scope)",
             options=list(type_scope_choices.keys()),
-            index=list(type_scope_choices.keys()).index(curr_type_scope),
             format_func=lambda k: type_scope_choices[k],
-            key=f"sb_{sel_type_scope_key}",
+            key=type_scope_widget_key,
             help="Giới hạn phạm vi giúp context prompt ngắn gọn và xử lý nhanh chóng.",
         )
         st.session_state[sel_type_scope_key] = chosen_type_scope
@@ -63,22 +74,32 @@ def render_entity_type_merge_tab(
                 "Bạn có thể bổ sung các quy tắc phân loại cụ thể (ví dụ: gom các loại công trình tín ngưỡng về 'di tích tôn giáo', "
                 "giữ tách biệt giữa 'di tích' và 'địa danh hành chính', hoặc ưu tiên tên danh mục chuẩn)."
             )
+            type_inst_widget_key = f"ta_ai_type_custom_inst_{proj_id}"
+            sync_keyed_value(
+                type_inst_widget_key,
+                str(st.session_state.get(f"ai_type_custom_inst_{proj_id}", "")),
+                (proj_id, "init"),
+            )
             type_custom_inst = st.text_area(
                 "Chỉ dẫn / Quy tắc gom loại thực thể bổ sung cho AI (Prompt Instructions)",
-                value=st.session_state.get(f"ai_type_custom_inst_{project.get('project_id', 'curr')}", ""),
                 placeholder="Ví dụ: Gom các loại thực thể chùa, đền, miếu về loại chuẩn 'di tích tôn giáo'; Tách biệt 'vua chúa' thành 'nhân vật lịch sử'...",
-                key=f"ta_ai_type_custom_inst_{project.get('project_id', 'curr')}",
+                key=type_inst_widget_key,
                 help="Các chỉ dẫn này sẽ được tiêm trực tiếp vào prompt gửi cho DeepSeek/LLM với độ ưu tiên cao nhất.",
             )
-            st.session_state[f"ai_type_custom_inst_{project.get('project_id', 'curr')}"] = type_custom_inst
+            st.session_state[f"ai_type_custom_inst_{proj_id}"] = type_custom_inst
 
             col_pt_btn, _ = st.columns([2.5, 3.5])
+            type_show_prompt_widget_key = f"cb_ai_type_show_prompt_{proj_id}"
+            sync_keyed_value(
+                type_show_prompt_widget_key,
+                bool(st.session_state.get(f"ai_type_show_prompt_{proj_id}", False)),
+                (proj_id, "init"),
+            )
             show_type_prompt_preview = col_pt_btn.checkbox(
                 "👁️ Xem trước toàn bộ Prompt gửi LLM",
-                value=bool(st.session_state.get(f"ai_type_show_prompt_{project.get('project_id', 'curr')}", False)),
-                key=f"cb_ai_type_show_prompt_{project.get('project_id', 'curr')}",
+                key=type_show_prompt_widget_key,
             )
-            st.session_state[f"ai_type_show_prompt_{project.get('project_id', 'curr')}"] = show_type_prompt_preview
+            st.session_state[f"ai_type_show_prompt_{proj_id}"] = show_type_prompt_preview
 
             if show_type_prompt_preview:
                 preview_pt = client.preview_clustering_prompt(
@@ -131,7 +152,9 @@ def render_entity_type_merge_tab(
                     cid = c["id"]
                     c_box = st.container(border=True)
                     col_chk, col_info = c_box.columns([0.8, 5.2])
-                    is_checked = col_chk.checkbox("Chọn", value=True, key=f"chk_ai_type_{cid}")
+                    type_chk_key = f"chk_ai_type_{proj_id}_{cid}"
+                    sync_keyed_value(type_chk_key, True, (proj_id, str(cid)))
+                    is_checked = col_chk.checkbox("Chọn", key=type_chk_key)
                     with col_info:
                         st.markdown(f"**Tên chuẩn hóa:** `{c['canonical_name']}` &nbsp;|&nbsp; **Số thực thể ảnh hưởng:** `{c['affected_count']}` thực thể")
                         syns_str = ", ".join(f"`{s}`" for s in c["synonyms"])
@@ -144,7 +167,7 @@ def render_entity_type_merge_tab(
                     f"🚀 Áp dụng Gom cụm cho {len(selected_type_clusters)} cụm loại thực thể đã chọn",
                     disabled=len(selected_type_clusters) == 0,
                     type="primary",
-                    key=f"btn_apply_ai_type_{project.get('project_id', 'curr')}",
+                    key=f"btn_apply_ai_type_{proj_id}",
                 ):
                     try:
                         res_apply = client.apply_semantic_clusters(
@@ -153,9 +176,10 @@ def render_entity_type_merge_tab(
                             approved_clusters=selected_type_clusters,
                             note="Gom cụm loại thực thể tự động bằng DeepSeek AI",
                         )
-                        st.session_state.pop(f"ai_type_clusters_{project.get('project_id', 'curr')}", None)
-                        reset_edc_state_if_project_changed(project)
-                        reset_curation_state_if_project_changed(project)
+                        st.session_state.pop(f"ai_type_clusters_{proj_id}", None)
+                        bump_sync_nonce(f"_type_merge_nonce_{proj_id}")
+                        reset_edc_state_if_project_changed(project, force=True)
+                        reset_curation_state_if_project_changed(project, force=True)
                         st.success(f"Đã gộp thành công {res_apply.applied_count} loại thực thể trên đồ thị!")
                         st.rerun()
                     except Exception as exc:
@@ -186,24 +210,35 @@ def render_entity_type_merge_tab(
         }
         all_unique_kinds = sorted(set(kind_counts.keys()) | cat_types)
         if all_unique_kinds:
+            src_ms_key = f"ms_manual_src_type_{proj_id}"
+            tgt_sb_key = f"sb_manual_tgt_type_{proj_id}"
+            type_nonce_key = f"_type_merge_nonce_{proj_id}"
+            type_nonce = int(st.session_state.get(type_nonce_key) or 0)
+            sync_keyed_multiselect(src_ms_key, all_unique_kinds, [], (proj_id, type_nonce))
+            st.session_state[src_ms_key] = [
+                k for k in st.session_state.get(src_ms_key, []) if k in all_unique_kinds
+            ]
+            sync_keyed_choice(tgt_sb_key, all_unique_kinds, all_unique_kinds[0], (proj_id, type_nonce))
+            if st.session_state.get(tgt_sb_key) not in all_unique_kinds:
+                st.session_state[tgt_sb_key] = all_unique_kinds[0]
             c_src, c_tgt = st.columns([1.5, 1.5])
             src_kinds = c_src.multiselect(
                 "Chọn các loại nguồn cần gộp (bị thay thế)",
                 all_unique_kinds,
                 format_func=lambda k: f"{k} ({kind_counts.get(k, 0)} thực thể)",
-                key=f"ms_manual_src_type_{project.get('project_id', 'curr')}",
+                key=src_ms_key,
             )
             tgt_kind = c_tgt.selectbox(
                 "Chọn loại đích chuẩn (giữ lại)",
                 all_unique_kinds,
                 format_func=lambda k: f"{k} ({kind_counts.get(k, 0)} thực thể)",
-                key=f"sb_manual_tgt_type_{project.get('project_id', 'curr')}",
+                key=tgt_sb_key,
             )
             valid_srcs = [s for s in src_kinds if s != tgt_kind]
             if st.button(
                 f"⚡ Gộp {len(valid_srcs)} loại nguồn về '{tgt_kind}'",
                 disabled=len(valid_srcs) == 0,
-                key=f"btn_manual_type_merge_{project.get('project_id', 'curr')}",
+                key=f"btn_manual_type_merge_{proj_id}",
             ):
                 try:
                     res = client.apply_semantic_clusters(
@@ -212,12 +247,13 @@ def render_entity_type_merge_tab(
                         approved_clusters=[{"canonical_name": tgt_kind, "synonyms": valid_srcs}],
                         note=f"Gộp loại thực thể thủ công: {', '.join(valid_srcs)} -> {tgt_kind}",
                     )
-                    reset_edc_state_if_project_changed(project)
-                    reset_curation_state_if_project_changed(project)
+                    bump_sync_nonce(type_nonce_key)
+                    reset_edc_state_if_project_changed(project, force=True)
+                    reset_curation_state_if_project_changed(project, force=True)
                     st.success(f"Đã gộp thành công {res.applied_count} loại thực thể về '{tgt_kind}'!")
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Lỗi: {exc}")
+                    st.error(str(exc))
         else:
             st.info("Chưa có loại thực thể nào trong dự án.")
 
@@ -253,8 +289,10 @@ def render_entity_type_merge_tab(
                     key="btn_restore_type_merge_snap",
                 ):
                     client.restore_snapshot(project, latest_snap)
-                    reset_edc_state_if_project_changed(project)
-                    reset_curation_state_if_project_changed(project)
+                    bump_sync_nonce(f"_type_merge_nonce_{proj_id}")
+                    st.session_state["chk_restore_type_merge_snap"] = False
+                    reset_edc_state_if_project_changed(project, force=True)
+                    reset_curation_state_if_project_changed(project, force=True)
                     st.success("Đã khôi phục dự án về snapshot trước khi gộp loại thực thể.")
                     st.rerun()
         else:

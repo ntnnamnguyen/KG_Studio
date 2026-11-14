@@ -13,6 +13,8 @@ from frontend.state.session import (
     select_all_filtered_proposals,
     select_page_proposals,
     set_focused_proposal,
+    sync_keyed_choice,
+    sync_keyed_value,
     toggle_proposal_selection,
 )
 from .drawer import render_proposal_detail_drawer
@@ -25,8 +27,15 @@ from .logic import (
 )
 
 
-def _render_edc_filter_bars(project: dict, kind: str, filters: dict[str, Any]) -> tuple[dict[str, str], int]:
+def _render_edc_filter_bars(
+    project: dict,
+    kind: str,
+    t_state: dict[str, Any],
+    filters: dict[str, Any],
+) -> tuple[dict[str, str], int]:
     """Hiển thị 2 tầng bộ lọc cơ bản + nâng cao cho bảng EDC; trả về status_labels và số bộ lọc nâng cao đang bật."""
+    proj_id = str(project.get("project_id") or project.get("name") or "default")
+    f_tag = (proj_id, kind, int(t_state.get("filter_nonce") or 0))
     docs = project.get("documents", [])
     doc_options = ["all"] + [str(d["id"]) for d in docs]
     doc_labels = {"all": "Tất cả tài liệu", **{str(d["id"]): f"{d.get('name', d['id'])}" for d in docs}}
@@ -42,9 +51,9 @@ def _render_edc_filter_bars(project: dict, kind: str, filters: dict[str, Any]) -
 
     # TẦNG 1: THANH CƠ BẢN TINH GỌN (CHỈ 1 DÒNG DUY NHẤT)
     c_edc_search, c_edc_status = st.columns([3.5, 1.5])
+    sync_keyed_value(f"flt_search_{kind}", filters.get("search", ""), f_tag)
     filters["search"] = c_edc_search.text_input(
         f"Tìm đề xuất {kind}",
-        value=filters.get("search", ""),
         placeholder="🔍 Tìm nhanh tên đề xuất, tên chuẩn hóa, định nghĩa...",
         label_visibility="collapsed",
         key=f"flt_search_{kind}",
@@ -57,10 +66,10 @@ def _render_edc_filter_bars(project: dict, kind: str, filters: dict[str, Any]) -
         "merged": "Đã hợp nhất",
         "rejected": "Đã từ chối",
     }
+    sync_keyed_choice(f"flt_status_{kind}", status_options, filters.get("status", "pending"), f_tag)
     filters["status"] = c_edc_status.selectbox(
         f"Trạng thái {kind}",
         status_options,
-        index=status_options.index(filters.get("status", "pending")) if filters.get("status", "pending") in status_options else 0,
         format_func=lambda s: status_labels.get(s, s),
         label_visibility="collapsed",
         key=f"flt_status_{kind}",
@@ -69,10 +78,10 @@ def _render_edc_filter_bars(project: dict, kind: str, filters: dict[str, Any]) -
     # TẦNG 2: VÙNG MỞ RỘNG BỘ LỌC NÂNG CAO (Mặc định thu gọn, mở khi có tiêu chí đang lọc)
     with st.expander(adv_edc_label, expanded=bool(adv_edc_count > 0)):
         f3, f4, f5 = st.columns(3)
+        sync_keyed_choice(f"flt_doc_{kind}", doc_options, filters.get("doc_id", "all"), f_tag)
         filters["doc_id"] = f3.selectbox(
             "Tài liệu nguồn",
             doc_options,
-            index=doc_options.index(filters.get("doc_id", "all")) if filters.get("doc_id", "all") in doc_options else 0,
             format_func=lambda d: doc_labels.get(d, d),
             key=f"flt_doc_{kind}",
         )
@@ -82,10 +91,10 @@ def _render_edc_filter_bars(project: dict, kind: str, filters: dict[str, Any]) -
             "has_candidates": "Đã có ứng viên đích",
             "no_candidates": "Chưa có ứng viên",
         }
+        sync_keyed_choice(f"flt_cand_{kind}", cand_options, filters.get("candidate_filter", "all"), f_tag)
         filters["candidate_filter"] = f4.selectbox(
             "Ứng viên",
             cand_options,
-            index=cand_options.index(filters.get("candidate_filter", "all")),
             format_func=lambda c: cand_labels[c],
             key=f"flt_cand_{kind}",
         )
@@ -95,10 +104,10 @@ def _render_edc_filter_bars(project: dict, kind: str, filters: dict[str, Any]) -
             "has_definition": "Đã có định nghĩa",
             "missing_definition": "Thiếu định nghĩa",
         }
+        sync_keyed_choice(f"flt_def_{kind}", def_options, filters.get("definition_filter", "all"), f_tag)
         filters["definition_filter"] = f5.selectbox(
             "Định nghĩa",
             def_options,
-            index=def_options.index(filters.get("definition_filter", "all")),
             format_func=lambda d: def_labels[d],
             key=f"flt_def_{kind}",
         )
@@ -111,10 +120,10 @@ def _render_edc_filter_bars(project: dict, kind: str, filters: dict[str, Any]) -
             "auto_aligned": "Tự động hợp nhất",
             "human_decided": "Con người đã quyết định",
         }
+        sync_keyed_choice(f"flt_orig_{kind}", origin_options, filters.get("origin_filter", "all"), f_tag)
         filters["origin_filter"] = f6.selectbox(
             "Nguồn quyết định",
             origin_options,
-            index=origin_options.index(filters.get("origin_filter", "all")),
             format_func=lambda o: origin_labels[o],
             key=f"flt_orig_{kind}",
         )
@@ -124,30 +133,41 @@ def _render_edc_filter_bars(project: dict, kind: str, filters: dict[str, Any]) -
             "impact_edges": "Số cạnh ảnh hưởng (Cao → Thấp)",
             "alignment_score": "Điểm tương đồng (Cao → Thấp)",
         }
+        sync_keyed_choice(f"flt_sort_{kind}", sort_options, filters.get("sort_by", "name"), f_tag)
         chosen_sort = f7.selectbox(
             "Sắp xếp theo",
             sort_options,
-            index=sort_options.index(filters.get("sort_by", "name")),
             format_func=lambda s: sort_labels[s],
             key=f"flt_sort_{kind}",
         )
         filters["sort_by"] = chosen_sort
         filters["sort_desc"] = chosen_sort in ("impact_edges", "alignment_score")
         page_sizes = [20, 50, 100]
-        filters["page_size"] = f8.selectbox(
+        old_psize = int(filters.get("page_size", 50) or 50)
+        sync_keyed_choice(f"flt_psize_{kind}", page_sizes, old_psize, f_tag)
+        chosen_psize = f8.selectbox(
             "Số dòng / trang",
             page_sizes,
-            index=page_sizes.index(filters.get("page_size", 50)) if filters.get("page_size", 50) in page_sizes else 1,
             key=f"flt_psize_{kind}",
         )
+        if int(chosen_psize) != old_psize:
+            filters["page_size"] = int(chosen_psize)
+            filters["page"] = 1
+            t_state["page_nonce"] = int(t_state.get("page_nonce") or 0) + 1
+            st.rerun()
         f_edc_reset.write("")
         f_edc_reset.write("")
-        if f_edc_reset.button("🔄 Đặt lại", key=f"flt_btn_reset_{kind}", help="Xóa bộ lọc nâng cao"):
+        if f_edc_reset.button("🔄 Đặt lại", key=f"flt_btn_reset_{kind}", help="Xóa toàn bộ bộ lọc"):
+            filters["search"] = ""
+            filters["status"] = "pending"
             filters["doc_id"] = "all"
             filters["candidate_filter"] = "all"
             filters["definition_filter"] = "all"
             filters["origin_filter"] = "all"
             filters["sort_by"] = "name"
+            filters["page"] = 1
+            t_state["filter_nonce"] = int(t_state.get("filter_nonce") or 0) + 1
+            t_state["page_nonce"] = int(t_state.get("page_nonce") or 0) + 1
             st.rerun()
 
     return status_labels, adv_edc_count
@@ -162,6 +182,7 @@ def render_edc_review_table(
 ) -> dict[str, Any]:
     """Hiển thị một bảng độc lập (Loại thực thể hoặc Quan hệ) với bộ lọc, phân trang và chọn theo ID."""
     t_state = get_edc_table_state(project, kind)
+    proj_id = str(project.get("project_id") or project.get("name") or "default")
     filters = t_state["filters"]
     all_kind_proposals = [p for p in project.get("schema_proposals", []) if p.get("kind") == kind]
     total_count = len(all_kind_proposals)
@@ -171,7 +192,7 @@ def render_edc_review_table(
         st.success(msg)
     t_state["flash_messages"] = []
 
-    status_labels, adv_edc_count = _render_edc_filter_bars(project, kind, filters)
+    status_labels, adv_edc_count = _render_edc_filter_bars(project, kind, t_state, filters)
 
     filtered_proposals = filter_and_sort_proposals(project, kind, filters)
     filtered_count = len(filtered_proposals)
@@ -190,6 +211,15 @@ def render_edc_review_table(
     )
 
     filter_sig = compute_filter_signature(filters)
+    prev_edc_sig = t_state.get("_prev_pagination_sig")
+    if prev_edc_sig is None:
+        t_state["_prev_pagination_sig"] = filter_sig
+    elif prev_edc_sig != filter_sig:
+        t_state["_prev_pagination_sig"] = filter_sig
+        if int(filters.get("page") or 1) != 1:
+            filters["page"] = 1
+            t_state["page_nonce"] = int(t_state.get("page_nonce") or 0) + 1
+            st.rerun()
     reconcile_selection_with_filter(project, kind, filter_sig, filtered_proposals)
     if t_state.get("filter_prune_notice"):
         st.info(t_state["filter_prune_notice"])
@@ -218,9 +248,11 @@ def render_edc_review_table(
         current_page=cur_page,
         total_pages=total_pages,
         summary_text=summary_text,
+        sync_tag=(proj_id, kind, int(t_state.get("page_nonce") or 0)),
     )
-    if isinstance(new_p, int):
+    if isinstance(new_p, int) and new_p != cur_page:
         filters["page"] = new_p
+        st.rerun()
 
     if not filtered_proposals:
         st.info("Không có đề xuất nào khớp bộ lọc hiện tại.")
@@ -231,6 +263,7 @@ def render_edc_review_table(
         }
 
     selected_set = set(t_state["selected_ids"])
+    sel_nonce = int(t_state.get("sel_editor_nonce") or 0)
     display_rows = build_table_display_rows(
         project,
         page_items,
@@ -240,7 +273,7 @@ def render_edc_review_table(
 
     edited_rows = st.data_editor(
         display_rows,
-        key=f"table_editor_{kind}_{cur_page}_{filter_sig}",
+        key=f"table_editor_{kind}_{proj_id}_{sel_nonce}_{cur_page}_{filter_sig}",
         width='stretch',
         hide_index=True,
         disabled=[
@@ -281,11 +314,18 @@ def render_edc_review_table(
     cur_focus = t_state.get("focused_proposal_id", "")
     if cur_focus and cur_focus not in detail_ids and cur_focus in proposals_by_id:
         detail_ids.append(cur_focus)
+    if cur_focus not in detail_ids:
+        cur_focus = ""
 
+    sync_keyed_choice(
+        f"focus_select_{kind}",
+        detail_ids,
+        cur_focus,
+        (proj_id, kind, cur_page, cur_focus, int(t_state.get("focus_nonce") or 0)),
+    )
     chosen_focus = st.selectbox(
         "🔍 Mở xem chi tiết 1 dòng (độc lập với các dòng đã tick chọn để thao tác lô)",
         detail_ids,
-        index=detail_ids.index(cur_focus) if cur_focus in detail_ids else 0,
         format_func=lambda pid: (
             "— Không mở chi tiết —"
             if not pid
@@ -295,6 +335,7 @@ def render_edc_review_table(
     )
     if chosen_focus != cur_focus:
         set_focused_proposal(project, kind, chosen_focus)
+        st.rerun()
     if chosen_focus and chosen_focus in proposals_by_id:
         render_proposal_detail_drawer(
             project,

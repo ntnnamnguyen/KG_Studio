@@ -444,14 +444,25 @@ class KGStudioFacade:
     def list_gazetteer_entries(self, project: dict) -> list[dict]:
         return self.curation_service.list_gazetteer_entries(project)
 
+    def list_grouped_gazetteer_entries(self, project: dict) -> list[dict]:
+        return self.curation_service.list_grouped_gazetteer_entries(project)
+
+    def expand_grouped_gazetteer_rows(
+        self,
+        grouped_rows: list[dict],
+        *,
+        strict_conflicts: bool = True,
+    ) -> list[dict[str, str]]:
+        return self.curation_service.expand_grouped_gazetteer_rows(grouped_rows, strict_conflicts=strict_conflicts)
+
     def parse_gazetteer_bytes(self, raw_bytes: bytes, filename: str = "") -> list[dict[str, str]]:
         return self.curation_service.parse_gazetteer_bytes(raw_bytes, filename=filename)
 
     def gazetteer_to_json_bytes(self, project: dict) -> bytes:
         return self.curation_service.gazetteer_to_json_bytes(project)
 
-    def gazetteer_to_csv_bytes(self, project: dict) -> bytes:
-        return self.curation_service.gazetteer_to_csv_bytes(project)
+    def gazetteer_to_csv_bytes(self, project: dict, *, grouped: bool = True) -> bytes:
+        return self.curation_service.gazetteer_to_csv_bytes(project, grouped=grouped)
 
     def upsert_gazetteer_entry(self, project: dict, alias: str, canonical_name: str, kind: str = "", **kwargs: Any) -> Any:
         return self.curation_service.upsert_gazetteer_entry(project, alias, canonical_name, kind, **kwargs)
@@ -520,6 +531,12 @@ class KGStudioFacade:
 
     def load_project_from_export_bytes(self, raw_bytes: bytes, filename: str = "") -> dict[str, Any]:
         return self.graph_qa_service.load_project_from_export_bytes(raw_bytes, filename=filename)
+
+    def build_kgqa_training_bundle(self, project: dict, **kwargs: Any) -> dict[str, Any]:
+        return self.graph_qa_service.build_kgqa_training_bundle(project, **kwargs)
+
+    def paraphrase_kgqa_training_bundle(self, bundle: dict[str, Any], **kwargs: Any) -> tuple[dict[str, Any], dict[str, int]]:
+        return self.graph_qa_service.paraphrase_kgqa_training_bundle(bundle, **kwargs)
 
     # =========================================================================
     # 6. PHÂN HỆ TRAINING (backend/modules/training)

@@ -16,10 +16,13 @@ from frontend.pages import (
 from frontend.state.session import (
     PAGE_LABELS,
     PIPELINE_STEPS,
+    bump_sync_nonce,
     compute_pipeline_readiness,
     ensure_session_state,
     navigate_to_step,
     normalize_page_label,
+    sync_keyed_choice,
+    sync_keyed_value,
 )
 from shared.config_loader import CONFIG
 from shared.secrets_manager import get_api_key, has_persisted_key
@@ -89,17 +92,21 @@ def main() -> None:
         if cur_name not in existing_projects:
             existing_projects = [cur_name, *existing_projects]
 
+        proj_nonce = int(st.session_state.get("_proj_sync_nonce") or 0)
+        sync_keyed_choice("sb_select_project", existing_projects, cur_name, (cur_name, proj_nonce))
         selected_proj = st.selectbox(
             "📂 Mở dự án có sẵn",
             existing_projects,
-            index=existing_projects.index(cur_name),
             key="sb_select_project",
         )
         if selected_proj != cur_name:
             st.session_state["active_project_name"] = selected_proj
+            bump_sync_nonce("_proj_sync_nonce")
             st.rerun()
 
         with st.expander("➕ Tạo dự án mới", expanded=False):
+            new_proj_nonce = int(st.session_state.get("_new_proj_name_nonce") or 0)
+            sync_keyed_value("sb_new_project_name", "", new_proj_nonce)
             new_proj_name = st.text_input(
                 "Tên dự án mới",
                 placeholder="Ví dụ: Di tích Hà Nội 2026...",
@@ -119,6 +126,8 @@ def main() -> None:
                     proj = facade.load_project(cleaned)
                     facade.save_project(proj)
                     st.session_state["active_project_name"] = proj.get("name", cleaned)
+                    bump_sync_nonce("_proj_sync_nonce")
+                    bump_sync_nonce("_new_proj_name_nonce")
                     st.rerun()
 
         # 2. ĐIỀU HƯỚNG CHÍNH: QUY TRÌNH 5 BƯỚC
@@ -132,17 +141,21 @@ def main() -> None:
             b_text = _SIDEBAR_BADGE_LABELS.get(b, b)
             step_labels_with_badge.append(f"{p_label} ({b_text})")
 
+        step_indices = list(range(len(PAGE_LABELS)))
         current_label = normalize_page_label(st.session_state.get("active_page", PAGE_LABELS[0]))
         active_idx = PAGE_LABELS.index(current_label) if current_label in PAGE_LABELS else 0
+        nav_nonce = int(st.session_state.get("_nav_sync_nonce") or 0)
+        sync_keyed_choice("sb_nav_steps_radio", step_indices, active_idx, (active_idx, nav_nonce))
 
-        chosen_labeled = st.radio(
-            "Chọn bước làm việc",
-            step_labels_with_badge,
-            index=active_idx,
-            label_visibility="collapsed",
-            key="sb_nav_steps_radio",
+        chosen_idx = int(
+            st.radio(
+                "Chọn bước làm việc",
+                step_indices,
+                format_func=lambda i: step_labels_with_badge[int(i)],
+                label_visibility="collapsed",
+                key="sb_nav_steps_radio",
+            )
         )
-        chosen_idx = step_labels_with_badge.index(chosen_labeled)
         if chosen_idx != active_idx:
             navigate_to_step(chosen_idx)
             st.rerun()

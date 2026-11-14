@@ -463,6 +463,44 @@ class FrontendClient:
     def load_project_from_export_bytes(self, raw_bytes: bytes, filename: str = "") -> dict[str, Any]:
         return self.facade.load_project_from_export_bytes(raw_bytes, filename=filename)
 
+    def build_kgqa_training_bundle(
+        self,
+        project: dict,
+        *,
+        approved_only: bool = True,
+        max_samples: int = 500,
+    ) -> dict[str, Any]:
+        return self.facade.build_kgqa_training_bundle(
+            project,
+            approved_only=approved_only,
+            max_samples=max_samples,
+        )
+
+    def paraphrase_kgqa_training_bundle(
+        self,
+        bundle: dict[str, Any],
+        *,
+        provider: str = "DeepSeek",
+        api_key: str = "",
+        model: str = "deepseek-chat",
+        base_url: str = "",
+        client: Any = None,
+        batch_size: int = 10,
+        max_items: int | None = None,
+        only_unparaphrased: bool = True,
+    ) -> tuple[dict[str, Any], dict[str, int]]:
+        return self.facade.paraphrase_kgqa_training_bundle(
+            bundle,
+            provider=provider,
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            client=client,
+            batch_size=batch_size,
+            max_items=max_items,
+            only_unparaphrased=only_unparaphrased,
+        )
+
     def extract_chunks_parallel(
         self,
         project: dict,
@@ -500,10 +538,18 @@ _CLIENT: FrontendClient | None = None
 
 def get_client() -> FrontendClient:
     global _CLIENT
-    if _CLIENT is None:
-        import os
-        api_url = os.environ.get("KG_STUDIO_API_URL", "").strip()
-        from frontend.composition import get_ui_composition
-        comp = get_ui_composition()
+    import os
+    api_url = os.environ.get("KG_STUDIO_API_URL", "").strip().rstrip("/")
+    from frontend.composition import get_ui_composition
+    comp = get_ui_composition()
+    if _CLIENT is None or _CLIENT.api_base_url != api_url or _CLIENT.facade is not comp.facade:
         _CLIENT = FrontendClient(api_base_url=api_url, facade=comp.facade)
     return _CLIENT
+
+
+def reset_client(client: FrontendClient | None = None) -> FrontendClient | None:
+    """Reset singleton FrontendClient (hữu ích cho kiểm thử cô lập)."""
+    global _CLIENT
+    prev = _CLIENT
+    _CLIENT = client
+    return prev

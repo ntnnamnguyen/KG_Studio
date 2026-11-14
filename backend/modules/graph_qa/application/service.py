@@ -266,3 +266,70 @@ class GraphQAApplicationService:
 
     def load_project_from_export_bytes(self, raw_bytes: bytes, filename: str = "") -> dict[str, Any]:
         return load_project_from_export_bytes(raw_bytes, filename=filename)
+
+    def build_kgqa_training_bundle(
+        self,
+        project: dict,
+        *,
+        approved_only: bool = True,
+        max_samples: int = 500,
+    ) -> dict[str, Any]:
+        """Sinh Bộ dữ liệu Huấn luyện Chuẩn G-Retriever 5 tệp (nodes/edges/evidence/questions/schema_contract)."""
+        from backend.domain.graph.kgqa_bundle import build_kgqa_training_bundle
+
+        return build_kgqa_training_bundle(
+            project,
+            approved_only=approved_only,
+            max_samples=max_samples,
+        )
+
+    def paraphrase_kgqa_training_bundle(
+        self,
+        bundle: dict[str, Any],
+        *,
+        provider: str = "DeepSeek",
+        api_key: str = "",
+        model: str = "deepseek-chat",
+        base_url: str = "",
+        client: Any = None,
+        batch_size: int = 10,
+        max_items: int | None = None,
+        only_unparaphrased: bool = True,
+    ) -> tuple[dict[str, Any], dict[str, int]]:
+        """Paraphrase các câu hỏi trong bộ dữ liệu G-Retriever bằng LLM với hậu kiểm giữ thực thể & chống lộ đáp án."""
+        from backend.domain.graph.kgqa_bundle import apply_paraphrased_kgqa_results
+
+        records = list(bundle.get("question_records") or [])
+        candidates = [
+            {
+                "id": rec["question_id"],
+                "question": rec["question"],
+                "original_question": rec.get("original_question") or rec["question"],
+            }
+            for rec in records
+            if not only_unparaphrased or str(rec.get("review_status", "")) != "llm_paraphrased"
+        ]
+        if max_items is not None and int(max_items) >= 0:
+            candidates = candidates[: int(max_items)]
+
+        if not candidates:
+            return bundle, {
+                "attempted": 0,
+                "accepted": 0,
+                "rejected_entity_drop": 0,
+                "rejected_answer_leak": 0,
+                "rejected_robotic": 0,
+                "rejected_unchanged": 0,
+                "rejected_duplicate": 0,
+            }
+
+        paraphrased_items = paraphrase_qa_questions_with_llm(
+            candidates,
+            provider=provider,
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            client=client,
+            batch_size=batch_size,
+        )
+        return apply_paraphrased_kgqa_results(bundle, paraphrased_items)

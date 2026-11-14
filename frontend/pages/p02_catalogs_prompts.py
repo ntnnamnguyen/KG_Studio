@@ -13,6 +13,7 @@ from frontend.components.pipeline_banner import render_step_next_action
 from frontend.components.prompt_editor import render_prompt_management_panel
 from frontend.state.session import (
     _safe_set_widget_state,
+    bump_sync_nonce,
     navigate_to_step,
     on_p02_llm_key_change,
     on_p02_llm_max_in_change,
@@ -146,7 +147,7 @@ def render_catalogs_prompts_page(project: dict) -> None:
             )
             if st.session_state["llm_api_key"]:
                 save_api_key(st.session_state["llm_provider"], st.session_state["llm_api_key"])
-            st.success(f"Đã lưu vào `{saved_path.name}` thành công!")
+            st.success(f"Đã lưu vào thành công!")
 
         def _handle_delete_api_key() -> None:
             delete_api_key(st.session_state["llm_provider"])
@@ -182,21 +183,27 @@ def render_catalogs_prompts_page(project: dict) -> None:
         )
 
     rel_rows = relation_catalog(project)
+    proj_id = str(project.get("project_id") or project.get("name") or "default")
+    cat_nonce = int(st.session_state.get("_catalog_editor_nonce") or 0)
     type_rows = project.get("entity_types", [])
     gaz_rows = facade.list_gazetteer_entries(project)
+    grouped_gaz_rows = facade.list_grouped_gazetteer_entries(project)
 
     cat_tab1, cat_tab2, cat_tab3 = st.tabs([
-        f"🏷️ Loại thực thể / Đối tượng ({len(type_rows)} loại)",
-        f"🔗 Loại quan hệ ({len(rel_rows)} quan hệ)",
-        f"📚 Từ điển Bí danh & Địa danh ({len(gaz_rows)} mục)",
+        "🏷️ Loại thực thể / Đối tượng",
+        "🔗 Loại quan hệ",
+        "📚 Từ điển Bí danh & Địa danh",
     ])
 
     with cat_tab1:
-        st.caption("Danh sách các phân loại đối tượng hợp lệ trong đồ thị (ví dụ: di tích, nhân vật, địa danh, niên đại...).")
+        st.caption(
+            f"Hiện có **{len(type_rows)}** loại thực thể hợp lệ trong đồ thị "
+            "(ví dụ: di tích, nhân vật, địa danh, niên đại...)."
+        )
         up_type = st.file_uploader(
             "📥 Tải lên file JSON hoặc CSV Loại thực thể (cột: name, description, definition)",
             type=["json", "csv"],
-            key="p02_up_type",
+            key=f"p02_up_type_{proj_id}",
         )
         if up_type is not None:
             t_c1, t_c2 = st.columns(2)
@@ -206,6 +213,7 @@ def render_catalogs_prompts_page(project: dict) -> None:
                     facade.create_snapshot(project)
                     project["entity_types"] = parsed
                     facade.save_project(project)
+                    bump_sync_nonce("_catalog_editor_nonce")
                     st.success(f"Đã nạp {len(parsed)} loại thực thể từ `{up_type.name}`!")
                     st.rerun()
                 except Exception as exc:
@@ -218,6 +226,7 @@ def render_catalogs_prompts_page(project: dict) -> None:
                     facade.create_snapshot(project)
                     project["entity_types"] = type_rows + added
                     facade.save_project(project)
+                    bump_sync_nonce("_catalog_editor_nonce")
                     st.success(f"Đã gộp thêm {len(added)} loại thực thể mới từ `{up_type.name}`!")
                     st.rerun()
                 except Exception as exc:
@@ -227,7 +236,7 @@ def render_catalogs_prompts_page(project: dict) -> None:
             type_rows,
             num_rows="dynamic",
             width="stretch",
-            key="ed_types",
+            key=f"ed_types_{proj_id}_{cat_nonce}",
             column_config={
                 "name": st.column_config.TextColumn("Tên loại thực thể (name)", required=True),
                 "description": st.column_config.TextColumn("Mô tả ngắn (description)"),
@@ -254,11 +263,14 @@ def render_catalogs_prompts_page(project: dict) -> None:
             )
 
     with cat_tab2:
-        st.caption("Danh sách các nhãn quan hệ kết nối giữa các thực thể (ví dụ: tọa lạc tại, thờ phụng, xây dựng vào...).")
+        st.caption(
+            f"Hiện có **{len(rel_rows)}** nhãn quan hệ kết nối giữa các thực thể "
+            "(ví dụ: tọa lạc tại, thờ phụng, xây dựng vào...)."
+        )
         up_rel = st.file_uploader(
             "📥 Tải lên file JSON hoặc CSV Quan hệ (cột: name, description, definition, domain, range)",
             type=["json", "csv"],
-            key="p02_up_rel",
+            key=f"p02_up_rel_{proj_id}",
         )
         if up_rel is not None:
             r_c1, r_c2 = st.columns(2)
@@ -268,6 +280,7 @@ def render_catalogs_prompts_page(project: dict) -> None:
                     facade.create_snapshot(project)
                     apply_relations(project, parsed)
                     facade.save_project(project)
+                    bump_sync_nonce("_catalog_editor_nonce")
                     st.success(f"Đã nạp {len(parsed)} quan hệ từ `{up_rel.name}`!")
                     st.rerun()
                 except Exception as exc:
@@ -280,6 +293,7 @@ def render_catalogs_prompts_page(project: dict) -> None:
                     facade.create_snapshot(project)
                     apply_relations(project, rel_rows + added)
                     facade.save_project(project)
+                    bump_sync_nonce("_catalog_editor_nonce")
                     st.success(f"Đã gộp thêm {len(added)} quan hệ mới từ `{up_rel.name}`!")
                     st.rerun()
                 except Exception as exc:
@@ -289,7 +303,7 @@ def render_catalogs_prompts_page(project: dict) -> None:
             rel_rows,
             num_rows="dynamic",
             width="stretch",
-            key="ed_rels",
+            key=f"ed_rels_{proj_id}_{cat_nonce}",
             column_config={
                 "name": st.column_config.TextColumn("Tên quan hệ (name)", required=True),
                 "description": st.column_config.TextColumn("Mô tả ngắn (description)"),
@@ -325,6 +339,14 @@ def render_catalogs_prompts_page(project: dict) -> None:
     with save_c1:
         if st.button("💾 Lưu Toàn bộ Thay đổi Danh mục", type="primary", key="btn_save_catalogs", width="stretch"):
             try:
+                gaz_err = str(
+                    st.session_state.get(f"_p02_gaz_validation_error_{proj_id}")
+                    or st.session_state.get("_p02_gaz_validation_error")
+                    or ""
+                ).strip()
+                if gaz_err:
+                    raise ValueError(gaz_err)
+
                 clean_rels = [r for r in edited_rels if isinstance(r, dict) and (r.get("name") or "").strip()]
                 clean_types = [t for t in edited_types if isinstance(t, dict) and (t.get("name") or "").strip()]
                 prompt_text = project.get("prompt", "")
@@ -345,6 +367,8 @@ def render_catalogs_prompts_page(project: dict) -> None:
                         expected_revision=facade.project_revision(project),
                     )
 
+                st.session_state.pop(f"_p02_gaz_validation_error_{proj_id}", None)
+                bump_sync_nonce("_catalog_editor_nonce")
                 st.success("✅ Đã lưu danh mục lược đồ và từ điển của dự án thành công!")
                 st.rerun()
             except Exception as exc:
@@ -354,6 +378,7 @@ def render_catalogs_prompts_page(project: dict) -> None:
             facade.create_snapshot(project)
             facade.save_prompt_settings(project, project.get("prompt", ""), [], [])
             facade.save_project(project)
+            bump_sync_nonce("_catalog_editor_nonce")
             st.warning("Đã làm trống toàn bộ danh mục của dự án!")
             st.rerun()
 

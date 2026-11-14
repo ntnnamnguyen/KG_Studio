@@ -29,6 +29,7 @@ from frontend.components.shared_curation_ui import (
     render_sqlite_resync_banner,
 )
 from frontend.state.session import (
+    bump_sync_nonce,
     get_active_curation_section,
     get_session_llm_params,
     navigate_to_step,
@@ -36,6 +37,7 @@ from frontend.state.session import (
     reset_edc_state_if_project_changed,
     return_to_curation_from_edc,
     set_active_curation_section,
+    sync_keyed_choice,
 )
 
 
@@ -103,7 +105,6 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
             )
             if rc2.button("↩️ Quay lại mục đang kiểm duyệt ở Phân khu Quan hệ", width='stretch', key="btn_hub_return_curation"):
                 return_to_curation_from_edc(project)
-                st.session_state["curation_hub_active_tab"] = "edges"
                 st.rerun()
 
     # 3. BẢNG CHỈ SỐ SỨC KHỎE ĐỒ THỊ & LƯỢC ĐỒ TỔNG THỂ (Unified Dashboard Metrics)
@@ -132,6 +133,7 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
                 help="Chuyển ngay sang Phân khu 1: Chuẩn hóa Lược đồ",
             ):
                 st.session_state["curation_hub_active_tab"] = "schema"
+                bump_sync_nonce("_curation_hub_tab_nonce")
                 st.rerun()
     with act_col2:
         if cur_stats["pending"] > 0 or cur_stats["check"] > 0:
@@ -142,7 +144,7 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
                 type="primary" if cur_stats["pending"] > 0 and cur_stats["schema_blocked"] == 0 else "secondary",
                 help="Chuyển ngay sang Phân khu 2: Duyệt Quan hệ & Bằng chứng",
             ):
-                st.session_state["curation_hub_active_tab"] = "edges"
+                set_active_curation_section(project, "edges")
                 st.rerun()
     with act_col3:
         if dup_val > 0:
@@ -153,8 +155,7 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
                 type="primary",
                 help="Chuyển ngay sang Phân khu 3: Công cụ Gộp Thực thể",
             ):
-                st.session_state["curation_hub_active_tab"] = "entities"
-                st.session_state["hub_entity_submode_radio"] = "🔀 Công cụ Gộp Thực thể Trùng lặp (Entity Merge)"
+                set_active_curation_section(project, "merge")
                 st.rerun()
         else:
             if st.button(
@@ -163,7 +164,7 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
                 key="btn_act_goto_entities_list",
                 help="Chuyển ngay sang Phân khu 3: Quản lý Hồ sơ Thực thể",
             ):
-                st.session_state["curation_hub_active_tab"] = "entities"
+                set_active_curation_section(project, "entities")
                 st.rerun()
 
     st.divider()
@@ -179,23 +180,38 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
     # Khởi tạo hoặc cập nhật phân khu hiện hành
     if "curation_hub_active_tab" not in st.session_state:
         st.session_state["curation_hub_active_tab"] = default_tab
-    elif st.session_state.get("_hub_request_tab"):
+    if st.session_state.get("_hub_request_tab"):
         st.session_state["curation_hub_active_tab"] = st.session_state.pop("_hub_request_tab")
+        bump_sync_nonce("_curation_hub_tab_nonce")
 
     current_active_tab = st.session_state.get("curation_hub_active_tab", default_tab)
     if current_active_tab not in hub_tab_keys:
         current_active_tab = default_tab
+        st.session_state["curation_hub_active_tab"] = current_active_tab
+
+    tab_nonce = int(st.session_state.get("_curation_hub_tab_nonce") or 0)
+    sync_keyed_choice(
+        "curation_hub_radio_subtab",
+        hub_tab_keys,
+        current_active_tab,
+        (current_active_tab, tab_nonce),
+    )
 
     selected_tab = st.radio(
         "Chọn phân khu làm việc trong Hub Kiểm duyệt:",
         hub_tab_keys,
-        index=hub_tab_keys.index(current_active_tab),
         format_func=lambda k: hub_tabs[k],
         horizontal=True,
         key="curation_hub_radio_subtab",
     )
     if selected_tab != current_active_tab:
         st.session_state["curation_hub_active_tab"] = selected_tab
+        if selected_tab == "edges":
+            st.session_state["_curation_active_section"] = "edges"
+        elif selected_tab == "entities":
+            sub = str(st.session_state.get("_curation_entity_submode") or "")
+            st.session_state["_curation_active_section"] = "merge" if sub.startswith("🔀") else "entities"
+        bump_sync_nonce("_curation_hub_tab_nonce")
         st.rerun()
 
     st.divider()
@@ -311,7 +327,7 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
             project,
             batch_key="schema_decision_batches",
             title="Lịch sử Lô Quyết định Lược đồ & Khôi phục Snapshot",
-            on_restore_callbacks=[reset_edc_state_if_project_changed],
+            on_restore_callbacks=[lambda p: reset_edc_state_if_project_changed(p, force=True)],
             key_prefix="hub_schema_batch",
             enable_jump_to_proposal=True,
         )
@@ -335,7 +351,10 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
             project,
             batch_key="curation_decision_batches",
             title="Lịch sử Lô Kiểm duyệt Quan hệ & Khôi phục Snapshot",
-            on_restore_callbacks=[reset_edc_state_if_project_changed, reset_curation_state_if_project_changed],
+            on_restore_callbacks=[
+                lambda p: reset_edc_state_if_project_changed(p, force=True),
+                lambda p: reset_curation_state_if_project_changed(p, force=True),
+            ],
             key_prefix="hub_edge_batch",
         )
 
@@ -349,12 +368,32 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
             "về một thực thể đại diện duy nhất (canonical entity) kèm chuyển hướng cạnh tự động."
         )
 
+        submode_options = [
+            "🏛️ Bảng Hồ sơ Thực thể & Trọng số",
+            "🔀 Công cụ Gộp Thực thể Trùng lặp (Entity Merge)",
+        ]
+        default_submode = submode_options[1] if get_active_curation_section(project) == "merge" else submode_options[0]
+        desired_submode = str(st.session_state.get("_curation_entity_submode") or default_submode)
+        if desired_submode not in submode_options:
+            desired_submode = default_submode
+        submode_nonce = int(st.session_state.get("_curation_entity_submode_nonce") or 0)
+        sync_keyed_choice(
+            "hub_entity_submode_radio",
+            submode_options,
+            desired_submode,
+            (desired_submode, submode_nonce),
+        )
         ent_subnav = st.radio(
             "Chế độ hiển thị Phân khu 3:",
-            ["🏛️ Bảng Hồ sơ Thực thể & Trọng số", "🔀 Công cụ Gộp Thực thể Trùng lặp (Entity Merge)"],
+            submode_options,
             horizontal=True,
             key="hub_entity_submode_radio",
         )
+        if ent_subnav != desired_submode:
+            st.session_state["_curation_entity_submode"] = ent_subnav
+            st.session_state["_curation_active_section"] = "merge" if not ent_subnav.startswith("🏛️") else "entities"
+            bump_sync_nonce("_curation_entity_submode_nonce")
+            st.rerun()
 
         if ent_subnav.startswith("🏛️"):
             ent_ctx = render_entity_table(project)
@@ -368,7 +407,10 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
             project,
             batch_key="curation_decision_batches",
             title="Lịch sử Lô Thao tác Thực thể & Khôi phục Snapshot",
-            on_restore_callbacks=[reset_edc_state_if_project_changed, reset_curation_state_if_project_changed],
+            on_restore_callbacks=[
+                lambda p: reset_edc_state_if_project_changed(p, force=True),
+                lambda p: reset_curation_state_if_project_changed(p, force=True),
+            ],
             key_prefix="hub_entity_batch",
         )
 

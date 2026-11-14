@@ -7,7 +7,7 @@ from typing import Any
 from backend.domain.catalogs.service import catalog_rows, compute_catalog_hash, is_proposal_candidates_stale
 from shared.schemas.edc import BulkReviewPreviewDTO, BulkReviewResultDTO, ProposalDecisionDTO
 from shared.text_utils import normal, uid
-from .core import PAGE_LABELS, _apply_selection_state, _store
+from .core import PAGE_LABELS, _apply_selection_state, _store, bump_sync_nonce
 from .curation_state import (
     reset_curation_state_if_project_changed,
     set_active_curation_section,
@@ -31,6 +31,9 @@ def _default_table_state(project_id: str, kind: str) -> dict[str, Any]:
         "flash_messages": [],
         "filter_prune_notice": "",
         "last_filter_sig": "",
+        "filter_nonce": 0,
+        "focus_nonce": 0,
+        "page_nonce": 0,
         "filters": {
             "status": "pending",
             "search": "",
@@ -46,18 +49,24 @@ def _default_table_state(project_id: str, kind: str) -> dict[str, Any]:
     }
 
 
-def reset_edc_state_if_project_changed(project: dict, state_store: dict[str, Any] | None = None) -> bool:
-    """Khi đổi dự án: xóa toàn bộ lựa chọn, bản nháp và kết quả xem trước của dự án trước."""
+def reset_edc_state_if_project_changed(
+    project: dict,
+    state_store: dict[str, Any] | None = None,
+    *,
+    force: bool = False,
+) -> bool:
+    """Khi đổi dự án (hoặc force sau khôi phục snapshot): xóa toàn bộ lựa chọn, bản nháp và xem trước."""
     store = _store(state_store)
     proj_id = str(project.get("project_id") or project.get("name") or "default")
     prev_id = store.get("_edc_active_project_id")
-    changed = prev_id != proj_id
+    changed = force or (prev_id != proj_id)
     if changed or not isinstance(store.get("_edc_tables"), dict):
         store["_edc_active_project_id"] = proj_id
         store["_edc_tables"] = {
             "entity_types": _default_table_state(proj_id, "entity_types"),
             "relations": _default_table_state(proj_id, "relations"),
         }
+        bump_sync_nonce("_inspector_action_nonce", store)
     return changed
 
 
@@ -99,6 +108,7 @@ def set_focused_proposal(
     """Mở xem chi tiết một dòng mà KHÔNG tự đánh dấu chọn hoặc duyệt dòng đó."""
     t_state = get_edc_table_state(project, kind, state_store)
     t_state["focused_proposal_id"] = str(proposal_id or "").strip()
+    t_state["focus_nonce"] = int(t_state.get("focus_nonce") or 0) + 1
 
 
 def toggle_proposal_selection(
@@ -421,6 +431,7 @@ def reconcile_state_after_apply(
     if current_filtered_ids is not None:
         remaining_selected = [pid for pid in remaining_selected if pid in current_filtered_ids]
     t_state["selected_ids"] = remaining_selected
+    t_state["sel_editor_nonce"] = int(t_state.get("sel_editor_nonce") or 0) + 1
     t_state["active_preview"] = None
     t_state["preview_decisions"] = []
     t_state["preview_request_id"] = ""
@@ -451,6 +462,9 @@ def navigate_to_edc_proposal_from_curation(
     t_state = get_edc_table_state(project, kind, store)
     if prop and prop.get("status") != t_state["filters"].get("status") and t_state["filters"].get("status") != "all":
         t_state["filters"]["status"] = "all"
+        t_state["filters"]["page"] = 1
+        t_state["filter_nonce"] = int(t_state.get("filter_nonce") or 0) + 1
+        t_state["page_nonce"] = int(t_state.get("page_nonce") or 0) + 1
 
     return_ctx = {
         "project_id": str(project.get("project_id") or project.get("name") or "default"),
@@ -462,7 +476,10 @@ def navigate_to_edc_proposal_from_curation(
     }
     store["_curation_return_context"] = return_ctx
     store["active_page"] = PAGE_LABELS[3]
+    store["active_step"] = "review"
     store["curation_hub_active_tab"] = "schema"
+    bump_sync_nonce("_nav_sync_nonce", store)
+    bump_sync_nonce("_curation_hub_tab_nonce", store)
     return return_ctx
 
 
@@ -475,7 +492,9 @@ def return_to_curation_from_edc(
     ctx = store.get("_curation_return_context")
     if not isinstance(ctx, dict):
         store["active_page"] = PAGE_LABELS[3]
-        store["curation_hub_active_tab"] = "edges"
+        store["active_step"] = "review"
+        set_active_curation_section(project, "edges", store)
+        bump_sync_nonce("_nav_sync_nonce", store)
         return None
     section = str(ctx.get("section") or "edges")
     set_active_curation_section(project, section, store)
@@ -484,6 +503,7 @@ def return_to_curation_from_edc(
     if ctx.get("node_id"):
         set_focused_entity(project, str(ctx["node_id"]), store)
     store["active_page"] = PAGE_LABELS[3]
-    store["curation_hub_active_tab"] = "edges" if section == "edges" else "entities"
+    store["active_step"] = "review"
+    bump_sync_nonce("_nav_sync_nonce", store)
     store["_curation_return_context"] = None
     return ctx

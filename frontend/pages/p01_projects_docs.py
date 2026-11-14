@@ -8,7 +8,7 @@ import streamlit as st
 from backend.domain.documents.processor import count_chunks
 from backend.facade import get_facade
 from frontend.components.pipeline_banner import render_step_next_action
-from frontend.state.session import navigate_to_step
+from frontend.state.session import navigate_to_step, sync_keyed_value
 
 
 def render_projects_docs_page(project: dict) -> None:
@@ -128,7 +128,7 @@ def render_projects_docs_page(project: dict) -> None:
     # 5. CHI TIẾT KỸ THUẬT & XEM TRƯỚC VĂN BẢN ĐÃ ĐỌC
     with st.expander("🔍 Chi tiết tài liệu & Xem trước văn bản đã bóc tách", expanded=bool(warn_docs)):
         doc_names = [d["name"] for d in docs]
-        chosen_doc_name = st.selectbox("Chọn tài liệu cần kiểm tra", doc_names, key="p01_sel_doc_preview")
+        chosen_doc_name = st.selectbox("Chọn tài liệu cần kiểm tra", doc_names, key=f"p01_sel_doc_preview_{proj_key}")
         target_doc = next((d for d in docs if d["name"] == chosen_doc_name), None)
         if target_doc:
             text_preview = target_doc.get("text", "")
@@ -149,12 +149,16 @@ def render_projects_docs_page(project: dict) -> None:
                     f"⚠️ Văn bản dài ({len(text_preview):,} ký tự). Khung dưới **chỉ hiển thị {preview_limit:,} ký tự đầu tiên** "
                     "(nội dung đầy đủ vẫn được lưu để trích xuất)."
                 )
+            preview_key = f"p01_preview_txt_{proj_key}_{target_doc.get('id', chosen_doc_name)}"
+            preview_content = text_preview[:preview_limit] + (
+                "\n... [Bị giới hạn hiển thị tại 3,000 ký tự đầu]" if len(text_preview) > preview_limit else ""
+            )
+            sync_keyed_value(preview_key, preview_content, preview_content)
             st.text_area(
                 f"Nội dung văn bản đã đọc (tối đa {preview_limit:,} ký tự đầu)",
-                value=text_preview[:preview_limit] + ("\n... [Bị giới hạn hiển thị tại 3,000 ký tự đầu]" if len(text_preview) > preview_limit else ""),
                 height=220,
                 disabled=True,
-                key=f"p01_preview_txt_{target_doc.get('id', chosen_doc_name)}",
+                key=preview_key,
             )
 
     # 6. NÚT CHUYỂN BƯỚC TIẾP THEO

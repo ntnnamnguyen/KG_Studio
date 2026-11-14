@@ -48,6 +48,7 @@ graph TB
                 GRAPH_SVC["domain/graph/service.py"]
                 G_RET["domain/graph/g_retriever.py (G-Retriever Graph RAG)"]
                 QA_GEN["domain/graph/qa_generator.py (Benchmark QA Generator)"]
+                KGQA_BND["domain/graph/kgqa_bundle.py (G-Retriever 5-File Bundle Exporter)"]
             end
             
             EXP_AL["domain/dataset_exporter/exporter.py (Active Learning Exporter)"]
@@ -236,12 +237,13 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
   - `curation/validation.py`: Kiểm tra tính hợp lệ về schema và bằng chứng (`inspect_edge_schema_status`, `validate_edge_for_approval`, `approvable_edges`).
   - `curation/review.py`: Duyệt đơn, duyệt hàng loạt cạnh (`preview_curation_decisions`, `apply_curation_decisions`).
   - `curation/entities.py`: Quản lý hồ sơ thực thể, bậc liên kết, gợi ý trùng lặp (`node_degrees`, `duplicate_suggestions`, `update_node`, `review_stats`).
-  - `curation/gazetteer.py`: Quản lý Từ điển Bí danh cấp dự án (`domain_gazetteer`), phân tích/xuất JSON & CSV (`parse_gazetteer_bytes`, `gazetteer_to_json_bytes`, `gazetteer_to_csv_bytes`), làm giàu tự động từ gộp thực thể (`enrich_gazetteer_from_merge`) và CRUD/nạp mẫu (`upsert_gazetteer_entry`, `delete_gazetteer_entry`, `replace_gazetteer_entries`, `merge_gazetteer_entries`, `clear_gazetteer`, `preload_gazetteer_template`).
+  - `curation/gazetteer.py`: Quản lý Từ điển Bí danh cấp dự án (`domain_gazetteer`), phân tích/xuất JSON & CSV hỗ trợ cả dạng 1-1 lẫn gom nhóm 1-N `aliases` ngăn cách `;`/`|` (`split_gazetteer_aliases`, `list_grouped_gazetteer_entries`, `expand_grouped_gazetteer_rows`, `parse_gazetteer_bytes`, `gazetteer_to_json_bytes`, `gazetteer_to_csv_bytes`), làm giàu tự động từ gộp thực thể (`enrich_gazetteer_from_merge`) và CRUD/nạp mẫu (`upsert_gazetteer_entry`, `delete_gazetteer_entry`, `replace_gazetteer_entries`, `merge_gazetteer_entries`, `clear_gazetteer`, `preload_gazetteer_template`).
   - `curation/service.py`: Điểm re-export công khai tương thích ngược 100% cho toàn bộ phân khu Curation.
 - `graph/` (**Phân khu Đồ thị & Graph RAG**):
   - `graph/service.py`: Kiểm tra toàn vẹn đồ thị (`validate_integrity`), trích xuất đồ thị đã duyệt (`approved_graph`), sinh file JSON, CSV, ZIP.
   - `graph/g_retriever.py`: **G-Retriever Graph RAG Engine**: Trích xuất đồ thị con tri thức phục vụ sinh câu trả lời RAG (tách token chuỗi `_` cho quan hệ CIDOC CRM, loại cạnh `STATUS_REJECTED`, không fallback khi approved rỗng, điều hướng PCST giảm chi phí hub mượt + PPR bảo toàn khối lượng xác suất nút treo, tham số `domain_topic` phi miền và giới hạn `max_input_tokens`).
   - `graph/qa_generator.py`: **Benchmark QA Generator**: Sinh tự động các cặp câu hỏi - đáp (Multi-hop QA, Factoid QA) dựa trên đồ thị đã duyệt; mặc định `disjoint_split=True` phân chia `train/val/test` không rò rỉ cạnh qua Union-Find thành phần liên thông và khớp `target_entity_id` cho `Explainable Path`.
+  - `graph/kgqa_bundle.py`: **G-Retriever 5-File Bundle Exporter**: Module thuần domain đóng gói và xuất bộ 5 tệp chuẩn huấn luyện G-Retriever (`nodes.csv`, `edges.csv`, `evidence.csv`, `questions.csv`, `schema_contract.json` UTF-8 BOM), giữ nguyên loại thực thể/quan hệ gốc của dự án, gom bí danh theo ranh giới đồng âm, dồn bằng chứng đa nguồn trên cạnh, sinh đủ `single_hop` (`forward`/`reverse`), `multi_hop` (`forward->forward` & `reverse->forward`), `list` cùng `gold_paths`/`evidence_edges`/`evidence`, và hậu kiểm kết quả Paraphrase LLM (`apply_paraphrased_kgqa_results`) giữ thực thể hạt giống & chống lộ đáp án.
 - `dataset_exporter/exporter.py`: Lớp `ActiveLearningExporter` xuất dữ liệu con người đã duyệt thành 3 tập JSONL chuẩn: `sr_triplets.jsonl`, `canonicalization_pairs.jsonl`, `sft_extractions.jsonl`.
 
 #### D. Các Phân Hệ Modular Monolith (`backend/modules/`)
@@ -294,9 +296,9 @@ Kiến trúc đích Modular Monolith theo nghiệp vụ với Ports & Adapters c
 | :--- | :--- |
 | `frontend/app.py` | Entrypoint Streamlit & App Shell (`_inject_scoped_styles()`, theme light contrast cao kết hợp `.streamlit/config.toml`). Sidebar tối giản tách rõ mở/tạo dự án, hiển thị thẻ tóm tắt kết nối AI chỉ đọc (liên kết sang Bước 2 để chỉnh sửa), và điều hướng 5 Màn hình chính. |
 | `frontend/composition.py` | **Composition Root cho Frontend**: Cung cấp Application Services (`ProjectsApplicationService`) và Facade cho UI components, bảo đảm components không tự khởi tạo repositories/facade hoặc can thiệp trực tiếp vào storage/transactions. |
-| `frontend/client.py` | Lớp `FrontendClient` (và hàm `get_client()`). Bọc lời gọi sang Facade chạy trực tiếp trong cùng tiến trình (In-Process) hoặc qua HTTP REST API nếu có cấu hình `KG_STUDIO_API_URL`. |
+| `frontend/client.py` | Lớp `FrontendClient` (cùng `get_client()` và `reset_client()`). Bọc lời gọi sang Facade chạy trực tiếp trong cùng tiến trình (In-Process) hoặc qua HTTP REST API nếu có cấu hình `KG_STUDIO_API_URL`, đồng thời tự động rebind khi `FrontendComposition.facade` hoặc `api_base_url` thay đổi. |
 | `frontend/state/selection_core.py` | Thao tác danh sách ID thuần cho việc lựa chọn dòng trên giao diện (`toggle_id_in_list`, `append_unique_ids`, `reconcile_id_selection`). |
-| `frontend/state/` (`core.py`, `curation_state.py`, `edc_state.py`, `llm_state.py`, `navigation.py`, `session.py`) | Quản lý `st.session_state` theo DAG tách biệt miền: `core.py` (hằng số `PAGE_LABELS`, điều hướng cơ bản), `edc_state.py` (trạng thái bảng & bản nháp Phân khu 1 `_edc_tables`, `_curation_return_context`), `curation_state.py` (Phân khu 2 & 3 `_curation_sections` kèm `ordered_edge_ids`), `llm_state.py` (đồng bộ provider/API key LLM), `navigation.py` (`compute_pipeline_readiness`, `ensure_session_state`), và `session.py` (facade re-export tường minh qua `__all__` giữ tương thích ngược). |
+| `frontend/state/` (`core.py`, `curation_state.py`, `edc_state.py`, `llm_state.py`, `navigation.py`, `session.py`) | Quản lý `st.session_state` theo DAG tách biệt miền: `core.py` (hằng số `PAGE_LABELS`, điều hướng cơ bản và nhóm primitive đồng bộ widget dùng `key=` không truyền `value=`/`index=`/`default=`: `bump_sync_nonce`, `sync_keyed_value`, `sync_keyed_choice`, `sync_keyed_multiselect`, `sync_keyed_int`), `edc_state.py` (trạng thái bảng & bản nháp Phân khu 1 `_edc_tables`, `_curation_return_context`), `curation_state.py` (Phân khu 2 & 3 `_curation_sections` kèm `ordered_edge_ids`), `llm_state.py` (đồng bộ provider/API key LLM), `navigation.py` (`compute_pipeline_readiness`, `ensure_session_state`), và `session.py` (facade re-export tường minh qua `__all__` giữ tương thích ngược). |
 | `frontend/components/shared_curation_ui.py` | **Component Dùng Chung cốt lõi**: `render_sqlite_resync_banner`, `paginate_items` (thuật toán phân trang chuẩn), `compute_filter_hash`, `render_selection_action_bar` (nêu rõ phạm vi trang hiện tại vs toàn bộ kết quả lọc), `render_decision_batch_history`. |
 | `frontend/components/edc_review_table/` (`__init__.py`, `logic.py`, `drawer.py`, `table_view.py`) | Package bảng duyệt đề xuất EDC độc lập theo lớp (`logic.py` lọc/phân trang thuần, `table_view.py` hiển thị bộ lọc & bảng chọn, `drawer.py` chi tiết quan sát & quyết định đơn lẻ; `__init__.py` re-export tường minh). |
 | `frontend/components/edc_bulk_actions/` (`__init__.py`, `logic.py`, `view.py`) | Package thanh thao tác hàng loạt EDC: `logic.py` (dựng preview & execute batch), `view.py` (làm mới gợi ý, điền ứng viên Top-1, gán đích hợp nhất, xem trước & thực thi; `__init__.py` re-export tường minh). |
@@ -317,13 +319,14 @@ Kiến trúc đích Modular Monolith theo nghiệp vụ với Ports & Adapters c
 | `components/export_tabs/g_retriever_tab.py` | Giao diện tương tác **G-Retriever Graph RAG** (tách helper đọc cấu hình LLM, chọn câu hỏi mẫu, tham số nghiên cứu, đối sánh 3 phương pháp song song & hiển thị kết quả đơn lẻ): tách phần hỏi đáp người dùng trực diện khỏi expander `🔬 Tham số thuật toán & Chế độ đối sánh (Nghiên cứu)`. |
 | `components/export_tabs/benchmark_tab.py` | Dùng chung cho mọi nguồn graph: demo câu hỏi tự sinh trên cùng graph hoặc nạp JSON gold facts độc lập để đối sánh giữa KG; export metadata và invalidation khi graph/gold/budget đổi. |
 | `components/export_tabs/training_dataset_tab.py` | Giao diện xuất tập dữ liệu huấn luyện Active Learning (`sr_triplets`, `canonicalization_pairs`, `sft_extractions`). |
-| `components/gazetteer_panel.py` | Giao diện thiết lập Từ điển Bí danh Dự án tại Bước 2 (`render_gazetteer_setup_tab`: nạp/xuất file JSON & CSV, nạp mẫu, chỉnh sửa `st.data_editor`). |
+| `components/export_tabs/gretriever_bundle_section.py` | Tab 5 tách biệt hoàn toàn với bản cũ: giao diện đơn luồng (tùy chọn Paraphrase LLM hậu kiểm thực thể/đáp án + 1 nút tạo & 1 nút tải ZIP đúng 5 tệp chuẩn G-Retriever: `nodes.csv`, `edges.csv`, `evidence.csv`, `questions.csv`, `schema_contract.json`). |
+| `components/gazetteer_panel.py` | Giao diện thiết lập Từ điển Bí danh Dự án tại Bước 2 (`render_gazetteer_setup_tab`: nạp/xuất file JSON & CSV, nạp mẫu, bảng `st.data_editor` gom nhóm 1 chủ thể — N bí danh ngăn cách `;`/`|` kèm dropdown `kind` từ `entity_types` và kiểm tra xung đột bí danh). |
 | `components/graph_view.py` | Trình sinh DOT Graphviz dùng chung cho graph approved/baseline/external với bảng màu tương phản cao cho nền sáng (`#EFF6FF`, `#1D4ED8`). |
 | `frontend/pages/p01_projects_docs.py` | **Màn hình 1: Tư liệu Nguồn**. Thống kê tiếp tục dự án, nạp file tách rõ trạng thái chưa lưu / đã lưu và giữ kết quả từng file (`_p01_upload_report_*`), bảng tài liệu tinh gọn 4 cột kèm expander chi tiết và giới hạn xem trước `3,000` ký tự. |
 | `frontend/pages/p02_catalogs_prompts.py` | **Màn hình 2: Phương pháp & Thiết lập (SSOT cấu hình)**. Kết nối AI duy nhất (nêu rõ phạm vi `default.toml` / `.secrets.toml` / session), bộ chọn phương pháp, quản lý 3 tab Danh mục/Từ điển (kèm cảnh báo khi đang bật Baseline B), và ML Lab (`use_expander=False`). |
 | `frontend/pages/p03_extraction.py` | **Màn hình 3: Trích xuất & Trace**. Thẻ tóm tắt AI & Phương pháp chỉ đọc (liên kết về Bước 2), danh sách chọn tài liệu, expander thông số phân đoạn/đa luồng, minh bạch chi phí/API cho nút Dry-run & Run, và nhật ký tách tóm tắt với chi tiết kỹ thuật. |
 | `frontend/pages/p04_curation_hub.py` | **Màn hình 4: Trung tâm Kiểm duyệt & Chuẩn hóa Tri thức (Knowledge Curation Hub)**. Gồm 6 chỉ số sức khỏe, tháo gỡ quan hệ vướng danh mục, và 3 phân khu nghiệp vụ:<br>- *Phân khu 1: Chuẩn hóa Lược đồ (Schema EDC)*<br>- *Phân khu 2: Duyệt Quan hệ & Bằng chứng*<br>- *Phân khu 3: Quản lý & Gộp thực thể (tự động nạp bí danh sau gộp vào Từ điển Dự án kèm thông báo)* |
-| `frontend/pages/p05_graph_export.py` | **Màn hình 5: Graph RAG & Xuất Dữ liệu**. Chọn nguồn qua `components/graph_source.py`, hiển thị banner phân biệt rõ đồ thị Đã duyệt / Baseline B / File ngoài, tách Khám phá & Xuất dữ liệu (kèm bảng quan hệ hỗ trợ bàn phím và ghi chú giới hạn sơ đồ không cắt xuất) khỏi 2 tab Nghiên cứu (Benchmark, QA Studio). |
+| `frontend/pages/p05_graph_export.py` | **Màn hình 5: Graph RAG & Xuất Dữ liệu**. Chọn nguồn qua `components/graph_source.py`, hiển thị banner phân biệt rõ đồ thị Đã duyệt / Baseline B / File ngoài, gồm 5 tab tách bạch: Tab 1 Khám phá Graph RAG, Tab 2 Bản đồ & Xuất 11 tệp cũ, Tab 3 Benchmark, Tab 4 Sinh QA & PyG (Bản cũ), và Tab 5 Xuất Bộ 5 Tệp Chuẩn G-Retriever. |
 
 ---
 
@@ -377,6 +380,7 @@ Kiểm thử được thu bằng unittest discovery; số lượng và kết qu�
 | `tests/test_curation_merge.py` | Kiểm thử kiểm duyệt đồ thị & gộp tri thức: kiểm tra bằng chứng trích xuất, đối chiếu ngữ cảnh văn bản gốc, phát hiện cặp nghi trùng, gộp node an toàn (chuyển hướng cạnh, chống self-loop), gộp quan hệ, thu gọn cạnh trùng bộ ba và dồn bằng chứng qua `merge_core.py`. |
 | `tests/test_semantic_clustering.py` | Kiểm thử thuật toán phân cụm ngữ nghĩa thực thể và quan hệ dựa trên tương đồng vector và TF-IDF. |
 | `tests/test_g_retriever.py` | Kiểm thử engine **G-Retriever Graph RAG**: truy xuất đồ thị con qua Steiner Tree, định dạng ngữ cảnh text-graph, sinh câu trả lời kèm bằng chứng. |
+| `tests/test_kgqa_bundle_export.py` | Kiểm thử xuất Bộ 5 tệp Chuẩn G-Retriever (`nodes.csv`, `edges.csv`, `evidence.csv`, `questions.csv`, `schema_contract.json`), toàn vẹn tham chiếu chéo, Paraphrase LLM giữ thực thể/chống lộ đáp án và UI AppTest trên `p05_graph_export.py`. |
 | `tests/test_layout_pipeline.py` | Kiểm thử pipeline phân tích layout và chia nhỏ văn bản (chunking) theo ranh giới câu/đoạn. |
 | `tests/test_parallel_extraction.py` | Kiểm thử trích xuất song song nhiều chunk tài liệu an toàn đa luồng. |
 | `tests/test_relation_cleaning.py` | Kiểm thử làm sạch và chuẩn hóa nhãn quan hệ tiếng Việt. |
@@ -484,6 +488,7 @@ Trong `frontend/state/session.py`, dữ liệu phiên được tổ chức tập
 - `extraction_chunk_size`: Kích thước đoạn văn trích xuất.
 - `_edc_tables`: Quản lý lựa chọn, bộ lọc, bản nháp độc lập cho từng nhóm EDC (`entity_types`, `relations`).
 - `_curation_sections`: Quản lý lựa chọn và bộ lọc độc lập cho từng phân khu Curation (`edges`, `entities`, `merge`).
+- `_wsync::<widget_key>` & `_*_nonce`: Thẻ đồng bộ pre-render cho các widget dùng `key=` (tránh xung đột `value=`/`index=`/`default=` với Session State API, tự kẹp số trang / dọn lựa chọn hết hiệu lực khi đổi bộ lọc hoặc đổi dự án).
 
 ---
 

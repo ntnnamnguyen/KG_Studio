@@ -7,7 +7,12 @@ import streamlit as st
 
 from backend.domain.catalogs.service import is_proposal_candidates_stale, proposal_impact
 from frontend.client import get_client
-from frontend.state.session import get_edc_table_state
+from frontend.state.session import (
+    bump_sync_nonce,
+    get_edc_table_state,
+    sync_keyed_choice,
+    sync_keyed_value,
+)
 from shared.catalog_utils import relation_catalog
 from .logic import status_label_vn, verification_badge_label
 
@@ -97,33 +102,49 @@ def _render_single_proposal_decision_form(
         else [t["name"] for t in project.get("entity_types", [])]
     )
     best_cand = str(cands[0].get("name", "")) if cands else ""
+    proj_id = str(project.get("project_id") or project.get("name") or "default")
+    d_tag = (
+        proj_id,
+        kind,
+        pid,
+        int(st.session_state.get("_inspector_action_nonce") or 0),
+        str(proposal.get("status") or ""),
+        str(proposal.get("canonical_name") or ""),
+    )
 
     if single_action == "merge":
-        default_idx = target_options.index(best_cand) if best_cand in target_options else 0
+        merge_opts = target_options if target_options else [""]
+        default_cand = best_cand if best_cand in merge_opts else merge_opts[0]
+        sync_keyed_choice(f"single_merge_t_{kind}_{pid}", merge_opts, default_cand, d_tag)
         s_canon = st.selectbox(
             "Chọn mục đích trong danh mục",
-            target_options if target_options else [""],
-            index=default_idx if target_options else 0,
+            merge_opts,
             key=f"single_merge_t_{kind}_{pid}",
         )
         s_def = str(proposal.get("definition", ""))
         s_desc = ""
     elif single_action == "approve":
-        s_canon = st.text_input("Tên chuẩn mới", value=str(proposal.get("name", "")), key=f"single_app_n_{kind}_{pid}")
-        s_def = st.text_area("Định nghĩa", value=str(proposal.get("definition", "")), key=f"single_app_d_{kind}_{pid}")
-        s_desc = st.text_input("Mô tả", value=str(proposal.get("description", "")), key=f"single_app_desc_{kind}_{pid}")
+        sync_keyed_value(f"single_app_n_{kind}_{pid}", str(proposal.get("name", "")), d_tag)
+        s_canon = st.text_input("Tên chuẩn mới", key=f"single_app_n_{kind}_{pid}")
+        sync_keyed_value(f"single_app_d_{kind}_{pid}", str(proposal.get("definition", "")), d_tag)
+        s_def = st.text_area("Định nghĩa", key=f"single_app_d_{kind}_{pid}")
+        sync_keyed_value(f"single_app_desc_{kind}_{pid}", str(proposal.get("description", "")), d_tag)
+        s_desc = st.text_input("Mô tả", key=f"single_app_desc_{kind}_{pid}")
     else:
         s_canon = ""
         s_def = str(proposal.get("definition", ""))
         s_desc = ""
 
-    s_note = st.text_input("Ghi chú kiểm duyệt", value=str(proposal.get("review_note", "")), key=f"single_note_{kind}_{pid}")
+    sync_keyed_value(f"single_note_{kind}_{pid}", str(proposal.get("review_note", "")), d_tag)
+    s_note = st.text_input("Ghi chú kiểm duyệt", key=f"single_note_{kind}_{pid}")
     if st.button("✅ Áp dụng quyết định đơn cho mục này", key=f"btn_single_apply_{kind}_{pid}"):
         try:
             imp = client.decide_single_proposal(project, pid, single_action, s_canon, s_def, s_note, s_desc)
             t_state = get_edc_table_state(project, kind)
             t_state["selected_ids"] = [x for x in t_state["selected_ids"] if x != pid]
             t_state["drafts"].pop(pid, None)
+            t_state["sel_editor_nonce"] = int(t_state.get("sel_editor_nonce") or 0) + 1
+            bump_sync_nonce("_inspector_action_nonce")
             t_state["flash_messages"].append(
                 f"Đã xử lý đơn đề xuất `{proposal.get('name', '')}` ({len(imp['nodes'])} node, {len(imp['edges'])} cạnh ảnh hưởng)."
             )

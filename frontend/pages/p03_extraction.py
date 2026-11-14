@@ -11,7 +11,12 @@ from backend.integrations.llm import LLMGateway
 from frontend.components.pipeline_banner import render_step_next_action
 from frontend.components.step_traces_viewer import render_step_traces
 from frontend.composition import get_ui_composition
-from frontend.state.session import navigate_to_step
+from frontend.state.session import (
+    navigate_to_step,
+    sync_keyed_choice,
+    sync_keyed_int,
+    sync_keyed_value,
+)
 from shared.config_loader import CONFIG
 from shared.constants import MODE_FREE_TRIPLES
 from shared.secrets_manager import get_api_key
@@ -32,6 +37,7 @@ def render_extraction_page(project: dict) -> None:
     facade = get_facade()
     docs = project.get("documents", [])
     mode = project.get("extraction_mode", "closed")
+    proj_id = str(project.get("project_id") or project.get("name") or "default")
 
     st.subheader(f"🚀 3. Trích xuất Tri thức (Chế độ: `{mode}`)")
     render_step_next_action("extraction", project)
@@ -90,12 +96,12 @@ def render_extraction_page(project: dict) -> None:
 
     # Khởi tạo trạng thái chọn cho từng tài liệu nếu chưa có
     for d in docs:
-        key = f"p03_doc_sel_{d['id']}"
+        key = f"p03_doc_sel_{proj_id}_{d['id']}"
         if key not in st.session_state:
             st.session_state[key] = True
 
     # Danh sách tài liệu đang được đánh dấu chọn
-    selected_docs = [d for d in docs if st.session_state.get(f"p03_doc_sel_{d['id']}", True)]
+    selected_docs = [d for d in docs if st.session_state.get(f"p03_doc_sel_{proj_id}_{d['id']}", True)]
 
     # 2. KHU VỰC CHỌN TÀI LIỆU TRÍCH XUẤT
     with st.container(border=True):
@@ -106,7 +112,7 @@ def render_extraction_page(project: dict) -> None:
         filter_text = tb_filter.text_input(
             "Tìm tài liệu",
             placeholder="🔍 Nhập tên file để lọc nhanh...",
-            key="p03_filter_doc_text",
+            key=f"p03_filter_doc_text_{proj_id}",
             label_visibility="collapsed",
         ).strip().lower()
 
@@ -114,17 +120,17 @@ def render_extraction_page(project: dict) -> None:
 
         if tb_all.button("☑️ Chọn tất cả", key="btn_sel_all_docs", width="stretch"):
             for d in (displayed_docs if filter_text else docs):
-                st.session_state[f"p03_doc_sel_{d['id']}"] = True
+                st.session_state[f"p03_doc_sel_{proj_id}_{d['id']}"] = True
             st.rerun()
 
         if tb_none.button("⬜ Bỏ chọn hết", key="btn_clear_all_docs", width="stretch"):
             for d in (displayed_docs if filter_text else docs):
-                st.session_state[f"p03_doc_sel_{d['id']}"] = False
+                st.session_state[f"p03_doc_sel_{proj_id}_{d['id']}"] = False
             st.rerun()
 
         if tb_unextracted.button("⚪ Chọn file chưa trích xuất", key="btn_sel_unextracted_docs", width="stretch"):
             for d in docs:
-                st.session_state[f"p03_doc_sel_{d['id']}"] = (d["id"] not in runs_by_doc)
+                st.session_state[f"p03_doc_sel_{proj_id}_{d['id']}"] = (d["id"] not in runs_by_doc)
             st.rerun()
 
         # Bảng danh sách chọn tài liệu (tự cuộn nếu danh sách dài)
@@ -139,7 +145,7 @@ def render_extraction_page(project: dict) -> None:
             else:
                 for doc in displayed_docs:
                     c1, c2, c3 = st.columns([5.5, 2.3, 2.2])
-                    k = f"p03_doc_sel_{doc['id']}"
+                    k = f"p03_doc_sel_{proj_id}_{doc['id']}"
                     c1.checkbox(
                         f"📄 **{doc['name']}**",
                         key=k,
@@ -159,7 +165,7 @@ def render_extraction_page(project: dict) -> None:
     # 3. PHẠM VI CHẠY & ĐIỀU KHIỂN TRÍCH XUẤT
     with st.container(border=True):
         st.markdown("##### ⚙️ Phạm vi & Điều khiển Trích xuất")
-        default_workers = int(st.session_state.get("extraction_workers", 3))
+        default_workers = max(1, min(16, int(st.session_state.get("extraction_workers", 3))))
         default_extract_all = bool(st.session_state.get("p03_chk_extract_all", True))
 
         with st.expander("⚙️ Tùy chỉnh kỹ thuật (Phân đoạn & Đa luồng)", expanded=False):
@@ -168,9 +174,9 @@ def render_extraction_page(project: dict) -> None:
             st.session_state["extraction_chunk_size"] = int(chunk_size)
             overlap = c2.number_input("Độ chồng lấp (ký tự)", 0, 1000, default_overlap, 50)
 
+            sync_keyed_value("p03_chk_extract_all", default_extract_all, "init")
             extract_all = c3.checkbox(
                 "Trích xuất tất cả",
-                value=default_extract_all,
                 help="Tự động chia và trích xuất toàn bộ các đoạn của các tài liệu đã chọn.",
                 key="p03_chk_extract_all",
             )
@@ -178,22 +184,35 @@ def render_extraction_page(project: dict) -> None:
                 max_chunks = 9999
                 c4.caption("⚡ Sẽ xử lý **100% các đoạn** của các file đã chọn")
             else:
+                max_chunks_key = f"p03_num_max_chunks_{proj_id}"
+                sync_keyed_int(
+                    max_chunks_key,
+                    int(CONFIG["extraction"]["max_chunks_per_document"]),
+                    (proj_id, "max_chunks"),
+                    min_value=1,
+                    max_value=200,
+                )
                 max_chunks = c4.number_input(
                     "Số đoạn tối đa / file",
-                    1,
-                    200,
-                    int(CONFIG["extraction"]["max_chunks_per_document"]),
+                    min_value=1,
+                    max_value=200,
                     help="Giới hạn số đoạn chạy thử nghiệm cho mỗi tài liệu.",
-                    key="p03_num_max_chunks",
+                    key=max_chunks_key,
                 )
 
             st.markdown("---")
             th_col1, th_col2 = st.columns([2.2, 3.8])
+            sync_keyed_int(
+                "p03_slider_workers",
+                default_workers,
+                "init",
+                min_value=1,
+                max_value=16,
+            )
             workers = th_col1.slider(
                 "⚡ Số luồng gọi API đồng thời (Concurrent Threads)",
                 min_value=1,
                 max_value=16,
-                value=default_workers,
                 step=1,
                 key="p03_slider_workers",
                 help="Số lượng request gọi LLM API gửi đi song song cùng lúc.",
@@ -328,7 +347,8 @@ def render_extraction_page(project: dict) -> None:
                     save_after_chunk=True,
                 )
 
-                st.session_state["p03_last_failed_tasks"] = summary.get("failed_tasks", [])
+                failed_tasks_key = f"p03_last_failed_tasks_{proj_id}"
+                st.session_state[failed_tasks_key] = summary.get("failed_tasks", [])
 
                 if summary.get("failed_tasks"):
                     st.warning(f"⚠️ Đã hoàn tất với {summary['success_count']} đoạn thành công và {len(summary['failed_tasks'])} đoạn gặp lỗi.")
@@ -337,7 +357,7 @@ def render_extraction_page(project: dict) -> None:
                 st.rerun()
 
         # Hiển thị nút khắc phục khi có các đoạn bị lỗi
-        last_failed = st.session_state.get("p03_last_failed_tasks", [])
+        last_failed = st.session_state.get(f"p03_last_failed_tasks_{proj_id}", [])
         if last_failed:
             st.warning(f"⚠️ Phát hiện {len(last_failed)} đoạn gặp lỗi trong phiên chạy gần nhất.")
             if st.button("🔄 Chạy lại các đoạn gặp lỗi", key="btn_retry_failed_chunks", width="stretch"):
@@ -369,7 +389,7 @@ def render_extraction_page(project: dict) -> None:
                     on_progress=update_retry_progress,
                     save_after_chunk=True,
                 )
-                st.session_state["p03_last_failed_tasks"] = retry_summary.get("failed_tasks", [])
+                st.session_state[f"p03_last_failed_tasks_{proj_id}"] = retry_summary.get("failed_tasks", [])
                 if retry_summary.get("failed_tasks"):
                     st.error(f"Vẫn còn {len(retry_summary['failed_tasks'])} đoạn gặp lỗi sau khi thử lại.")
                 else:
@@ -381,10 +401,14 @@ def render_extraction_page(project: dict) -> None:
     if runs:
         st.divider()
         st.subheader(f"📜 Nhật ký Trích xuất ({len(runs)} lượt gần nhất)")
+        run_sel_key = f"p03_sel_run_{proj_id}"
+        run_options = list(range(len(runs)))
+        sync_keyed_choice(run_sel_key, run_options, 0, (proj_id, len(runs)))
         selected_idx = st.selectbox(
             "Chọn lượt xử lý để xem chi tiết & Step Traces",
-            range(len(runs)),
+            run_options,
             format_func=lambda i: f"#{len(runs) - i} · {runs[i].get('doc_name', '')} (Đoạn {runs[i].get('chunk_number', 0)}) — mode={runs[i].get('extraction_mode', '')}",
+            key=run_sel_key,
         )
         run = runs[selected_idx]
         run_status = run.get("status", "unknown")

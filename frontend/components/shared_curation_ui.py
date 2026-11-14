@@ -9,6 +9,7 @@ from typing import Any, Callable
 import streamlit as st
 
 from frontend.client import get_client
+from frontend.state.session import bump_sync_nonce, sync_keyed_choice, sync_keyed_int
 from shared.text_utils import normal, sha
 
 
@@ -60,20 +61,31 @@ def render_pagination_controls(
     page_size: int = 50,
     page_size_options: list[int] = [10, 25, 50, 100],
     key_prefix: str = "shared",
+    *,
+    sync_tag: Any = None,
 ) -> tuple[int, int]:
     """Thành phần phân trang dùng chung cho các bảng kiểm duyệt."""
+    max_page = max(1, int(total_pages))
+    clamped_page = max(1, min(int(current_page or 1), max_page))
+    tag = sync_tag if sync_tag is not None else int(st.session_state.get(f"_psync_fb_{key_prefix}") or 0)
+    sync_keyed_choice(f"{key_prefix}_page_size", page_size_options, page_size, tag)
+    sync_keyed_int(
+        f"{key_prefix}_page_num",
+        clamped_page,
+        tag,
+        min_value=1,
+        max_value=max_page,
+    )
     col_size, col_page = st.columns([1, 1.2])
     new_size = col_size.selectbox(
         "Số dòng/trang",
         page_size_options,
-        index=page_size_options.index(page_size) if page_size in page_size_options else 1,
         key=f"{key_prefix}_page_size",
     )
     new_page = col_page.number_input(
-        f"Trang (1..{total_pages})",
+        f"Trang (1..{max_page})",
         min_value=1,
-        max_value=max(1, total_pages),
-        value=max(1, min(current_page, max(1, total_pages))),
+        max_value=max_page,
         step=1,
         key=f"{key_prefix}_page_num",
     )
@@ -96,6 +108,7 @@ def render_selection_action_bar(
     total_pages: int | None = None,
     page_size_options: list[int] = [10, 25, 50, 100],
     summary_text: str = "",
+    sync_tag: Any = None,
 ) -> tuple[int, int] | int | None:
     """Thanh công cụ thao tác chọn theo lô và tích hợp điều khiển phân trang dùng chung."""
     has_full_pagination = page_size is not None and current_page is not None and total_pages is not None
@@ -139,34 +152,53 @@ def render_selection_action_bar(
             st.rerun()
 
     if has_full_pagination:
+        max_page = max(1, int(total_pages))
+        clamped_page = max(1, min(int(current_page or 1), max_page))
+        tag = sync_tag if sync_tag is not None else int(st.session_state.get(f"_psync_fb_{key_prefix}") or 0)
+        sync_keyed_choice(f"{key_prefix}_page_size", page_size_options, page_size, tag)
+        sync_keyed_int(
+            f"{key_prefix}_page_num",
+            clamped_page,
+            tag,
+            min_value=1,
+            max_value=max_page,
+        )
         new_size = c4.selectbox(
             "Số dòng/trang",
             page_size_options,
-            index=page_size_options.index(page_size) if page_size in page_size_options else 1,
             key=f"{key_prefix}_page_size",
         )
         new_page = c5.number_input(
-            f"Trang (1..{total_pages})",
+            f"Trang (1..{max_page})",
             min_value=1,
-            max_value=max(1, total_pages),
-            value=max(1, min(current_page, max(1, total_pages))),
+            max_value=max_page,
             step=1,
             key=f"{key_prefix}_page_num",
         )
         return int(new_page), int(new_size)
 
     if has_page_only:
-        new_page = current_page
-        if total_pages > 1:
-            new_page = c4.number_input(
-                f"Trang (1..{total_pages})",
+        max_page = max(1, int(total_pages))
+        clamped_page = max(1, min(int(current_page or 1), max_page))
+        tag = sync_tag if sync_tag is not None else int(st.session_state.get(f"_psync_fb_{key_prefix}") or 0)
+        new_page = clamped_page
+        if max_page > 1:
+            sync_keyed_int(
+                f"{key_prefix}_page_num",
+                clamped_page,
+                tag,
                 min_value=1,
-                max_value=max(1, total_pages),
-                value=max(1, min(current_page, max(1, total_pages))),
+                max_value=max_page,
+            )
+            new_page = c4.number_input(
+                f"Trang (1..{max_page})",
+                min_value=1,
+                max_value=max_page,
                 step=1,
                 key=f"{key_prefix}_page_num",
             )
         else:
+            st.session_state[f"{key_prefix}_page_num"] = 1
             c4.write("")
 
         text = summary_text or (
@@ -208,6 +240,12 @@ def render_decision_batch_history(
             at_time = b.get("at", "")
             return f"Lô {bid} · {op} · Đã áp dụng: {applied_count} mục · Lúc: {at_time}"
 
+        sync_keyed_choice(
+            f"{key_prefix}_select_batch",
+            batch_options,
+            batch_options[0],
+            (len(batch_options), batch_options[0] if batch_options else ""),
+        )
         chosen_batch_id = st.selectbox(
             "Chọn lô quyết định để xem chi tiết:",
             batch_options,
@@ -267,6 +305,10 @@ def render_decision_batch_history(
                 if on_restore_callbacks:
                     for cb in on_restore_callbacks:
                         cb(project)
+                bump_sync_nonce("_inspector_action_nonce")
+                bump_sync_nonce("_catalog_editor_nonce")
+                bump_sync_nonce("_prompt_editor_nonce")
+                bump_sync_nonce("_curation_snapshot_nonce")
                 st.success(f"Đã khôi phục dự án về snapshot `{Path(snap_str).name}`.")
                 st.rerun()
 

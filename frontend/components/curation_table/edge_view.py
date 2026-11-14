@@ -7,12 +7,15 @@ import streamlit as st
 
 from frontend.components.shared_curation_ui import paginate_items, render_selection_action_bar
 from frontend.state.session import (
+    bump_sync_nonce,
     clear_edge_selection,
     get_curation_section_state,
     reconcile_edge_selection_with_filter,
     select_all_filtered_edges,
     select_page_edges,
     set_focused_edge,
+    sync_keyed_choice,
+    sync_keyed_value,
     toggle_edge_selection,
 )
 from shared.constants import STATUS_APPROVED, STATUS_CHECK, STATUS_PENDING, STATUS_REJECTED
@@ -27,8 +30,10 @@ from .edge_logic import (
 )
 
 
-def _render_edge_filters(project: dict, filters: dict[str, Any]) -> int:
+def _render_edge_filters(project: dict, s_state: dict[str, Any], filters: dict[str, Any]) -> int:
     """Hiển thị 2 tầng bộ lọc (cơ bản và nâng cao) cho bảng quan hệ; trả về số bộ lọc nâng cao đang bật."""
+    proj_id = str(project.get("project_id") or project.get("name") or "default")
+    f_tag = (proj_id, int(s_state.get("filter_nonce") or 0))
     docs = project.get("documents", [])
     doc_options = ["all"] + [str(d["id"]) for d in docs]
     doc_names = {"all": "Tất cả tài liệu", **{str(d["id"]): str(d.get("name", d["id"])) for d in docs}}
@@ -52,18 +57,18 @@ def _render_edge_filters(project: dict, filters: dict[str, Any]) -> int:
 
     # TẦNG 1: THANH CƠ BẢN TINH GỌN (CHỈ 1 DÒNG DUY NHẤT)
     c_search, c_status = st.columns([3.5, 1.5])
+    sync_keyed_value("cur_edge_f_search", filters.get("search", ""), f_tag)
     filters["search"] = c_search.text_input(
         "Tìm kiếm từ khóa",
-        value=filters.get("search", ""),
         placeholder="🔍 Tìm nhanh thực thể, quan hệ, trích dẫn bằng chứng...",
         label_visibility="collapsed",
         key="cur_edge_f_search",
     )
     status_opts = ["all", STATUS_CHECK, STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED]
+    sync_keyed_choice("cur_edge_f_status", status_opts, filters.get("status", "all"), f_tag)
     filters["status"] = c_status.selectbox(
         "Trạng thái duyệt",
         status_opts,
-        index=status_opts.index(filters["status"]) if filters["status"] in status_opts else 0,
         format_func=lambda x: "Tất cả trạng thái" if x == "all" else f"Trạng thái: {x}",
         label_visibility="collapsed",
         key="cur_edge_f_status",
@@ -72,31 +77,31 @@ def _render_edge_filters(project: dict, filters: dict[str, Any]) -> int:
     # TẦNG 2: VÙNG MỞ RỘNG BỘ LỌC NÂNG CAO (Mặc định thu gọn, mở khi có tiêu chí đang lọc)
     with st.expander(adv_label, expanded=bool(adv_active_count > 0)):
         f1, f2, f3, f4 = st.columns(4)
+        sync_keyed_choice("cur_edge_f_doc", doc_options, filters.get("doc_id", "all"), f_tag)
         filters["doc_id"] = f1.selectbox(
             "Tài liệu nguồn",
             doc_options,
-            index=doc_options.index(filters["doc_id"]) if filters["doc_id"] in doc_options else 0,
             format_func=lambda x: doc_names.get(x, x),
             key="cur_edge_f_doc",
         )
+        sync_keyed_choice("cur_edge_f_rel", rel_options, filters.get("relation", "all"), f_tag)
         filters["relation"] = f2.selectbox(
             "Loại quan hệ",
             rel_options,
-            index=rel_options.index(filters["relation"]) if filters["relation"] in rel_options else 0,
             format_func=lambda x: "Tất cả quan hệ" if x == "all" else x,
             key="cur_edge_f_rel",
         )
+        sync_keyed_choice("cur_edge_f_ent", node_options, filters.get("entity_id", "all"), f_tag)
         filters["entity_id"] = f3.selectbox(
             "Thực thể liên quan",
             node_options,
-            index=node_options.index(filters["entity_id"]) if filters["entity_id"] in node_options else 0,
             format_func=lambda x: node_names.get(x, x),
             key="cur_edge_f_ent",
         )
+        sync_keyed_choice("cur_edge_f_kind", kind_options, filters.get("entity_kind", "all"), f_tag)
         filters["entity_kind"] = f4.selectbox(
             "Loại thực thể đầu mút",
             kind_options,
-            index=kind_options.index(filters["entity_kind"]) if filters["entity_kind"] in kind_options else 0,
             format_func=lambda x: "Tất cả loại" if x == "all" else x,
             key="cur_edge_f_kind",
         )
@@ -110,10 +115,10 @@ def _render_edge_filters(project: dict, filters: dict[str, Any]) -> int:
             "override": "Ngoại lệ bằng chứng",
             "ambiguous": "Nhiều vị trí khớp",
         }
+        sync_keyed_choice("cur_edge_f_ev", ev_opts, filters.get("evidence_state", "all"), f_tag)
         filters["evidence_state"] = f5.selectbox(
             "Tình trạng bằng chứng",
             ev_opts,
-            index=ev_opts.index(filters["evidence_state"]) if filters["evidence_state"] in ev_opts else 0,
             format_func=lambda x: ev_labels.get(x, x),
             key="cur_edge_f_ev",
         )
@@ -126,22 +131,27 @@ def _render_edge_filters(project: dict, filters: dict[str, Any]) -> int:
             "rejected_proposal": "Đề xuất EDC bị từ chối",
             "out_of_catalog": "Ngoài danh mục",
         }
+        sync_keyed_choice("cur_edge_f_schema", sc_opts, filters.get("schema_state", "all"), f_tag)
         filters["schema_state"] = f6.selectbox(
             "Tình trạng danh mục",
             sc_opts,
-            index=sc_opts.index(filters["schema_state"]) if filters["schema_state"] in sc_opts else 0,
             format_func=lambda x: sc_labels.get(x, x),
             key="cur_edge_f_schema",
         )
         f_reset.write("")
         f_reset.write("")
-        if f_reset.button("🔄 Đặt lại lọc", key="cur_edge_btn_reset_filters", help="Xóa nhanh toàn bộ bộ lọc nâng cao"):
+        if f_reset.button("🔄 Đặt lại lọc", key="cur_edge_btn_reset_filters", help="Xóa nhanh toàn bộ bộ lọc"):
+            filters["search"] = ""
+            filters["status"] = "all"
             filters["doc_id"] = "all"
             filters["relation"] = "all"
             filters["entity_id"] = "all"
             filters["entity_kind"] = "all"
             filters["evidence_state"] = "all"
             filters["schema_state"] = "all"
+            filters["page"] = 1
+            s_state["filter_nonce"] = int(s_state.get("filter_nonce") or 0) + 1
+            s_state["page_nonce"] = int(s_state.get("page_nonce") or 0) + 1
             st.rerun()
 
     return adv_active_count
@@ -159,9 +169,10 @@ def _render_edge_batch_bar_and_preview(
             f"##### ⚡ Thao tác Nhanh cho **{len(sel_ids)}** Quan hệ Đang Chọn "
             "(phạm vi: các dòng đã đánh dấu theo ID)"
         )
+        proj_id = str(project.get("project_id") or project.get("name") or "default")
+        sync_keyed_value("cur_batch_allow_bypass_schema", True, proj_id)
         allow_bypass = st.checkbox(
             "🔓 Cho phép duyệt cả cạnh chưa hợp lệ Lược đồ / Bỏ qua lỗi danh mục (Tự động nạp vào Danh mục chính thức)",
-            value=True,
             key="cur_batch_allow_bypass_schema",
             help="Khi bật: Duyệt thành công tất cả các cạnh được chọn kể cả khi quan hệ/loại thực thể đang chờ duyệt, ngoài danh mục hoặc từng bị từ chối; đồng thời tự động cập nhật đề xuất và nạp vào danh mục chính thức để đồ thị đạt chuẩn hợp lệ.",
         )
@@ -189,6 +200,7 @@ def _render_edge_batch_bar_and_preview(
                     msg = f"Đã duyệt thành công {res.applied_count} cạnh mới (Lô `{res.batch_id}`)."
                     if res.skipped_count > 0:
                         msg += f" Đã bỏ qua {res.skipped_count} cạnh đã duyệt từ trước hoặc không hợp lệ."
+                    bump_sync_nonce("_inspector_action_nonce")
                     st.success(msg)
                     st.rerun()
             except Exception as exc:
@@ -206,6 +218,7 @@ def _render_edge_batch_bar_and_preview(
                 if res.status == "no_op":
                     st.info(f"ℹ️ Toàn bộ {res.skipped_count} cạnh đang chọn đều đã ở trạng thái Cần kiểm tra từ trước.")
                 else:
+                    bump_sync_nonce("_inspector_action_nonce")
                     st.success(f"Đã chuyển {res.applied_count} cạnh sang trạng thái Cần kiểm tra.")
                     st.rerun()
             except Exception as exc:
@@ -230,6 +243,7 @@ def _render_edge_batch_bar_and_preview(
                 if res.status == "no_op":
                     st.info(f"ℹ️ Toàn bộ {res.skipped_count} cạnh đang chọn đều đã ở trạng thái Loại bỏ từ trước.")
                 else:
+                    bump_sync_nonce("_inspector_action_nonce")
                     st.success(f"Đã loại bỏ {res.applied_count} cạnh.")
                     st.rerun()
             except Exception as exc:
@@ -313,6 +327,7 @@ def _render_edge_batch_bar_and_preview(
                 ):
                     try:
                         res = execute_edge_batch_apply(project, apply_mode="all_or_nothing")
+                        bump_sync_nonce("_inspector_action_nonce")
                         st.success(f"Đã áp dụng thành công {res.applied_count} cạnh (Lô `{res.batch_id}`).")
                         st.rerun()
                     except Exception as exc:
@@ -326,6 +341,7 @@ def _render_edge_batch_bar_and_preview(
                 ):
                     try:
                         res = execute_edge_batch_apply(project, apply_mode="valid_only")
+                        bump_sync_nonce("_inspector_action_nonce")
                         st.success(
                             f"Đã áp dụng {res.applied_count} cạnh hợp lệ và giữ lại {res.skipped_count} cạnh lỗi để kiểm tra tiếp."
                         )
@@ -337,12 +353,22 @@ def _render_edge_batch_bar_and_preview(
 def render_edge_curation_table_and_batch_bar(project: dict) -> dict[str, Any]:
     """Hiển thị bộ lọc, bảng dữ kiện, thanh chọn theo ID và thanh Xem trước / Áp dụng lô."""
     s_state = get_curation_section_state(project, "edges")
+    proj_id = str(project.get("project_id") or project.get("name") or "default")
     filters = s_state["filters"]
-    adv_active_count = _render_edge_filters(project, filters)
+    adv_active_count = _render_edge_filters(project, s_state, filters)
 
     filtered_edges = filter_and_sort_edges(project, filters)
     s_state["ordered_edge_ids"] = [str(e["id"]) for e in filtered_edges if e.get("id")]
     filter_sig = compute_edge_filter_signature(filters)
+    prev_page_sig = s_state.get("_prev_pagination_sig")
+    if prev_page_sig is None:
+        s_state["_prev_pagination_sig"] = filter_sig
+    elif prev_page_sig != filter_sig:
+        s_state["_prev_pagination_sig"] = filter_sig
+        if int(filters.get("page") or 1) != 1:
+            filters["page"] = 1
+            s_state["page_nonce"] = int(s_state.get("page_nonce") or 0) + 1
+            st.rerun()
     reconcile_edge_selection_with_filter(project, filter_sig, filtered_edges)
 
     if s_state.get("filter_prune_notice"):
@@ -388,9 +414,19 @@ def render_edge_curation_table_and_batch_bar(project: dict) -> dict[str, Any]:
         page_size=filters["page_size"],
         current_page=cur_page,
         total_pages=total_pages,
+        sync_tag=(proj_id, int(s_state.get("page_nonce") or 0)),
     )
     if page_res:
-        filters["page"], filters["page_size"] = page_res
+        new_page, new_size = page_res
+        old_size = int(filters.get("page_size") or 25)
+        if new_size != old_size:
+            filters["page_size"] = new_size
+            filters["page"] = 1
+            s_state["page_nonce"] = int(s_state.get("page_nonce") or 0) + 1
+            st.rerun()
+        elif new_page != cur_page:
+            filters["page"] = new_page
+            st.rerun()
 
     display_rows = build_edge_table_rows(project, page_edges, s_state["selected_ids"])
     st.caption(
@@ -399,6 +435,7 @@ def render_edge_curation_table_and_batch_bar(project: dict) -> dict[str, Any]:
     )
 
     if display_rows:
+        sel_nonce = int(s_state.get("sel_editor_nonce") or 0)
         table_rows = [
             {
                 "id": r["edge_id"],
@@ -416,7 +453,7 @@ def render_edge_curation_table_and_batch_bar(project: dict) -> dict[str, Any]:
         ]
         edited_edge_rows = st.data_editor(
             table_rows,
-            key=f"cur_edge_editor_{cur_page}_{filter_sig}",
+            key=f"cur_edge_editor_{proj_id}_{sel_nonce}_{cur_page}_{filter_sig}",
             width='stretch',
             hide_index=True,
             disabled=[
@@ -451,11 +488,15 @@ def render_edge_curation_table_and_batch_bar(project: dict) -> dict[str, Any]:
         row_by_id = {r["edge_id"]: r for r in display_rows}
         edge_opts = [r["edge_id"] for r in display_rows]
         cur_focus = s_state.get("focused_edge_id")
-        default_idx = edge_opts.index(cur_focus) if cur_focus in edge_opts else 0
+        sync_keyed_choice(
+            "cur_focus_edge_select",
+            edge_opts,
+            cur_focus,
+            (proj_id, cur_page, cur_focus, int(s_state.get("focus_nonce") or 0)),
+        )
         chosen_eid = ctrl1.selectbox(
             "🔎 Chọn dòng quan hệ để đối chiếu bằng chứng & sửa chi tiết ở khung dưới",
             edge_opts,
-            index=default_idx,
             format_func=lambda eid: (
                 f"[{row_by_id[eid]['status']}] {row_by_id[eid]['source_display']} → "
                 f"{row_by_id[eid]['relation_display']} → {row_by_id[eid]['target_display']}"

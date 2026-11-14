@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 import streamlit as st
+from frontend.state.session import sync_keyed_int
 from shared.text_utils import sha
 
 
@@ -45,15 +46,19 @@ def render_benchmark_tab(facade: Any, active_graph_project: dict, proj_id: str) 
     st.info("Câu hỏi tự sinh chỉ dùng đối sánh thuật toán trên cùng graph. Để so các phương pháp dựng KG, nạp cùng một tập gold độc lập.")
     gold_upload = st.file_uploader("Bộ câu hỏi và gold facts chung (JSON)", type=["json"], key=f"_graph_gold_{proj_id}")
 
+    num_q_key = f"_gret_bench_num_q_{proj_id}"
+    max_edges_key = f"_gret_bench_max_edges_{proj_id}"
+    sync_keyed_int(num_q_key, 18, (proj_id, "num_q"), min_value=6, max_value=36)
+    sync_keyed_int(max_edges_key, 15, (proj_id, "max_edges"), min_value=8, max_value=25)
+
     b_col1, b_col2, b_col3 = st.columns([1.2, 1.2, 1.6], vertical_alignment="bottom")
     num_q = int(
         b_col1.slider(
             "Số lượng câu hỏi kiểm thử (Benchmark Size)",
             min_value=6,
             max_value=36,
-            value=18,
             step=3,
-            key=f"_gret_bench_num_q_{proj_id}",
+            key=num_q_key,
         )
     )
     bench_max_edges = int(
@@ -61,9 +66,8 @@ def render_benchmark_tab(facade: Any, active_graph_project: dict, proj_id: str) 
             "Ngân sách cạnh tối đa mỗi truy vấn (Top-K / Budget)",
             min_value=8,
             max_value=25,
-            value=15,
             step=1,
-            key=f"_gret_bench_max_edges_{proj_id}",
+            key=max_edges_key,
         )
     )
     run_bench = b_col3.button(

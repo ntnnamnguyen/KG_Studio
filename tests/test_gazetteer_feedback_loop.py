@@ -11,13 +11,16 @@ from backend.domain.curation.gazetteer import (
     clear_gazetteer,
     delete_gazetteer_entry,
     enrich_gazetteer_from_merge,
+    expand_grouped_gazetteer_rows,
     gazetteer_to_csv_bytes,
     gazetteer_to_json_bytes,
     list_gazetteer_entries,
+    list_grouped_gazetteer_entries,
     merge_gazetteer_entries,
     parse_gazetteer_bytes,
     preload_gazetteer_template,
     replace_gazetteer_entries,
+    split_gazetteer_aliases,
     upsert_gazetteer_entry,
 )
 from backend.domain.curation.merge import apply_bulk_entity_merges, apply_entity_merge
@@ -359,6 +362,151 @@ class TestGazetteerFeedbackLoop(unittest.TestCase):
         self.assertIsInstance(entries, list)
         parsed = facade.parse_gazetteer_bytes(b"a,b,k\n", "x.csv")
         self.assertEqual(parsed, [{"alias": "a", "canonical_name": "b", "kind": "k"}])
+
+    def test_grouped_gazetteer_list_expand_and_conflict_validation(self) -> None:
+        """Gom nhóm 1-N bí danh, tách theo ';' hoặc '|', bảo toàn ',' và chặn xung đột bí danh."""
+        # 1. Tách bí danh bằng ';' / '|' và giữ nguyên dấu phẩy trong tên địa danh
+        aliases = split_gazetteer_aliases(
+            "Hưng Đạo Vương; Hưng Đạo Đại Vương | Quốc Công Tiết Chế; hưng đạo vương; Đình Bát Tràng, Gia Lâm"
+        )
+        self.assertEqual(
+            aliases,
+            ["Hưng Đạo Vương", "Hưng Đạo Đại Vương", "Quốc Công Tiết Chế", "Đình Bát Tràng, Gia Lâm"],
+        )
+
+        # 2. Bảo toàn provenance riêng từng bí danh qua chu trình gom -> chỉnh sửa -> bung phẳng -> replace
+        upsert_gazetteer_entry(
+            self.project,
+            alias="Hưng Đạo Vương",
+            canonical_name="Trần Hưng Đạo",
+            kind="E21_PERSON",
+            source="human_curation_merge",
+        )
+        upsert_gazetteer_entry(
+            self.project,
+            alias="Hưng Đạo Đại Vương",
+            canonical_name="Trần Hưng Đạo",
+            kind="E21_PERSON",
+            source="manual_editor",
+        )
+        upsert_gazetteer_entry(
+            self.project,
+            alias="Phố Trần Hưng Đạo",
+            canonical_name="Trần Hưng Đạo",
+            kind="E53_PLACE",
+            source="manual_editor",
+        )
+
+        grouped = list_grouped_gazetteer_entries(self.project)
+        self.assertEqual(len(grouped), 2)
+        person_row = next(r for r in grouped if r["kind"] == "E21_PERSON")
+        self.assertEqual(person_row["canonical_name"], "Trần Hưng Đạo")
+        self.assertEqual(person_row["alias_count"], 2)
+        self.assertIn("Hưng Đạo Vương", person_row["aliases"])
+        self.assertIn("Hưng Đạo Đại Vương", person_row["aliases"])
+
+        # Thêm bí danh mới bằng '|' và tự bỏ qua self-alias
+        edited_grouped = [
+            {
+                "canonical_name": "Trần Hưng Đạo",
+                "kind": "E21_PERSON",
+                "aliases": person_row["aliases"] + " | Đức Thánh Trần; Trần Hưng Đạo",
+            },
+            {
+                "canonical_name": "Trần Hưng Đạo",
+                "kind": "E53_PLACE",
+                "aliases": "Phố Trần Hưng Đạo",
+            },
+        ]
+        expanded = expand_grouped_gazetteer_rows(edited_grouped, strict_conflicts=True)
+        self.assertEqual(len(expanded), 4)
+        replace_gazetteer_entries(self.project, expanded, source="manual_editor")
+
+        gaz = self.project["domain_gazetteer"]
+        self.assertEqual(gaz["hưng đạo vương"]["source"], "human_curation_merge")
+        self.assertEqual(gaz["đức thánh trần"]["source"], "manual_editor")
+        self.assertNotIn("trần hưng đạo", gaz)
+
+        # 3. Chặn xung đột khi cùng 1 bí danh gán cho 2 chủ thể khác nhau
+        with self.assertRaises(ValueError) as ctx:
+            expand_grouped_gazetteer_rows(
+                [
+                    {"canonical_name": "Đền Thượng (Lào Cai)", "kind": "E22_HUMAN-MADE_OBJECT", "aliases": "Đền Thượng"},
+                    {"canonical_name": "Đền Thượng (Ba Vì)", "kind": "E22_HUMAN-MADE_OBJECT", "aliases": "Đền Thượng"},
+                ],
+                strict_conflicts=True,
+            )
+        self.assertIn("Đền Thượng", str(ctx.exception))
+
+        # 4. Chặn dòng nhập bí danh nhưng quên Tên chuẩn
+        with self.assertRaises(ValueError):
+            expand_grouped_gazetteer_rows([{"canonical_name": "", "kind": "E21_PERSON", "aliases": "Bí danh X"}])
+
+    def test_parse_and_export_grouped_csv_and_json_formats(self) -> None:
+        """Kiểm thử nhập/xuất CSV & JSON dạng gom nhóm aliases (';', '|') và CSV 1-1 cũ."""
+        grouped_csv = (
+            "canonical_name,kind,aliases\n"
+            "Trần Hưng Đạo,E21_PERSON,\"Hưng Đạo Vương; Hưng Đạo Đại Vương | Quốc Công Tiết Chế\"\n"
+            "Đình Bát Tràng,E22_HUMAN-MADE_OBJECT,\"Đình Bát Tràng, Gia Lâm; Đình làng Bát Tràng\"\n"
+        ).encode("utf-8-sig")
+        parsed_csv = parse_gazetteer_bytes(grouped_csv, "grouped.csv")
+        self.assertEqual(len(parsed_csv), 5)
+        self.assertEqual(parsed_csv[0]["canonical_name"], "Trần Hưng Đạo")
+        self.assertTrue(any(r["alias"] == "Đình Bát Tràng, Gia Lâm" for r in parsed_csv))
+
+        vi_grouped_csv = (
+            "Tên chuẩn,Loại thực thể,Các bí danh\n"
+            "Chùa Một Cột,E22_HUMAN-MADE_OBJECT,Diên Hựu Tự | Chùa Mật\n"
+        ).encode("utf-8")
+        parsed_vi = parse_gazetteer_bytes(vi_grouped_csv, "vi_grouped.csv")
+        self.assertEqual(len(parsed_vi), 2)
+
+        grouped_json = json.dumps(
+            [{"canonical_name": "Lý Thái Tổ", "kind": "E21_PERSON", "aliases": ["Lý Công Uẩn", "Vua Lý Thái Tổ"]}],
+            ensure_ascii=False,
+        ).encode("utf-8")
+        parsed_json = parse_gazetteer_bytes(grouped_json, "grouped.json")
+        self.assertEqual(len(parsed_json), 2)
+
+        # Kiểm thử round-trip CSV gom nhóm (mặc định) và CSV 1-1 cũ (grouped=False)
+        replace_gazetteer_entries(self.project, parsed_csv, source="imported_file")
+        grouped_export = gazetteer_to_csv_bytes(self.project, grouped=True).decode("utf-8-sig")
+        self.assertIn("canonical_name,kind,aliases,sources", grouped_export.splitlines()[0])
+        self.assertEqual(len(parse_gazetteer_bytes(grouped_export.encode("utf-8-sig"), "exp.csv")), 5)
+
+        flat_export = gazetteer_to_csv_bytes(self.project, grouped=False).decode("utf-8-sig")
+        self.assertIn("alias,canonical_name,kind,source,created_at", flat_export.splitlines()[0])
+        self.assertEqual(len(parse_gazetteer_bytes(flat_export.encode("utf-8-sig"), "flat.csv")), 5)
+
+    def test_gazetteer_panel_grouped_editor_and_kind_dropdown_apptest(self) -> None:
+        """Kiểm thử UI AppTest bảng gom nhóm từ điển bí danh và SelectboxColumn loại thực thể."""
+        from streamlit.testing.v1 import AppTest
+
+        def _script() -> None:
+            import streamlit as st
+            from frontend.components.gazetteer_panel import render_gazetteer_setup_tab
+
+            proj = st.session_state["_test_project"]
+            st.session_state["project"] = proj
+            render_gazetteer_setup_tab(proj)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = JsonProjectRepository(Path(tmp))
+            proj = empty_project("gaz_ui_grouped")
+            proj["_storage_dir"] = tmp
+            proj["entity_types"] = [
+                {"name": "E21_PERSON", "description": "Nhân vật"},
+                {"name": "E22_HUMAN-MADE_OBJECT", "description": "Di tích"},
+            ]
+            upsert_gazetteer_entry(proj, "Hưng Đạo Vương", "Trần Hưng Đạo", "E21_PERSON", source="human_curation_merge")
+            upsert_gazetteer_entry(proj, "Hưng Đạo Đại Vương", "Trần Hưng Đạo", "E21_PERSON", source="manual_editor")
+            repo.save_project(proj)
+
+            at = AppTest.from_function(_script)
+            at.session_state["_test_project"] = proj
+            at.run()
+            self.assertFalse(at.exception, f"UI raised exception: {at.exception}")
+            self.assertTrue(any("ngăn cách bằng dấu chấm phẩy `;` hoặc dấu gạch đứng `|`" in c.value for c in at.caption))
 
 
 if __name__ == "__main__":

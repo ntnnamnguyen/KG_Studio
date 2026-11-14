@@ -4,6 +4,7 @@ from __future__ import annotations
 import streamlit as st
 
 from frontend.client import get_client
+from frontend.state.session import sync_keyed_value
 from ml_lab.evaluation.benchmark import run_retriever_benchmark
 from ml_lab.trainers.finetune_llm_lora import generate_lora_training_bundle
 from ml_lab.trainers.train_canonicalizer import train_canonicalizer_model
@@ -30,7 +31,8 @@ def render_ml_lab_panel(project: dict, save_cb, *, use_expander: bool = False) -
                 )
 
         export_info = st.session_state.get("ml_last_export")
-        model_tag = st.text_input("Tên phiên bản mô hình muốn lưu vào Registry", value="sr-vi-custom", key="ml_model_tag")
+        sync_keyed_value("ml_model_tag", "sr-vi-custom", "init")
+        model_tag = st.text_input("Tên phiên bản mô hình muốn lưu vào Registry", key="ml_model_tag")
 
         with col2:
             if st.button("2. Train Schema Retriever (+R)", key="ml_train_sr_btn", width="stretch"):

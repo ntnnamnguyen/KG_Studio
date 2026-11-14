@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from typing import Any
 
 from shared.catalog_utils import decode_text_bytes
@@ -11,18 +12,36 @@ from shared.text_utils import normal, now_iso
 from .common import clean_display_text
 
 
+_GAZETTEER_ALIAS_SPLIT_RE = re.compile(r"[;|]+")
+
 _ALIAS_FIELD_CANDIDATES = ("alias", "bi_danh", "bí danh", "from", "key", "ten_khac", "tên khác", "variant")
+_ALIASES_LIST_CANDIDATES = (
+    "aliases",
+    "bi_danh_nhom",
+    "bí danh nhóm",
+    "danh_sach_bi_danh",
+    "các bí danh",
+    "cac_ten_khac",
+    "các tên khác",
+    "variants",
+    "other_names",
+)
 _CANONICAL_FIELD_CANDIDATES = (
     "canonical_name",
     "canonical",
     "ten_chuan",
     "tên chuẩn",
+    "ten_chinh",
+    "tên chính",
+    "thuc_the_chuan",
+    "thực thể chuẩn",
     "to",
     "target",
     "name",
     "chuan_hoa",
 )
 _KIND_FIELD_CANDIDATES = ("kind", "type", "loai", "loại", "entity_type", "loại thực thể")
+_SOURCE_FIELD_CANDIDATES = ("source", "nguồn", "nguon", "nguồn gốc")
 
 
 def normalize_gazetteer_key(text: str) -> str:
@@ -30,18 +49,41 @@ def normalize_gazetteer_key(text: str) -> str:
     return normal(str(text or "")).strip()
 
 
-def _extract_row_fields(item: dict[str, Any], fallback_alias: str = "") -> tuple[str, str, str, str]:
-    """Trích xuất (alias, canonical_name, kind, source) từ một dict bất kỳ theo nhiều quy ước tên cột."""
+def split_gazetteer_aliases(raw: Any) -> list[str]:
+    """Tách danh sách bí danh theo ';' hoặc '|' (không tách theo ',' để bảo toàn tên địa danh có dấu phẩy)."""
+    if raw is None:
+        return []
+    raw_items = raw if isinstance(raw, (list, tuple, set)) else [raw]
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if item is None:
+            continue
+        for part in _GAZETTEER_ALIAS_SPLIT_RE.split(str(item)):
+            cleaned = clean_display_text(part)
+            key = normalize_gazetteer_key(cleaned)
+            if cleaned and key and key not in seen:
+                seen.add(key)
+                aliases.append(cleaned)
+    return aliases
+
+
+def _extract_row_aliases_and_fields(
+    item: dict[str, Any],
+    fallback_alias: str = "",
+) -> tuple[list[str], str, str, str]:
+    """Trích xuất (aliases, canonical_name, kind, source) từ một dict bất kỳ theo nhiều quy ước tên cột."""
     lowered = {normal(str(k)): v for k, v in item.items()}
 
-    alias = ""
-    for cand in _ALIAS_FIELD_CANDIDATES:
+    aliases: list[str] = []
+    for cand in (*_ALIASES_LIST_CANDIDATES, *_ALIAS_FIELD_CANDIDATES):
         val = lowered.get(normal(cand))
-        if val is not None and str(val).strip():
-            alias = str(val).strip()
-            break
-    if not alias and fallback_alias:
-        alias = str(fallback_alias).strip()
+        if val is not None and (isinstance(val, (list, tuple, set)) or str(val).strip()):
+            aliases = split_gazetteer_aliases(val)
+            if aliases:
+                break
+    if not aliases and fallback_alias:
+        aliases = split_gazetteer_aliases(fallback_alias)
 
     canonical = ""
     for cand in _CANONICAL_FIELD_CANDIDATES:
@@ -57,12 +99,25 @@ def _extract_row_fields(item: dict[str, Any], fallback_alias: str = "") -> tuple
             kind = str(val).strip()
             break
 
-    source = str(lowered.get("source") or "").strip()
-    return clean_display_text(alias), clean_display_text(canonical), clean_display_text(kind), source
+    source = ""
+    if len(aliases) <= 1:
+        for cand in _SOURCE_FIELD_CANDIDATES:
+            val = lowered.get(normal(cand))
+            if val is not None and str(val).strip() and "," not in str(val):
+                source = str(val).strip()
+                break
+
+    return aliases, clean_display_text(canonical), clean_display_text(kind), source
+
+
+def _extract_row_fields(item: dict[str, Any], fallback_alias: str = "") -> tuple[str, str, str, str]:
+    """Trích xuất (alias, canonical_name, kind, source) từ một dict theo quy ước 1-1."""
+    aliases, canonical, kind, source = _extract_row_aliases_and_fields(item, fallback_alias=fallback_alias)
+    return (aliases[0] if aliases else ""), canonical, kind, source
 
 
 def _normalize_entries_collection(raw: Any) -> list[dict[str, str]]:
-    """Chuẩn hóa dữ liệu đầu vào (dict phẳng, dict chi tiết hoặc list) thành danh sách bản ghi hợp lệ."""
+    """Chuẩn hóa dữ liệu đầu vào (dict phẳng, dict nhóm aliases, hoặc list) thành danh sách bản ghi phẳng."""
     results: list[dict[str, str]] = []
     seen_keys: set[str] = set()
 
@@ -84,6 +139,10 @@ def _normalize_entries_collection(raw: Any) -> list[dict[str, str]]:
             row["source"] = source
         results.append(row)
 
+    def _push_many(aliases: list[str], canon: str, kind: str = "", source: str = "") -> None:
+        for alias in aliases:
+            _push(alias, canon, kind, source)
+
     if isinstance(raw, dict):
         # Hỗ trợ file bọc bởi {"domain_gazetteer": ...} hoặc {"entries": ...}
         if set(raw.keys()) <= {"domain_gazetteer", "entries", "gazetteer"}:
@@ -93,23 +152,27 @@ def _normalize_entries_collection(raw: Any) -> list[dict[str, str]]:
 
         for raw_k, val in raw.items():
             if isinstance(val, dict):
-                a, c, k, src = _extract_row_fields(val, fallback_alias=str(raw_k))
-                _push(a, c, k, src)
+                aliases, c, k, src = _extract_row_aliases_and_fields(val, fallback_alias=str(raw_k))
+                _push_many(aliases, c, k, src)
             elif val is not None:
-                _push(str(raw_k), str(val))
+                _push_many(split_gazetteer_aliases(str(raw_k)), str(val))
     elif isinstance(raw, list):
         for item in raw:
             if isinstance(item, dict):
-                a, c, k, src = _extract_row_fields(item)
-                _push(a, c, k, src)
+                aliases, c, k, src = _extract_row_aliases_and_fields(item)
+                _push_many(aliases, c, k, src)
             elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                _push(str(item[0]), str(item[1]), str(item[2]) if len(item) >= 3 else "")
+                _push_many(
+                    split_gazetteer_aliases(str(item[0])),
+                    str(item[1]),
+                    str(item[2]) if len(item) >= 3 else "",
+                )
 
     return results
 
 
 def parse_gazetteer_bytes(raw_bytes: bytes, filename: str = "") -> list[dict[str, str]]:
-    """Phân tích tệp JSON hoặc CSV từ điển bí danh tải lên thành danh sách mục chuẩn hóa."""
+    """Phân tích tệp JSON hoặc CSV từ điển bí danh (hỗ trợ cả dạng 1-1 lẫn gom nhóm aliases bằng ; hoặc |)."""
     if not raw_bytes:
         return []
     text = decode_text_bytes(raw_bytes).strip()
@@ -123,14 +186,14 @@ def parse_gazetteer_bytes(raw_bytes: bytes, filename: str = "") -> list[dict[str
         parsed = json.loads(text)
         return _normalize_entries_collection(parsed)
 
-    # Phân tích CSV (hỗ trợ cả có tiêu đề và không có tiêu đề)
+    # Phân tích CSV (hỗ trợ cả có tiêu đề 1-1 / gom nhóm aliases và không có tiêu đề)
     reader = csv.reader(io.StringIO(text))
     rows = [r for r in reader if any(cell.strip() for cell in r)]
     if not rows:
         return []
 
     header = [normal(c) for c in rows[0]]
-    alias_headers = {normal(c) for c in _ALIAS_FIELD_CANDIDATES}
+    alias_headers = {normal(c) for c in (*_ALIAS_FIELD_CANDIDATES, *_ALIASES_LIST_CANDIDATES)}
     canon_headers = {normal(c) for c in _CANONICAL_FIELD_CANDIDATES}
     has_header = any(h in alias_headers for h in header) and any(h in canon_headers for h in header)
 
@@ -364,16 +427,144 @@ def list_gazetteer_entries(project: dict) -> list[dict[str, Any]]:
     return rows
 
 
+def list_grouped_gazetteer_entries(project: dict) -> list[dict[str, Any]]:
+    """Gom nhóm từ điển bí danh theo cặp (canonical_name, kind) phục vụ nhập/sửa theo dạng nhiều aliases."""
+    flat_rows = list_gazetteer_entries(project)
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for row in flat_rows:
+        canon = clean_display_text(str(row.get("canonical_name") or ""))
+        kind = clean_display_text(str(row.get("kind") or ""))
+        alias = clean_display_text(str(row.get("alias") or ""))
+        source = clean_display_text(str(row.get("source") or ""))
+        if not canon:
+            continue
+
+        group_key = (normalize_gazetteer_key(canon), normalize_gazetteer_key(kind))
+        grp = groups.get(group_key)
+        if grp is None:
+            grp = {
+                "canonical_name": canon,
+                "kind": kind,
+                "alias_list": [],
+                "alias_keys": set(),
+                "source_list": [],
+            }
+            groups[group_key] = grp
+        elif canon and canon[0].isupper() and grp["canonical_name"] and not grp["canonical_name"][0].isupper():
+            grp["canonical_name"] = canon
+
+        alias_key = normalize_gazetteer_key(alias)
+        if alias and alias_key and alias_key not in grp["alias_keys"]:
+            grp["alias_keys"].add(alias_key)
+            grp["alias_list"].append(alias)
+        if source and source not in grp["source_list"]:
+            grp["source_list"].append(source)
+
+    grouped: list[dict[str, Any]] = []
+    for grp in groups.values():
+        sorted_aliases = sorted(grp["alias_list"], key=lambda a: a.casefold())
+        grouped.append(
+            {
+                "canonical_name": grp["canonical_name"],
+                "kind": grp["kind"],
+                "aliases": "; ".join(sorted_aliases),
+                "sources": ", ".join(grp["source_list"]) if grp["source_list"] else "manual_editor",
+                "alias_count": len(sorted_aliases),
+            }
+        )
+    grouped.sort(key=lambda g: (g["canonical_name"].casefold(), g["kind"].casefold()))
+    return grouped
+
+
+def expand_grouped_gazetteer_rows(
+    grouped_rows: list[dict[str, Any]],
+    *,
+    strict_conflicts: bool = True,
+) -> list[dict[str, str]]:
+    """Bung phẳng các dòng gom nhóm (canonical_name, kind, aliases ngăn cách ';' hoặc '|') thành bản ghi 1-1."""
+    expanded: list[dict[str, str]] = []
+    assigned: dict[str, tuple[str, str, str]] = {}
+
+    for row in grouped_rows:
+        if not isinstance(row, dict):
+            continue
+        canon = clean_display_text(str(row.get("canonical_name") or ""))
+        kind = clean_display_text(str(row.get("kind") or ""))
+        raw_aliases = row.get("aliases") if "aliases" in row else row.get("alias", "")
+        alias_list = split_gazetteer_aliases(raw_aliases)
+
+        if not canon and not alias_list:
+            continue
+        if alias_list and not canon:
+            raise ValueError(
+                f"Đã nhập bí danh ('{'; '.join(alias_list[:3])}') nhưng chưa nhập Tên chuẩn trong đồ thị (canonical_name)."
+            )
+        if not alias_list:
+            continue
+
+        canon_key = normalize_gazetteer_key(canon)
+        kind_key = normalize_gazetteer_key(kind)
+        target_label = f"{canon} [{kind}]" if kind else canon
+
+        for alias in alias_list:
+            alias_key = normalize_gazetteer_key(alias)
+            if not alias_key or alias_key == canon_key:
+                continue
+            prev = assigned.get(alias_key)
+            if prev is not None:
+                prev_canon_key, prev_kind_key, prev_label = prev
+                if prev_canon_key == canon_key and prev_kind_key == kind_key:
+                    continue
+                if strict_conflicts:
+                    raise ValueError(
+                        f"Bí danh '{alias}' đang bị gán trùng cho nhiều thực thể khác nhau: "
+                        f"'{prev_label}' và '{target_label}'. Vui lòng giữ mỗi bí danh cho một chủ thể duy nhất."
+                    )
+                continue
+
+            assigned[alias_key] = (canon_key, kind_key, target_label)
+            expanded.append(
+                {
+                    "alias": alias,
+                    "canonical_name": canon,
+                    "kind": kind,
+                }
+            )
+
+    return expanded
+
+
 def gazetteer_to_json_bytes(project: dict) -> bytes:
     """Xuất từ điển bí danh của dự án sang JSON UTF-8 định dạng chuẩn để tải về hoặc tái sử dụng."""
     payload = project.get("domain_gazetteer") or {}
     return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
 
-def gazetteer_to_csv_bytes(project: dict) -> bytes:
-    """Xuất từ điển bí danh của dự án sang CSV (UTF-8 BOM cho Excel)."""
-    entries = list_gazetteer_entries(project)
+def gazetteer_to_csv_bytes(project: dict, *, grouped: bool = True) -> bytes:
+    """Xuất từ điển bí danh của dự án sang CSV (UTF-8 BOM cho Excel).
+    Mặc định xuất dạng gom nhóm (`canonical_name, kind, aliases, sources`) với dấu '; ' giống danh mục quan hệ.
+    """
     buf = io.StringIO()
+    if grouped:
+        grouped_rows = list_grouped_gazetteer_entries(project)
+        writer = csv.DictWriter(
+            buf,
+            fieldnames=["canonical_name", "kind", "aliases", "sources"],
+        )
+        writer.writeheader()
+        for row in grouped_rows:
+            writer.writerow(
+                {
+                    "canonical_name": row.get("canonical_name", ""),
+                    "kind": row.get("kind", ""),
+                    "aliases": row.get("aliases", ""),
+                    "sources": row.get("sources", ""),
+                }
+            )
+        return buf.getvalue().encode("utf-8-sig")
+
+    entries = list_gazetteer_entries(project)
     writer = csv.DictWriter(
         buf,
         fieldnames=["alias", "canonical_name", "kind", "source", "created_at"],

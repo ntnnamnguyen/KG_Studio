@@ -21,11 +21,13 @@ from backend.domain.curation.service import (
     delete_gazetteer_entry as domain_delete_gazetteer_entry,
     duplicate_suggestions,
     evidence_context,
+    expand_grouped_gazetteer_rows as domain_expand_grouped_gazetteer_rows,
     gazetteer_to_csv_bytes as domain_gazetteer_to_csv_bytes,
     gazetteer_to_json_bytes as domain_gazetteer_to_json_bytes,
     inspect_edge_schema_status,
     is_edge_exportable,
     list_gazetteer_entries as domain_list_gazetteer_entries,
+    list_grouped_gazetteer_entries as domain_list_grouped_gazetteer_entries,
     mark_pair_not_duplicate as domain_mark_pair_not_duplicate,
     mark_pairs_not_duplicate_bulk as domain_mark_pairs_not_duplicate_bulk,
     mark_relation_pair_not_duplicate as domain_mark_relation_pair_not_duplicate,
@@ -763,6 +765,19 @@ class CurationApplicationService:
         """Lấy danh sách các mục từ điển bí danh đã học của dự án."""
         return domain_list_gazetteer_entries(project)
 
+    def list_grouped_gazetteer_entries(self, project: dict) -> list[dict[str, Any]]:
+        """Lấy danh sách từ điển bí danh gom nhóm theo thực thể chuẩn."""
+        return domain_list_grouped_gazetteer_entries(project)
+
+    def expand_grouped_gazetteer_rows(
+        self,
+        grouped_rows: list[dict[str, Any]],
+        *,
+        strict_conflicts: bool = True,
+    ) -> list[dict[str, str]]:
+        """Bung phẳng bảng từ điển gom nhóm (aliases ngăn cách ';' hoặc '|') thành bản ghi 1-1."""
+        return domain_expand_grouped_gazetteer_rows(grouped_rows, strict_conflicts=strict_conflicts)
+
     def parse_gazetteer_bytes(self, raw_bytes: bytes, filename: str = "") -> list[dict[str, str]]:
         """Phân tích tệp JSON hoặc CSV từ điển bí danh tải lên."""
         return domain_parse_gazetteer_bytes(raw_bytes, filename=filename)
@@ -771,9 +786,9 @@ class CurationApplicationService:
         """Xuất từ điển bí danh dự án ra tệp JSON UTF-8."""
         return domain_gazetteer_to_json_bytes(project)
 
-    def gazetteer_to_csv_bytes(self, project: dict) -> bytes:
+    def gazetteer_to_csv_bytes(self, project: dict, *, grouped: bool = True) -> bytes:
         """Xuất từ điển bí danh dự án ra tệp CSV (UTF-8 BOM cho Excel)."""
-        return domain_gazetteer_to_csv_bytes(project)
+        return domain_gazetteer_to_csv_bytes(project, grouped=grouped)
 
     def _commit_gazetteer_mutation(
         self,

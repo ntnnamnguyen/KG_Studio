@@ -6,6 +6,8 @@ from typing import Any
 
 import streamlit as st
 
+from frontend.state.session import sync_keyed_choice, sync_keyed_int
+
 
 
 def render_training_dataset_tab(facade: Any, active_graph_project: dict, proj_id: str) -> None:
@@ -23,15 +25,19 @@ def render_training_dataset_tab(facade: Any, active_graph_project: dict, proj_id
         st.info("ℹ️ Cần có ít nhất một quan hệ ở trạng thái 'Đã duyệt' để sinh bộ dữ liệu huấn luyện.")
         return
 
+    samples_key = f"_p06_train_ds_samples_{proj_id}"
+    train_pct_key = f"_p06_train_pct_{proj_id}"
+    sync_keyed_int(samples_key, 2000, (proj_id, "samples"), min_value=200, max_value=5000)
+    sync_keyed_int(train_pct_key, 80, (proj_id, "train_pct"), min_value=60, max_value=90)
+
     c_cfg1, c_cfg2, c_cfg3 = st.columns([1.5, 1.2, 1.3], vertical_alignment="bottom")
     qa_max_samples = int(
         c_cfg1.slider(
             "Số lượng mẫu huấn luyện cần sinh (Dataset Size)",
             min_value=200,
             max_value=5000,
-            value=2000,
             step=100,
-            key=f"_p06_train_ds_samples_{proj_id}",
+            key=samples_key,
             help="Hệ thống sẽ khai phá toàn bộ các đường đi đa bước và phân bổ đều vào 6 nhóm cấu trúc đồ thị.",
         )
     )
@@ -40,9 +46,8 @@ def render_training_dataset_tab(facade: Any, active_graph_project: dict, proj_id
             "Tỷ lệ phân chia Train (%)",
             min_value=60,
             max_value=90,
-            value=80,
             step=5,
-            key=f"_p06_train_pct_{proj_id}",
+            key=train_pct_key,
             help="Tỷ lệ dành cho tập Train. Phần còn lại chia đều cho Validation và Test.",
         )
     )
@@ -128,15 +133,17 @@ def render_training_dataset_tab(facade: Any, active_graph_project: dict, proj_id
 
     with st.container(border=True):
         st.markdown("##### 🔍 Xem trước Dữ liệu Huấn luyện & Đánh giá (Preview Data Records)")
+        split_opts = ["Tất cả (All)", "train", "val", "test"]
+        split_key = f"_p06_sel_split_{proj_id}"
+        sync_keyed_choice(split_key, split_opts, "Tất cả (All)", (proj_id, "split"))
         filter_split = st.segmented_control(
             "Lọc theo tập dữ liệu:",
-            ["Tất cả (All)", "train", "val", "test"],
-            default="Tất cả (All)",
-            key=f"_p06_sel_split_{proj_id}",
+            split_opts,
+            key=split_key,
         )
         filtered_items = (
             all_samples
-            if filter_split == "Tất cả (All)"
+            if filter_split in (None, "Tất cả (All)")
             else [x for x in all_samples if x.get("split") == filter_split]
         )
         sample_rows = [
