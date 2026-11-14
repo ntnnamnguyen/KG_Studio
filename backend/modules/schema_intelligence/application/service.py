@@ -1,6 +1,8 @@
 """Application Service cho phân hệ Schema Intelligence (EDC, Catalogs, Target Alignment)."""
 from __future__ import annotations
 
+import copy
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -37,7 +39,7 @@ from shared.schemas.edc import (
     BulkReviewResultDTO,
 )
 from shared.schemas.project import EDCPlusRSettingsDTO
-from shared.text_utils import uid
+from shared.text_utils import sha, uid
 
 
 class SchemaIntelligenceApplicationService:
@@ -59,7 +61,7 @@ class SchemaIntelligenceApplicationService:
     def _current_model_fingerprint(self, project: dict) -> str:
         try:
             raw_s = project.get("edc_plus_r_settings") or {}
-            embedder_model = raw_s.get("embedder_model", "text-embedding-3-small") if isinstance(raw_s, dict) else "text-embedding-3-small"
+            embedder_model = raw_s.get("embedder_model", "hybrid_vn:default") if isinstance(raw_s, dict) else "hybrid_vn:default"
             embedder = default_embedder(embedder_model)
             return getattr(embedder, "fingerprint", "") or ""
         except Exception:
@@ -79,8 +81,8 @@ class SchemaIntelligenceApplicationService:
     def compute_catalog_hash(self, project: dict, kind: str) -> str:
         return compute_catalog_hash(project, kind)
 
-    def prepare_edc(self, project: dict) -> dict:
-        return prepare_edc(project)
+    def prepare_edc(self, project: dict, clean: dict, payload: dict, context: dict) -> None:
+        prepare_edc(project, clean, payload, context)
 
     def propose_term(
         self,
@@ -88,26 +90,22 @@ class SchemaIntelligenceApplicationService:
         kind: str,
         name: str,
         definition: str = "",
+        observation: dict | None = None,
+        *,
         source_chunk_id: str = "",
-        frequency: int = 1,
-        candidates: list[dict] | None = None,
-        status: str = "pending",
-        decision: str = "pending",
-        canonical_name: str = "",
-        notes: str = "",
-    ) -> dict:
+        doc_id: str = "",
+    ) -> tuple[str, str]:
+        obs = dict(observation or {})
+        if source_chunk_id and "chunk_id" not in obs:
+            obs["chunk_id"] = source_chunk_id
+        if doc_id and "doc_id" not in obs:
+            obs["doc_id"] = doc_id
         return propose_term(
             project,
             kind=kind,
             name=name,
             definition=definition,
-            source_chunk_id=source_chunk_id,
-            frequency=frequency,
-            candidates=candidates,
-            status=status,
-            decision=decision,
-            canonical_name=canonical_name,
-            notes=notes,
+            observation=obs,
         )
 
     # --- EDC Review (Preview & Apply Transactional) ---
@@ -196,45 +194,57 @@ class SchemaIntelligenceApplicationService:
         definition: str = "",
         note: str = "",
         description: str = "",
+        *,
+        expected_revision: str = "",
     ) -> dict[str, Any]:
         """Quyết định một đề xuất đơn lẻ có tạo snapshot và bảo đảm commit transactional."""
-        if self.commit_coordinator is not None:
-            captured_impact: dict[str, Any] = {}
-
-            def _exec(proj: dict) -> tuple[dict, dict[str, Any]]:
-                nonlocal captured_impact
-                captured_impact = domain_decide_proposal(
-                    proj,
-                    proposal_id,
-                    action,
-                    canonical_name=canonical_name,
-                    definition=definition,
-                    note=note,
-                    description=description,
-                )
-                return proj, captured_impact
-
-            req_id = f"single_prop_{proposal_id}_{uid()[:8]}"
-            expected_rev = str(project.get("project_revision", ""))
-            self.commit_coordinator.commit(
-                project,
-                request_id=req_id,
-                request_hash="",
-                expected_revision=expected_rev,
-                executor=_exec,
-                idempotency_store_key="edc_idempotency_store",
+        if self.commit_coordinator is None:
+            raise RuntimeError(
+                "Thao tác quyết định đề xuất có lưu trữ yêu cầu ProjectCommitCoordinator; "
+                "không cho phép mutate bộ nhớ khi thiếu coordinator."
             )
-            return captured_impact
-        else:
-            return domain_decide_proposal(
-                project,
+        captured_impact: dict[str, Any] = {}
+
+        def _exec(proj: dict) -> tuple[dict, dict[str, Any]]:
+            nonlocal captured_impact
+            candidate, captured_impact = domain_decide_proposal(
+                proj,
                 proposal_id,
                 action,
                 canonical_name=canonical_name,
                 definition=definition,
                 note=note,
                 description=description,
+                mutate_in_place=False,
             )
+            return candidate, captured_impact
+
+        req_id = f"single_prop_{proposal_id}_{uid()[:8]}"
+        req_hash = sha(
+            json.dumps(
+                {
+                    "proposal_id": proposal_id,
+                    "action": action,
+                    "canonical_name": canonical_name,
+                    "definition": definition,
+                    "note": note,
+                    "description": description,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )[:16]
+        rev = expected_revision or str(project.get("project_revision", ""))
+        self.commit_coordinator.commit(
+            project,
+            request_id=req_id,
+            request_hash=req_hash,
+            expected_revision=rev,
+            executor=_exec,
+            idempotency_store_key="edc_idempotency_store",
+            vector_invalidation_kind=("relations", "entity_types"),
+        )
+        return captured_impact
 
     # --- Target Alignment & Retrieval ---
 
@@ -289,7 +299,7 @@ class SchemaIntelligenceApplicationService:
             embedder=active_embedder,
         )
         if save and self.commit_coordinator is not None and self.commit_coordinator.project_store.project_exists(project.get("name", "")):
-            self.commit_coordinator.project_store.save_project(project)
+            self.commit_coordinator.save_metadata_in_lock(project)
         return summary
 
     def run_target_alignment_on_pending(
@@ -298,15 +308,58 @@ class SchemaIntelligenceApplicationService:
         *,
         proposal_ids: list[str] | None = None,
         kind: str | None = None,
+        enable_llm_verifier: bool | None = None,
+        llm_params: dict | None = None,
+        save: bool = True,
     ) -> dict:
         settings = self.get_edc_plus_r_settings(project)
         embedder = default_embedder(settings.embedder_model)
-        return self.aligner.align_project_proposals(
-            project,
-            auto_align_threshold=settings.auto_align_threshold,
-            candidate_threshold=settings.candidate_threshold,
-            enable_llm_verifier=False,
-            embedder=embedder,
-            proposal_ids=proposal_ids,
-            kind=kind,
-        )
+        use_verifier = (
+            settings.enable_llm_verifier if enable_llm_verifier is None else bool(enable_llm_verifier)
+        ) and bool(llm_params)
+        align_kwargs = {
+            "auto_align_threshold": settings.auto_align_threshold,
+            "candidate_threshold": settings.candidate_threshold,
+            "enable_llm_verifier": use_verifier,
+            "llm_params": llm_params,
+            "embedder": embedder,
+            "proposal_ids": proposal_ids,
+            "kind": kind,
+        }
+        if (
+            save
+            and self.commit_coordinator is not None
+            and project.get("name")
+            and self.commit_coordinator.project_store.project_exists(project.get("name", ""))
+        ):
+            req_id = f"auto_align_{uid()[:8]}"
+            req_hash = sha(
+                json.dumps(
+                    {
+                        "proposal_ids": sorted(proposal_ids or []),
+                        "kind": kind or "",
+                        "use_verifier": use_verifier,
+                        "auto_align_threshold": settings.auto_align_threshold,
+                        "candidate_threshold": settings.candidate_threshold,
+                        "embedder_model": settings.embedder_model,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )[:16]
+
+            def _exec(proj: dict) -> tuple[dict, dict[str, Any]]:
+                candidate = copy.deepcopy(proj)
+                summary = self.aligner.align_project_proposals(candidate, **align_kwargs)
+                return candidate, summary
+
+            return self.commit_coordinator.commit(
+                project,
+                request_id=req_id,
+                request_hash=req_hash,
+                executor=_exec,
+                idempotency_store_key="edc_idempotency_store",
+                vector_invalidation_kind=None,
+            )
+
+        return self.aligner.align_project_proposals(project, **align_kwargs)

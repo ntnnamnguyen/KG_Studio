@@ -41,10 +41,13 @@ class DisjointSetUnion:
 
 
 def flatten_redirects(mapping: dict[str, str] | list[tuple[str, str]]) -> dict[str, str]:
-    """Khử chuỗi chuyển hướng nhiều bậc (A -> B -> C => A -> C) và bảo vệ chống vòng lặp."""
+    """Khử chuỗi chuyển hướng nhiều bậc (A -> B -> C => A -> C) và từ chối chu trình."""
     parent: dict[str, str] = {}
     if isinstance(mapping, dict):
-        parent = dict(mapping)
+        for k, v in mapping.items():
+            s, t = str(k).strip(), str(v).strip()
+            if s and t and s != t:
+                parent[s] = t
     elif isinstance(mapping, list):
         for item in mapping:
             if isinstance(item, (tuple, list)) and len(item) >= 2:
@@ -56,10 +59,13 @@ def flatten_redirects(mapping: dict[str, str] | list[tuple[str, str]]) -> dict[s
     for start in parent:
         curr = start
         visited: set[str] = set()
-        while curr in parent and curr not in visited:
+        while curr in parent:
+            if curr in visited:
+                raise ValueError(f"Phát hiện chu trình chuyển hướng (redirect cycle) tại '{curr}'.")
             visited.add(curr)
             curr = parent[curr]
-        flat[start] = curr
+        if curr != start:
+            flat[start] = curr
     return flat
 
 
@@ -69,11 +75,12 @@ def update_redirect_map(
     keep_id: str | None = None,
 ) -> dict[str, str]:
     """Cập nhật và làm phẳng bảng ánh xạ chuyển hướng (redirects), khử chuỗi đa bậc và vòng lặp."""
+    flat_new = flatten_redirects(new_mapping)
     redirects = dict(existing or {})
     for old_src, old_tgt in list(redirects.items()):
-        if old_tgt in new_mapping:
-            redirects[old_src] = new_mapping[old_tgt]
-    for src, tgt in new_mapping.items():
+        if old_tgt in flat_new:
+            redirects[old_src] = flat_new[old_tgt]
+    for src, tgt in flat_new.items():
         if src != tgt:
             redirects[src] = tgt
     if keep_id:
@@ -321,16 +328,28 @@ def rank_representative_edge(edges_in_group: list[dict[str, Any]]) -> dict[str, 
 
 
 def _clone_project_for_merge_mutation(project: dict) -> dict:
-    """Tạo bản sao nông có chọn lọc để tối ưu hiệu năng O(V+E) khi gộp thực thể và quan hệ."""
+    """Tạo bản sao có chọn lọc để tối ưu hiệu năng O(V+E) khi gộp thực thể, quan hệ và loại thực thể."""
     candidate = dict(project)
     candidate["nodes"] = [copy.copy(n) for n in project.get("nodes", [])]
     candidate["edges"] = [copy.copy(e) for e in project.get("edges", [])]
     candidate["entity_merges"] = list(project.get("entity_merges", []))
     candidate["relation_merges"] = list(project.get("relation_merges", []))
+    candidate["entity_type_merges"] = list(project.get("entity_type_merges", []))
     candidate["node_redirects"] = dict(project.get("node_redirects", {}))
     candidate["relation_redirects"] = dict(project.get("relation_redirects", {}))
     candidate["edge_redirects"] = dict(project.get("edge_redirects", {}))
     candidate["curation_history"] = list(project.get("curation_history", []))
+    candidate["domain_gazetteer"] = copy.deepcopy(project.get("domain_gazetteer", {}))
+    candidate["relations"] = list(project.get("relations", []))
+    candidate["relation_aliases"] = copy.deepcopy(project.get("relation_aliases", {}))
+    candidate["relation_notes"] = copy.deepcopy(project.get("relation_notes", {}))
+    if project.get("relation_types") is not None:
+        candidate["relation_types"] = [copy.deepcopy(r) for r in project.get("relation_types", [])]
+    if project.get("relation_catalog") is not None:
+        candidate["relation_catalog"] = [copy.deepcopy(r) for r in project.get("relation_catalog", [])]
+    candidate["entity_types"] = [copy.deepcopy(r) for r in project.get("entity_types", [])]
+    candidate["entity_type_aliases"] = copy.deepcopy(project.get("entity_type_aliases", {}))
+    candidate["schema_proposals"] = list(project.get("schema_proposals", []))
     return candidate
 
 
@@ -483,17 +502,22 @@ def remap_graph_edges_endpoints(
                 edge["override_reason"] = ""
 
             if curation_history is not None:
+                is_remap = bool(src_changed or tgt_changed)
                 curation_history.append(
                     {
                         "id": uid(),
                         "at": ts,
                         "actor": actor,
                         "decision_origin": "human",
-                        "action": "edge_endpoint_remapped_by_merge",
+                        "action": "edge_endpoint_remapped_by_merge" if is_remap else "edge_invalidated_by_kind_change",
                         "target_id": eid,
                         "before": before_edge,
                         "after": copy.deepcopy(edge),
-                        "note": f"Đổi đầu mút do gộp thực thể vào {keep_id or new_src}",
+                        "note": (
+                            f"Đổi đầu mút do gộp thực thể vào {keep_id or new_src}"
+                            if is_remap
+                            else "Chuyển cạnh về Cần kiểm tra do thay đổi loại thực thể"
+                        ),
                     }
                 )
         else:

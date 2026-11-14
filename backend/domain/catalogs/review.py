@@ -66,7 +66,8 @@ def decide_proposal(
     request_id: str = "",
     decision_origin: str = "human",
     actor: str = "human_reviewer",
-) -> dict:
+    mutate_in_place: bool = True,
+) -> dict | tuple[dict, dict]:
     if action not in ("approve", "merge", "reject"):
         raise ValueError("Thao tác đề xuất không hợp lệ")
     candidate = _clone_project_for_edc_mutation(project)
@@ -164,9 +165,11 @@ def decide_proposal(
             "actor": actor,
         }
     )
-    project.clear()
-    project.update(candidate)
-    return impact
+    if mutate_in_place:
+        project.clear()
+        project.update(candidate)
+        return impact
+    return candidate, impact
 
 
 def preview_proposal_decisions(

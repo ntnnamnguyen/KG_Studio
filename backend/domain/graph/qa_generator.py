@@ -924,6 +924,7 @@ def generate_training_qa_dataset(
     train_ratio: float = 0.80,
     val_ratio: float = 0.10,
     approved_only: bool = True,
+    disjoint_split: bool = True,
 ) -> dict[str, Any]:
     """Sinh bộ dữ liệu Huấn luyện & Đánh giá G-Retriever quy mô lớn đa cấu trúc bằng ngôn ngữ tự nhiên."""
     from backend.domain.graph.g_retriever import get_or_build_graph_index
@@ -1071,7 +1072,7 @@ def generate_training_qa_dataset(
                         [u, c],
                         [u, b, c],
                         [e1, e2],
-                        c,
+                        b,
                         bridge_id=b,
                         bridge_name=b_name,
                     )
@@ -1252,38 +1253,181 @@ def generate_training_qa_dataset(
                 u,
             )
 
-    # Phân chia phân tầng (Stratified Split: 80% train, 10% val, 10% test)
+    # Phân chia phân tầng (Mặc định Disjoint theo cạnh để chống data leakage giữa Train / Val / Test)
+    bucket_order = [
+        "2hop_bridge",
+        "2hop_intersection",
+        "multi_attr_star",
+        "explain_path",
+        "1hop_forward",
+        "1hop_inverse",
+    ]
     train_items: list[dict[str, Any]] = []
     val_items: list[dict[str, Any]] = []
     test_items: list[dict[str, Any]] = []
     all_items: list[dict[str, Any]] = []
     category_counts: dict[str, int] = {}
+    dropped_cross_split = 0
+    edge_owner: dict[str, str] = {}
+    distinct_edges: list[str] = []
 
-    global_idx = 0
-    for cat_key, cat_list in buckets.items():
-        n_c = len(cat_list)
-        if n_c == 0:
-            continue
-        cat_label = cat_list[0]["category"]
-        category_counts[cat_label] = n_c
-        n_train = int(round(n_c * train_ratio))
-        n_val = int(round(n_c * val_ratio))
-        if n_train + n_val > n_c:
-            n_val = max(0, n_c - n_train)
+    if not disjoint_split:
+        global_idx = 0
+        for cat_key in bucket_order:
+            cat_list = buckets.get(cat_key, [])
+            n_c = len(cat_list)
+            if n_c == 0:
+                continue
+            cat_label = cat_list[0]["category"]
+            category_counts[cat_label] = n_c
+            n_train = int(round(n_c * train_ratio))
+            n_val = int(round(n_c * val_ratio))
+            if n_train + n_val > n_c:
+                n_val = max(0, n_c - n_train)
 
-        for i, item in enumerate(cat_list):
-            global_idx += 1
-            item["id"] = f"gret_qa_{global_idx:04d}"
-            if i < n_train:
-                item["split"] = "train"
-                train_items.append(item)
-            elif i < n_train + n_val:
-                item["split"] = "val"
-                val_items.append(item)
+            for i, item in enumerate(cat_list):
+                global_idx += 1
+                item["id"] = f"gret_qa_{global_idx:04d}"
+                if i < n_train:
+                    item["split"] = "train"
+                    train_items.append(item)
+                elif i < n_train + n_val:
+                    item["split"] = "val"
+                    val_items.append(item)
+                else:
+                    item["split"] = "test"
+                    test_items.append(item)
+                all_items.append(item)
+    else:
+        all_raw_samples: list[tuple[str, dict[str, Any]]] = [
+            (cat_key, item) for cat_key in bucket_order for item in buckets.get(cat_key, [])
+        ]
+        distinct_edges = sorted(
+            {str(eid) for _, item in all_raw_samples for eid in (item.get("gold_edge_ids") or [])}
+        )
+        edge_freq: collections.Counter[str] = collections.Counter(
+            str(eid) for _, item in all_raw_samples for eid in (item.get("gold_edge_ids") or [])
+        )
+        parent_uf: dict[str, str] = {eid: eid for eid in distinct_edges}
+
+        def _uf_find(x: str) -> str:
+            while parent_uf[x] != x:
+                parent_uf[x] = parent_uf[parent_uf[x]]
+                x = parent_uf[x]
+            return x
+
+        def _uf_union(a: str, b: str) -> None:
+            ra, rb = _uf_find(a), _uf_find(b)
+            if ra != rb:
+                if ra < rb:
+                    parent_uf[rb] = ra
+                else:
+                    parent_uf[ra] = rb
+
+        for _, item in all_raw_samples:
+            eids = [str(eid) for eid in dict.fromkeys(item.get("gold_edge_ids") or [])]
+            if len(eids) >= 2:
+                for other_eid in eids[1:]:
+                    _uf_union(eids[0], other_eid)
+
+        comp_edges: dict[str, list[str]] = collections.defaultdict(list)
+        for eid in distinct_edges:
+            comp_edges[_uf_find(eid)].append(eid)
+
+        n_edges = len(distinct_edges)
+        n_val_target = max(1, int(round(n_edges * val_ratio))) if (val_ratio > 0 and n_edges >= 3) else 0
+        test_ratio_eff = max(0.0, 1.0 - train_ratio - val_ratio)
+        n_test_target = max(1, int(round(n_edges * test_ratio_eff))) if (test_ratio_eff > 0 and n_edges >= 3) else 0
+
+        sorted_comps = sorted(comp_edges.values(), key=lambda c: (len(c), c[0]))
+        val_edge_cnt = 0
+        test_edge_cnt = 0
+        for comp in sorted_comps:
+            if val_edge_cnt < n_val_target and len(comp) <= max(2, n_val_target + 1):
+                for eid in comp:
+                    edge_owner[eid] = "val"
+                val_edge_cnt += len(comp)
+            elif test_edge_cnt < n_test_target and len(comp) <= max(2, n_test_target + 1):
+                for eid in comp:
+                    edge_owner[eid] = "test"
+                test_edge_cnt += len(comp)
+
+        # Nếu thành phần liên thông lớn khiến val hoặc test chưa đủ cạnh, ưu tiên lấy trọn các mẫu có tần suất cạnh thấp nhất
+        candidate_for_split = sorted(
+            all_raw_samples,
+            key=lambda pair: (
+                len(pair[1].get("gold_edge_ids") or []),
+                sum(edge_freq[str(eid)] for eid in (pair[1].get("gold_edge_ids") or [])),
+                pair[1].get("question", ""),
+            ),
+        )
+        max_non_train = max(0, n_edges - max(1, int(round(n_edges * 0.5))))
+        for split_name, target_cnt in (("val", n_val_target), ("test", n_test_target)):
+            cur_cnt = val_edge_cnt if split_name == "val" else test_edge_cnt
+            for _, item in candidate_for_split:
+                if cur_cnt >= target_cnt or (val_edge_cnt + test_edge_cnt) >= max_non_train:
+                    break
+                eids = [str(eid) for eid in dict.fromkeys(item.get("gold_edge_ids") or [])]
+                if not eids:
+                    continue
+                # Chỉ nhận mẫu mà tất cả cạnh đều chưa bị chiếm bởi split khác
+                if any(eid in edge_owner and edge_owner[eid] != split_name for eid in eids):
+                    continue
+                new_eids = [eid for eid in eids if eid not in edge_owner]
+                if not new_eids:
+                    continue
+                if (val_edge_cnt + test_edge_cnt + len(new_eids)) > max_non_train and cur_cnt > 0:
+                    continue
+                for eid in new_eids:
+                    edge_owner[eid] = split_name
+                cur_cnt += len(new_eids)
+                if split_name == "val":
+                    val_edge_cnt = cur_cnt
+                else:
+                    test_edge_cnt = cur_cnt
+
+        for eid in distinct_edges:
+            edge_owner.setdefault(eid, "train")
+
+        kept_per_cat: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+        for cat_key, item in all_raw_samples:
+            eids = [str(eid) for eid in dict.fromkeys(item.get("gold_edge_ids") or [])]
+            if not eids:
+                owner = "train"
             else:
-                item["split"] = "test"
-                test_items.append(item)
-            all_items.append(item)
+                owners = {edge_owner.get(eid, "train") for eid in eids}
+                if len(owners) != 1:
+                    dropped_cross_split += 1
+                    continue
+                owner = next(iter(owners))
+            item["split"] = owner
+            kept_per_cat[cat_key].append(item)
+
+        global_idx = 0
+        for cat_key in bucket_order:
+            cat_kept = kept_per_cat.get(cat_key, [])
+            if not cat_kept:
+                continue
+            cat_label = cat_kept[0]["category"]
+            category_counts[cat_label] = len(cat_kept)
+            for item in cat_kept:
+                global_idx += 1
+                item["id"] = f"gret_qa_{global_idx:04d}"
+                owner = item["split"]
+                if owner == "train":
+                    train_items.append(item)
+                elif owner == "val":
+                    val_items.append(item)
+                else:
+                    test_items.append(item)
+                all_items.append(item)
+
+    tr_edges = {str(eid) for item in train_items for eid in (item.get("gold_edge_ids") or [])}
+    va_edges = {str(eid) for item in val_items for eid in (item.get("gold_edge_ids") or [])}
+    te_edges = {str(eid) for item in test_items for eid in (item.get("gold_edge_ids") or [])}
+    tr_seeds = {str(nid) for item in train_items for nid in (item.get("seed_node_ids") or [])}
+    va_seeds = {str(nid) for item in val_items for nid in (item.get("seed_node_ids") or [])}
+    te_seeds = {str(nid) for item in test_items for nid in (item.get("seed_node_ids") or [])}
 
     return {
         "total_samples": len(all_items),
@@ -1295,6 +1439,17 @@ def generate_training_qa_dataset(
         "train_samples": train_items,
         "val_samples": val_items,
         "test_samples": test_items,
+        "split_metrics": {
+            "disjoint_split": bool(disjoint_split),
+            "distinct_gold_edges": len(distinct_edges) if disjoint_split else len(tr_edges | va_edges | te_edges),
+            "dropped_cross_split_samples": dropped_cross_split,
+            "train_val_edge_overlap": len(tr_edges & va_edges),
+            "train_test_edge_overlap": len(tr_edges & te_edges),
+            "val_test_edge_overlap": len(va_edges & te_edges),
+            "train_val_anchor_entity_overlap": len(tr_seeds & va_seeds),
+            "train_test_anchor_entity_overlap": len(tr_seeds & te_seeds),
+            "val_test_anchor_entity_overlap": len(va_seeds & te_seeds),
+        },
     }
 
 

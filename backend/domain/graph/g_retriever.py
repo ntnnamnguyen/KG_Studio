@@ -18,12 +18,14 @@ from dataclasses import dataclass, field
 import io
 import json
 import math
+import re
 import time
 from typing import Any
 import zipfile
 
 from backend.domain.graph.service import approved_graph
 from backend.integrations.llm import LLMGateway, make_adapter, providers
+from shared.constants import STATUS_REJECTED
 from shared.text_utils import normal, tokenize_vn
 from shared.schemas.graph_input import GRAPH_FORMAT, GraphSnapshotDTO, graph_fingerprint
 
@@ -52,11 +54,33 @@ ATTRIBUTE_RELATIONS_NORM: set[str] = {
     "dài",
     "rong",
     "rộng",
+    "p1 is identified by",
+    "is identified by",
+    "p4 has time span",
+    "has time span",
+    "p7 took place at",
+    "took place at",
+    "p43 has dimension",
+    "has dimension",
+    "p53 has former or current location",
+    "has former or current location",
+    "p81 ongoing throughout",
+    "p82 at some time within",
+    "p90 has value",
+    "p102 has title",
+    "has title",
 }
 
 ATTRIBUTE_NODE_KINDS_NORM: set[str] = {
     "mốc thời gian",
     "số đo",
+    "thời gian",
+    "moc thoi gian",
+    "so do",
+    "thoi gian",
+    "e52 time span",
+    "e54 dimension",
+    "e41 appellation",
 }
 
 # Chỉ lọc các hư từ câu hỏi thuần túy; GIỮ LẠI các từ quan hệ như 'thuộc', 'gồm', 'tại', 'là'
@@ -110,8 +134,9 @@ STOPWORDS_VN: set[str] = {
 
 
 def _clean_phrase(text: str) -> str:
-    """Chuẩn hóa chuỗi thành các từ cách nhau bởi 1 khoảng trắng, loại bỏ mọi dấu câu."""
-    return " ".join(tokenize_vn(normal(text), include_bigrams=False))
+    """Chuẩn hóa chuỗi thành các từ cách nhau bởi 1 khoảng trắng, tách dấu gạch dưới/nối/dấu câu."""
+    separated = re.sub(r"[_\-/]+", " ", str(text or ""))
+    return " ".join(tokenize_vn(normal(separated), include_bigrams=False))
 
 
 @dataclass
@@ -218,7 +243,7 @@ class GraphRAGIndex:
         for nid, n in self.nodes_by_id.items():
             name_n = _clean_phrase(str(n.get("name", "")))
             kind_n = _clean_phrase(str(n.get("kind") or n.get("type") or ""))
-            desc_n = normal(str(n.get("description", "")))
+            desc_n = _clean_phrase(str(n.get("description", "")))
             aliases_n = " ".join(_clean_phrase(str(a)) for a in (n.get("aliases") or []))
             self.node_name_norm[nid] = name_n
             self.node_kind_norm[nid] = kind_n
@@ -238,7 +263,7 @@ class GraphRAGIndex:
             u_name = self.node_name_norm.get(u, "")
             v_name = self.node_name_norm.get(v, "")
             rel_n = _clean_phrase(str(e.get("relation", "")))
-            ev_n = normal(str(e.get("evidence", "")))
+            ev_n = _clean_phrase(str(e.get("evidence", "")))
             self.edge_rel_norm[eid] = rel_n
             if rel_n:
                 self.rel_norm_to_edges[rel_n].append(eid)
@@ -357,11 +382,9 @@ def get_or_build_graph_index(
     elif approved_only:
         nodes, edges = approved_graph(project)
         mode_tag = "approved"
-        if not edges and all_edges:
-            nodes, edges = all_nodes, all_edges
-            mode_tag = "fallback_all"
     else:
-        nodes, edges = all_nodes, all_edges
+        nodes = [n for n in all_nodes if n.get("status") != STATUS_REJECTED]
+        edges = [e for e in all_edges if e.get("status") != STATUS_REJECTED]
         mode_tag = "all"
 
     # Counts/saved_at cannot distinguish methods, edits or approval changes.
@@ -486,17 +509,18 @@ def _retrieve_pcst_subgraph(
             if b_nid == s_nid:
                 continue
             b_deg = index.degree.get(b_nid, 1)
-            # Phạt mạnh nếu B là siêu đỉnh (như 'Hà Nội' bậc 269) để không đi tắt qua siêu đỉnh
-            if b_deg > 45:
-                continue
             rel1 = index.edge_rel_norm.get(eid1, "")
             b_kind = index.node_kind_norm.get(b_nid, "")
             r1_match = 1.2 if (rel1 in matched_rels) else 0.0
             kind_match = 0.6 if (b_kind and len(b_kind) >= 3 and b_kind in q_norm) else 0.0
             e1_sc = edge_scores.get(eid1, 0.0)
+            # Bỏ qua siêu đỉnh khổng lồ nếu không khớp quan hệ lẫn điểm cạnh đáng kể; dùng phạt mượt thay cho cutoff cứng
+            if b_deg > 250 and r1_match <= 0.0 and e1_sc < 0.40:
+                continue
+            hub_damp = 1.0 / (1.0 + 0.65 * max(0.0, math.log(b_deg / 15.0))) if b_deg > 15 else 1.0
 
             if r1_match > 0 or kind_match > 0 or e1_sc >= 0.35:
-                bridge_strength = s_prize * (0.45 + 0.65 * r1_match + 0.35 * kind_match + 0.25 * e1_sc)
+                bridge_strength = s_prize * hub_damp * (0.45 + 0.65 * r1_match + 0.35 * kind_match + 0.25 * e1_sc)
                 # Kiểm tra các cạnh bước 2 đi ra từ đỉnh trung gian B
                 for c_nid, eid2 in index.adj.get(b_nid, ()):
                     if eid2 == eid1 or c_nid == s_nid:
@@ -591,7 +615,7 @@ def _retrieve_pcst_subgraph(
                         best_path_edges = p_edges
                         best_path_nodes = p_nodes
 
-            if best_target is not None and best_net_gain > -0.35:
+            if best_target is not None and best_net_gain > 0.0:
                 remaining_seeds.remove(best_target)
                 for n_in_p in best_path_nodes:
                     anchor_set.add(n_in_p)
@@ -702,12 +726,15 @@ def _retrieve_ppr_subgraph(
 
     for _ in range(iterations):
         nxt: dict[str, float] = {nid: (1.0 - damping) * val for nid, val in p0.items()}
-        active_items = sorted(pi.items(), key=lambda x: -x[1])[:120]
+        dangling_mass = 0.0
+        active_items = sorted(
+            ((u, prob_u) for u, prob_u in pi.items() if prob_u >= 1e-6),
+            key=lambda x: (-x[1], x[0]),
+        )
         for u, prob_u in active_items:
-            if prob_u < 1e-5:
-                continue
             neighbors = index.adj.get(u, ())
             if not neighbors:
+                dangling_mass += damping * prob_u
                 continue
             weights: list[tuple[str, float]] = []
             w_sum = 0.0
@@ -722,11 +749,17 @@ def _retrieve_ppr_subgraph(
                 scale = damping * prob_u / w_sum
                 for v, w in weights:
                     nxt[v] = nxt.get(v, 0.0) + scale * w
-        pi = nxt
+            else:
+                dangling_mass += damping * prob_u
+        if dangling_mass > 0.0 and p0:
+            for nid, val in p0.items():
+                nxt[nid] = nxt.get(nid, 0.0) + dangling_mass * val
+        total_pi = sum(nxt.values())
+        pi = {nid: val / total_pi for nid, val in nxt.items()} if total_pi > 0.0 else nxt
 
     ppr_edge_scores: list[tuple[float, str]] = []
     candidate_edges: set[str] = set(edge_scores.keys())
-    for u, _ in sorted(pi.items(), key=lambda x: -x[1])[:80]:
+    for u, _ in sorted(pi.items(), key=lambda x: (-x[1], x[0]))[: max(120, max_edges * 8)]:
         for _, eid in index.adj.get(u, ()):
             candidate_edges.add(eid)
 
@@ -1006,6 +1039,7 @@ def answer_question_with_graph(
     max_output_tokens: int = 2048,
     client: Any = None,
     llm_client: Any = None,
+    domain_topic: str = "",
 ) -> dict[str, Any]:
     """Gửi Textualized Subgraph + Câu hỏi vào LLM (DeepSeek / OpenAI / Qwen) để sinh câu trả lời có trích dẫn nguồn."""
     if isinstance(subgraph_or_project, SubgraphRetrievalResult):
@@ -1022,8 +1056,9 @@ def answer_question_with_graph(
     effective_client = llm_client or client
     effective_max_out = max_output_tokens or max_tokens
 
+    topic_clause = f" chuyên sâu về {domain_topic.strip()}" if domain_topic and domain_topic.strip() else ""
     system_prompt = (
-        "Bạn là hệ thống hỏi đáp Đồ thị Tri thức G-Retriever chuyên sâu về Hà Nội. "
+        f"Bạn là hệ thống hỏi đáp Đồ thị Tri thức G-Retriever{topic_clause}. "
         "Nhiệm vụ của bạn là trả lời câu hỏi của người dùng CHỈ dựa trên 'ĐỒ THỊ CON TRUY XUẤT (NODES & EDGES)' "
         "và 'BẰNG CHỨNG NGUYÊN VĂN' được cung cấp bên dưới.\n"
         "Quy tắc bắt buộc:\n"
@@ -1032,10 +1067,19 @@ def answer_question_with_graph(
         "3. Mọi thông tin, số liệu, mốc thời gian đưa ra PHẢI trích dẫn mã cạnh [E#] hoặc tên tài liệu nguồn ở cuối câu.\n"
         "4. Tuyệt đối không tự bịa đặt thông tin nằm ngoài đồ thị con được cung cấp."
     )
+    graph_context = str(subgraph_res.textualized_graph or "")
+    if max_input_tokens > 0:
+        max_graph_chars = max(600, int(max_input_tokens) * 3 - len(system_prompt) - len(subgraph_res.query) - 320)
+        if len(graph_context) > max_graph_chars:
+            lines = graph_context[:max_graph_chars].splitlines()
+            if len(lines) > 1:
+                lines = lines[:-1]
+            graph_context = "\n".join(lines) + "\n... [Đã rút gọn ngữ cảnh đồ thị theo giới hạn max_input_tokens]"
+
     user_prompt = (
         f"CÂU HỎI NGƯỜI DÙNG:\n{subgraph_res.query}\n\n"
         f"PHƯƠNG PHÁP TRUY XUẤT ĐỒ THỊ CON: {subgraph_res.method.upper()}\n\n"
-        f"{subgraph_res.textualized_graph}\n\n"
+        f"{graph_context}\n\n"
         "Hãy phân tích các đỉnh/cạnh liên quan, chỉ rõ đường đi suy luận và trả lời câu hỏi kèm trích dẫn nguồn."
     )
 

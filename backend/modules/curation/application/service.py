@@ -182,18 +182,36 @@ class CurationApplicationService:
     def apply_bulk_entity_merges(
         self,
         project: dict,
-        requests: list[EntityMergeRequestDTO | dict],
+        pairs: list[Any],
         *,
+        collapse_edges: bool = False,
+        note: str = "",
+        actor: str = "human_reviewer",
         expected_revision: str = "",
         request_id: str = "",
     ) -> CurationResultDTO:
-        req_objs = [EntityMergeRequestDTO.from_dict(r) for r in requests]
-        req_hash = sha(f"bulk_entity_merge::{len(req_objs)}::{','.join(sorted(r.target_canonical_name for r in req_objs))}")[:16]
+        normalized_inputs = [p.to_dict() if hasattr(p, "to_dict") else p for p in (pairs or [])]
+        req_hash = sha(
+            json.dumps(
+                {
+                    "pairs": normalized_inputs,
+                    "collapse_edges": bool(collapse_edges),
+                    "note": str(note or ""),
+                    "actor": str(actor or ""),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        )[:16]
 
         def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
             return domain_apply_bulk_entity_merges(
                 proj,
-                req_objs,
+                normalized_inputs,
+                collapse_edges=collapse_edges,
+                actor=actor,
+                note=note,
                 mutate_in_place=False,
             )
 
@@ -326,17 +344,66 @@ class CurationApplicationService:
             executor=_exec,
         )
 
+    def _commit_with_domain_return(
+        self,
+        project: dict,
+        *,
+        operation: str,
+        request_hash: str,
+        expected_revision: str = "",
+        clone_keys: tuple[str, ...] = ("not_duplicate_pairs", "not_duplicate_relation_pairs", "curation_history"),
+        fn: Callable[[dict], Any],
+    ) -> Any:
+        if self.commit_coordinator is None:
+            raise RuntimeError(
+                "Thao tác kiểm duyệt có lưu trữ (persistent curation command) yêu cầu ProjectCommitCoordinator; "
+                "không cho phép fallback ghi trực tiếp hoặc mutate thiếu coordinator."
+            )
+        captured: list[Any] = []
+
+        def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
+            candidate = dict(proj)
+            for key in clone_keys:
+                if isinstance(proj.get(key), list):
+                    candidate[key] = copy.deepcopy(proj[key])
+            captured.append(fn(candidate))
+            res = CurationResultDTO(
+                status="committed",
+                operation=operation,
+                revision_after=compute_project_revision(candidate),
+            )
+            return candidate, res
+
+        self._commit_curation_operation(
+            project,
+            expected_revision=expected_revision,
+            request_id=f"{operation}_{uid()[:10]}",
+            request_hash=request_hash,
+            executor=_exec,
+        )
+        return captured[0]
+
     def mark_relation_pair_not_duplicate(
         self,
         project: dict,
         rel_a: str,
         rel_b: str,
         note: str = "",
+        *,
+        save: bool = True,
+        expected_revision: str = "",
     ) -> dict:
-        res = domain_mark_relation_pair_not_duplicate(project, rel_a, rel_b, note=note)
-        if self.project_store and hasattr(self.project_store, "save_project"):
-            self.project_store.save_project(project)
-        return res
+        if not save:
+            return domain_mark_relation_pair_not_duplicate(project, rel_a, rel_b, note=note)
+        req_hash = sha(f"mark_rel_not_dup::{rel_a}::{rel_b}::{note}")[:16]
+        return self._commit_with_domain_return(
+            project,
+            operation="mark_relation_pair_not_duplicate",
+            request_hash=req_hash,
+            expected_revision=expected_revision,
+            clone_keys=("not_duplicate_relation_pairs", "curation_history"),
+            fn=lambda c: domain_mark_relation_pair_not_duplicate(c, rel_a, rel_b, note=note),
+        )
 
     def mark_relation_pairs_not_duplicate_bulk(
         self,
@@ -345,11 +412,20 @@ class CurationApplicationService:
         *,
         kind: str = "relations",
         note: str = "",
+        save: bool = True,
+        expected_revision: str = "",
     ) -> dict[str, Any]:
-        res = domain_mark_relation_pairs_not_duplicate_bulk(project, pairs, note=note)
-        if self.project_store and hasattr(self.project_store, "save_project"):
-            self.project_store.save_project(project)
-        return res
+        if not save:
+            return domain_mark_relation_pairs_not_duplicate_bulk(project, pairs, note=note)
+        req_hash = sha(json.dumps({"op": "mark_rel_bulk", "pairs": [list(p) for p in pairs], "note": note}, ensure_ascii=False))[:16]
+        return self._commit_with_domain_return(
+            project,
+            operation="mark_relation_pairs_not_duplicate_bulk",
+            request_hash=req_hash,
+            expected_revision=expected_revision,
+            clone_keys=("not_duplicate_relation_pairs", "curation_history"),
+            fn=lambda c: domain_mark_relation_pairs_not_duplicate_bulk(c, pairs, note=note),
+        )
 
     def mark_pair_not_duplicate(
         self,
@@ -360,11 +436,19 @@ class CurationApplicationService:
         note: str = "",
         actor: str = "human_reviewer",
         save: bool = True,
+        expected_revision: str = "",
     ) -> dict:
-        res = domain_mark_pair_not_duplicate(project, node_a_id, node_b_id, note=note, actor=actor)
-        if save and self.project_store and hasattr(self.project_store, "save_project"):
-            self.project_store.save_project(project)
-        return res
+        if not save:
+            return domain_mark_pair_not_duplicate(project, node_a_id, node_b_id, note=note, actor=actor)
+        req_hash = sha(f"mark_pair_not_dup::{node_a_id}::{node_b_id}::{note}::{actor}")[:16]
+        return self._commit_with_domain_return(
+            project,
+            operation="mark_pair_not_duplicate",
+            request_hash=req_hash,
+            expected_revision=expected_revision,
+            clone_keys=("not_duplicate_pairs", "curation_history"),
+            fn=lambda c: domain_mark_pair_not_duplicate(c, node_a_id, node_b_id, note=note, actor=actor),
+        )
 
     def mark_pairs_not_duplicate_bulk(
         self,
@@ -374,11 +458,19 @@ class CurationApplicationService:
         note: str = "",
         actor: str = "human_reviewer",
         save: bool = True,
-    ) -> dict[str, Any]:
-        res = domain_mark_pairs_not_duplicate_bulk(project, pairs, note=note, actor=actor)
-        if save and self.project_store and hasattr(self.project_store, "save_project"):
-            self.project_store.save_project(project)
-        return res
+        expected_revision: str = "",
+    ) -> list[dict[str, Any]]:
+        if not save:
+            return domain_mark_pairs_not_duplicate_bulk(project, pairs, note=note, actor=actor)
+        req_hash = sha(json.dumps({"op": "mark_pairs_bulk", "count": len(pairs), "note": note, "actor": actor}, ensure_ascii=False))[:16]
+        return self._commit_with_domain_return(
+            project,
+            operation="mark_pairs_not_duplicate_bulk",
+            request_hash=req_hash,
+            expected_revision=expected_revision,
+            clone_keys=("not_duplicate_pairs", "curation_history"),
+            fn=lambda c: domain_mark_pairs_not_duplicate_bulk(c, pairs, note=note, actor=actor),
+        )
 
     # --- Semantic Clustering ---
 
@@ -589,11 +681,19 @@ class CurationApplicationService:
         *,
         actor: str = "human_reviewer",
         save: bool = True,
+        expected_revision: str = "",
     ) -> dict[str, Any]:
-        ctx = select_edge_evidence_span(project, edge_id, start_char, end_char, actor=actor)
-        if save and self.project_store and hasattr(self.project_store, "save_project"):
-            self.project_store.save_project(project)
-        return ctx
+        if not save:
+            return select_edge_evidence_span(project, edge_id, start_char, end_char, actor=actor)
+        req_hash = sha(f"select_span::{edge_id}::{start_char}::{end_char}::{actor}")[:16]
+        return self._commit_with_domain_return(
+            project,
+            operation="select_evidence_span",
+            request_hash=req_hash,
+            expected_revision=expected_revision,
+            clone_keys=("edges", "curation_history"),
+            fn=lambda c: select_edge_evidence_span(c, edge_id, start_char, end_char, actor=actor),
+        )
 
     # --- Pure Curation Queries & Inspection ---
 
@@ -607,7 +707,7 @@ class CurationApplicationService:
         return is_edge_exportable(project, edge)
 
     def compute_apparent_duplicate_edge_groups(self, project: dict) -> list[dict[str, Any]]:
-        return compute_apparent_duplicate_edge_groups(project)
+        return compute_apparent_duplicate_edge_groups(project.get("edges", []))
 
     def evidence_context(self, project: dict, edge: dict) -> dict:
         return evidence_context(project, edge)

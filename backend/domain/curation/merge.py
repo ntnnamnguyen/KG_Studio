@@ -514,16 +514,25 @@ def apply_bulk_entity_merges(
         degs[t] = degs.get(t, 0) + 1
 
     normalized_pairs: list[tuple[str, str]] = []
-    for p in pairs:
+    for raw_p in pairs:
+        p = raw_p.to_dict() if hasattr(raw_p, "to_dict") else raw_p
         if isinstance(p, (tuple, list)) and len(p) >= 2:
             a, b = str(p[0]).strip(), str(p[1]).strip()
+            if a and b and a != b and a in nodes_by_id and b in nodes_by_id:
+                normalized_pairs.append((a, b))
         elif isinstance(p, dict):
+            if p.get("member_ids") and p.get("keep_id"):
+                k_id = str(p["keep_id"]).strip()
+                if k_id in nodes_by_id:
+                    for m_id in p["member_ids"]:
+                        m_str = str(m_id).strip()
+                        if m_str and m_str != k_id and m_str in nodes_by_id:
+                            normalized_pairs.append((k_id, m_str))
+                continue
             a = str(p.get("keep_id") or p.get("node_a_id") or (p.get("node_a", {}) or {}).get("id") or "").strip()
             b = str(p.get("drop_id") or p.get("node_b_id") or (p.get("node_b", {}) or {}).get("id") or "").strip()
-        else:
-            continue
-        if a and b and a != b and a in nodes_by_id and b in nodes_by_id:
-            normalized_pairs.append((a, b))
+            if a and b and a != b and a in nodes_by_id and b in nodes_by_id:
+                normalized_pairs.append((a, b))
 
     if not normalized_pairs:
         raise ValueError(
@@ -590,6 +599,19 @@ def apply_bulk_entity_merges(
 
     all_affected_edge_ids: list[str] = []
     total_changed_endpoints = 0
+    invalidated_approved_count = 0
+    kind_changed_by_member: dict[str, bool] = {}
+    member_set: set[str] = set()
+    for _, members in clusters_by_root.items():
+        if len(members) < 2:
+            continue
+        member_set.update(members)
+    for d_id, k_id in drop_to_keep.items():
+        d_kind = normal(nodes_by_id.get(d_id, {}).get("kind", ""))
+        k_kind = normal(nodes_by_id.get(k_id, {}).get("kind", ""))
+        kind_changed_by_member[d_id] = d_kind != k_kind
+        kind_changed_by_member.setdefault(k_id, False)
+
     if drop_to_keep:
         candidate["node_redirects"] = update_redirect_map(
             candidate.get("node_redirects", {}),
@@ -599,14 +621,17 @@ def apply_bulk_entity_merges(
             all_affected_edge_ids,
             total_changed_endpoints,
             _,
-            _,
+            invalidated_approved_count,
             _,
             _,
         ) = remap_graph_edges_endpoints(
             edges,
             drop_to_keep,
+            member_set=member_set,
+            kind_changed_by_member=kind_changed_by_member,
             merge_time=merge_time,
             actor=actor,
+            curation_history=candidate.setdefault("curation_history", []),
             simulate_only=False,
         )
 
@@ -622,20 +647,33 @@ def apply_bulk_entity_merges(
             mutate_in_place=True,
         )
 
-    candidate.setdefault("entity_merges", []).append(
+    merge_entry = {
+        "merge_id": batch_id,
+        "request_id": request_id,
+        "at": merge_time,
+        "actor": actor,
+        "is_bulk": True,
+        "merged_clusters_count": total_applied_clusters,
+        "merged_entities_count": len(all_dropped_ids),
+        "affected_edge_count": len(all_affected_edge_ids),
+        "changed_endpoints": total_changed_endpoints,
+        "invalidated_approved_count": invalidated_approved_count,
+        "merged_duplicate_edges": merged_dup_count,
+        "gazetteer_aliases_added": all_gaz_aliases_added,
+        "note": note or f"Gộp hàng loạt {len(normalized_pairs)} cặp thực thể qua DSU.",
+    }
+    candidate.setdefault("entity_merges", []).append(merge_entry)
+    candidate.setdefault("curation_history", []).append(
         {
-            "merge_id": batch_id,
+            "id": batch_id,
             "request_id": request_id,
             "at": merge_time,
             "actor": actor,
-            "is_bulk": True,
-            "merged_clusters_count": total_applied_clusters,
-            "merged_entities_count": len(all_dropped_ids),
-            "affected_edge_count": len(all_affected_edge_ids),
-            "changed_endpoints": total_changed_endpoints,
-            "merged_duplicate_edges": merged_dup_count,
-            "gazetteer_aliases_added": all_gaz_aliases_added,
-            "note": note or f"Gộp hàng loạt {len(normalized_pairs)} cặp thực thể qua DSU.",
+            "decision_origin": "human",
+            "action": "bulk_entity_merge",
+            "target_id": f"{total_applied_clusters}_clusters",
+            "note": merge_entry["note"],
+            "after": merge_entry,
         }
     )
 
@@ -656,6 +694,7 @@ def apply_bulk_entity_merges(
         item_results=[{"drop_id": d, "keep_id": k} for d, k in drop_to_keep.items()],
         affected_edge_ids=all_affected_edge_ids,
         changed_endpoint_count=total_changed_endpoints,
+        invalidated_approved_count=invalidated_approved_count,
         merged_duplicate_edges=merged_dup_count,
     )
     if mutate_in_place and candidate is not project:

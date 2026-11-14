@@ -107,3 +107,24 @@ on_sb_llm_max_in_change = _make_llm_change_handler("llm_max_input_tokens", "sb_l
 on_p02_llm_max_in_change = _make_llm_change_handler("llm_max_input_tokens", "p02_llm_max_in", "sb_llm_max_in", is_int=True)
 on_sb_llm_max_out_change = _make_llm_change_handler("llm_max_output_tokens", "sb_llm_max_out", "p02_llm_max_out", is_int=True)
 on_p02_llm_max_out_change = _make_llm_change_handler("llm_max_output_tokens", "p02_llm_max_out", "sb_llm_max_out", is_int=True)
+
+
+def get_session_llm_params() -> dict[str, Any] | None:
+    """Đọc cấu hình LLM hiện tại từ session_state + secrets nếu đã đủ điều kiện gọi."""
+    provider = str(st.session_state.get("llm_provider", LLMGateway.DEFAULT_PROVIDER))
+    model = str(st.session_state.get("llm_model", LLMGateway.DEFAULT_MODELS.get(provider, "")) or "").strip()
+    base_url = str(st.session_state.get("llm_base_url", LLMGateway.resolve_base_url(provider)) or "").strip()
+    api_key = str(st.session_state.get("llm_api_key") or "").strip()
+    if not api_key:
+        api_key = str(get_api_key(provider) or "").strip()
+    spec = LLMGateway.provider_spec(provider)
+    if spec.requires_api_key and not api_key:
+        return None
+    if not model:
+        return None
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+    }

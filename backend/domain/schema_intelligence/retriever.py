@@ -96,15 +96,24 @@ class SchemaRetriever:
         entity_types = retrieved.get("entity_types", [])
 
         if relations:
-            lines.append("GỢI Ý QUAN HỆ CHUẨN LIÊN QUAN ĐẾN ĐOẠN VĂN (Ưu tiên dùng tên chuẩn nếu đúng nghĩa, hoặc tự đề xuất tên mới nếu chưa có):")
+            lines.append(
+                "GỢI Ý QUAN HỆ CHUẨN LIÊN QUAN ĐẾN ĐOẠN VĂN "
+                "(Ưu tiên CHỌN NGUYÊN VĂN TÊN CHUẨN dưới đây nếu đúng ngữ nghĩa. Chỉ tự đề xuất quan hệ mới nếu trong danh mục hoàn toàn chưa có):"
+            )
             for r in relations:
                 defn = r.get("definition") or r.get("description") or ""
+                dom = str(r.get("domain") or "").strip()
+                rng = str(r.get("range") or "").strip()
+                type_constraint = f" [{dom} -> {rng}]" if (dom or rng) else ""
                 aliases = r.get("aliases") or []
                 alias_part = f" (từ đồng nghĩa/biến thể: {', '.join(str(a) for a in aliases)})" if aliases else ""
-                lines.append(f"- {r['name']}{alias_part}: {defn}")
+                lines.append(f"- {r['name']}{type_constraint}{alias_part}: {defn}")
 
         if entity_types:
-            lines.append("\nGỢI Ý LOẠI THỰC THỂ CHUẨN LIÊN QUAN:")
+            lines.append(
+                "\nGỢI Ý LOẠI THỰC THỂ CHUẨN LIÊN QUAN "
+                "(Ưu tiên dùng nguyên văn tên loại chuẩn dưới đây; chỉ đề xuất loại mới nếu chưa có):"
+            )
             for t in entity_types:
                 defn = t.get("definition") or t.get("description") or ""
                 lines.append(f"- {t['name']}: {defn}")

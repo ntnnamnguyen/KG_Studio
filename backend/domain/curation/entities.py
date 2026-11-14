@@ -420,7 +420,17 @@ def review_stats(project: dict, include_duplicates: bool = False) -> dict[str, i
             0.82,
         )
         if cache_key in _DUPLICATE_SUGGESTIONS_CACHE:
-            dup_pairs = len(_DUPLICATE_SUGGESTIONS_CACHE[cache_key])
+            raw_cached = [dict(p) for p in _DUPLICATE_SUGGESTIONS_CACHE[cache_key]]
+            dup_pairs = len(
+                filter_dismissed_pairs(
+                    raw_cached,
+                    project.get("not_duplicate_pairs", []),
+                    id_a_key="keep_id",
+                    id_b_key="drop_id",
+                    fp_key="pair_fingerprint",
+                    include_dismissed=False,
+                )
+            )
         else:
             dup_pairs = -1
 

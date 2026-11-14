@@ -11,6 +11,8 @@ class AlignmentCandidateDTO(SchemaModel):
     name: str = ""
     definition: str = ""
     description: str = ""
+    domain: str = ""
+    range: str = ""
     score: float = 0.0
     verified_by_llm: bool = False
     reason: str = ""

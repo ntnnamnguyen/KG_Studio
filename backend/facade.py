@@ -213,18 +213,16 @@ class KGStudioFacade:
         return self.extraction_service.list_prompt_versions(project, configuration_id or "")
 
     def get_prompt_version(self, project: dict, version_id: str) -> dict | None:
-        return self.extraction_service.get_prompt_version(project, "", version_id)
+        return self.extraction_service.get_prompt_version(project, version_id)
 
     def save_prompt_version(self, project: dict, configuration_id: str, content: str, *, note: str = "", created_by: str = "local_user") -> tuple[dict, bool]:
-        from backend.domain.prompts.service import save_prompt_version as domain_save_prompt_version
-        return domain_save_prompt_version(project, configuration_id, content, note=note, created_by=created_by)
+        return self.extraction_service.save_prompt_version(project, configuration_id, content, note=note, created_by=created_by)
 
     def restore_prompt_version(self, project: dict, target_version_id: str, *, note: str = "", created_by: str = "local_user") -> tuple[dict, bool]:
-        from backend.domain.prompts.service import restore_prompt_version as domain_restore_prompt_version
-        return domain_restore_prompt_version(project, target_version_id, note=note, created_by=created_by)
+        return self.extraction_service.restore_prompt_version(project, target_version_id, note=note, created_by=created_by)
 
     def diff_prompt_versions(self, v1_content: str, v2_content: str, v1_name: str = "Bản cũ", v2_name: str = "Bản mới") -> str:
-        return self.extraction_service.diff_prompt_versions({}, "", v1_content, v2_content) if hasattr(self.extraction_service, "diff_prompt_versions") else ""
+        return self.extraction_service.diff_prompt_versions(v1_content, v2_content, v1_name=v1_name, v2_name=v2_name)
 
     def preview_extraction_request(self, project: dict, **kwargs: Any) -> PreparedExtractionRequestDTO:
         return self.extraction_service.preview_extraction_request(project, **kwargs)
@@ -269,8 +267,24 @@ class KGStudioFacade:
     def refresh_proposal_candidates(self, project: dict, proposal_ids: list[str], kind: str | None = None, *, save: bool = True, embedder: Any | None = None) -> dict[str, Any]:
         return self.schema_service.refresh_proposal_candidates(project, proposal_ids, kind=kind, save=save, embedder=embedder)
 
-    def run_target_alignment_on_pending(self, project: dict, *, proposal_ids: list[str] | None = None, kind: str | None = None) -> dict:
-        return self.schema_service.run_target_alignment_on_pending(project, proposal_ids=proposal_ids, kind=kind)
+    def run_target_alignment_on_pending(
+        self,
+        project: dict,
+        *,
+        proposal_ids: list[str] | None = None,
+        kind: str | None = None,
+        enable_llm_verifier: bool | None = None,
+        llm_params: dict | None = None,
+        save: bool = True,
+    ) -> dict:
+        return self.schema_service.run_target_alignment_on_pending(
+            project,
+            proposal_ids=proposal_ids,
+            kind=kind,
+            enable_llm_verifier=enable_llm_verifier,
+            llm_params=llm_params,
+            save=save,
+        )
 
     def decide_proposal(self, project: dict, proposal_id: str, action: str, canonical_name: str = "", definition: str = "", note: str = "", description: str = "") -> dict:
         return self.schema_service.decide_proposal(project, proposal_id, action, canonical_name, definition, note, description)
@@ -300,14 +314,15 @@ class KGStudioFacade:
     def apply_entity_merge(self, project: dict, request: EntityMergeRequestDTO | dict, *, preview: EntityMergePreviewDTO | dict | None = None) -> CurationResultDTO:
         return self.curation_service.apply_entity_merge(project, request, preview=preview)
 
-    def apply_bulk_entity_merges(self, project: dict, pairs: list[Any], *, collapse_edges: bool = False, note: str = "", actor: str = "human_reviewer") -> CurationResultDTO:
-        from backend.domain.curation.merge import apply_bulk_entity_merges as domain_bulk
-        return self.curation_service._commit_curation_operation(
+    def apply_bulk_entity_merges(self, project: dict, pairs: list[Any], *, collapse_edges: bool = False, note: str = "", actor: str = "human_reviewer", expected_revision: str = "", request_id: str = "") -> CurationResultDTO:
+        return self.curation_service.apply_bulk_entity_merges(
             project,
-            expected_revision="",
-            request_id="bulk_merge",
-            request_hash="",
-            executor=lambda p: domain_bulk(p, pairs, collapse_edges=collapse_edges, note=note, actor=actor, mutate_in_place=False),
+            pairs,
+            collapse_edges=collapse_edges,
+            note=note,
+            actor=actor,
+            expected_revision=expected_revision,
+            request_id=request_id,
         )
 
     def relation_duplicate_suggestions(

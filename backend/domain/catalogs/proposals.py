@@ -6,7 +6,7 @@ from typing import Any
 
 from backend.domain.catalogs.core import catalog_rows, compute_catalog_hash
 from shared.constants import MODE_EDC, MODE_EDC_PLUS_R
-from shared.text_utils import clean_relation_name, normal, now_iso, sha, uid
+from shared.text_utils import clean_entity_type_name, clean_relation_name, normal, now_iso, sha, uid
 
 
 def is_proposal_candidates_stale(
@@ -51,6 +51,17 @@ def propose_term(project: dict, kind: str, name: str, definition: str, observati
             if match is None:
                 name = cleaned
             else:
+                name = match
+        else:
+            name = match
+    elif kind == "entity_types":
+        for row in rows:
+            canonical[clean_entity_type_name(row["name"])] = row["name"]
+        match = canonical.get(normal(name))
+        if match is None:
+            cleaned = clean_entity_type_name(name)
+            match = canonical.get(cleaned)
+            if match is not None:
                 name = match
         else:
             name = match

@@ -1,0 +1,15 @@
+{
+  "avg_recalls": {
+    "10": 68.33,
+    "15": 71.67,
+    "30": 81.67,
+    "50": 83.33,
+    "642": 100.0
+  },
+  "norm_accuracy": "6/6",
+  "has_priority_instruct": true,
+  "registered_models": [
+    "hybrid_vn:default",
+    "ollama:bge-m3"
+  ]
+}

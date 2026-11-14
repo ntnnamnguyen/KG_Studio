@@ -30,6 +30,7 @@ from frontend.components.shared_curation_ui import (
 )
 from frontend.state.session import (
     get_active_curation_section,
+    get_session_llm_params,
     navigate_to_step,
     reset_curation_state_if_project_changed,
     reset_edc_state_if_project_changed,
@@ -269,14 +270,20 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
                 width='stretch',
                 key="btn_hub_auto_align_types",
             ):
-                facade.create_snapshot(project)
-                summary = facade.run_target_alignment_on_pending(project, proposal_ids=sel_types, kind="entity_types")
-                facade.save_project(project)
-                st.success(
-                    f"Chuẩn hóa tự động (Loại thực thể): Hợp nhất {summary['auto_aligned']} mục, "
-                    f"Gợi ý {summary['suggested_for_review']} mục, Lỗi {summary.get('error_count', 0)} mục."
-                )
-                st.rerun()
+                try:
+                    summary = facade.run_target_alignment_on_pending(
+                        project,
+                        proposal_ids=sel_types,
+                        kind="entity_types",
+                        llm_params=get_session_llm_params(),
+                    )
+                    st.success(
+                        f"Chuẩn hóa tự động (Loại thực thể): Hợp nhất {summary['auto_aligned']} mục, "
+                        f"Gợi ý {summary['suggested_for_review']} mục, Lỗi {summary.get('error_count', 0)} mục."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Lỗi chuẩn hóa tự động loại thực thể: {exc}")
 
             if ac2.button(
                 f"🤖 Chạy chuẩn hóa tự động cho {len(sel_rels)} Quan hệ đã chọn",
@@ -284,14 +291,20 @@ def render_curation_hub_page(project: dict, default_tab: str = "schema") -> None
                 width='stretch',
                 key="btn_hub_auto_align_rels",
             ):
-                facade.create_snapshot(project)
-                summary = facade.run_target_alignment_on_pending(project, proposal_ids=sel_rels, kind="relations")
-                facade.save_project(project)
-                st.success(
-                    f"Chuẩn hóa tự động (Quan hệ): Hợp nhất {summary['auto_aligned']} mục, "
-                    f"Gợi ý {summary['suggested_for_review']} mục, Lỗi {summary.get('error_count', 0)} mục."
-                )
-                st.rerun()
+                try:
+                    summary = facade.run_target_alignment_on_pending(
+                        project,
+                        proposal_ids=sel_rels,
+                        kind="relations",
+                        llm_params=get_session_llm_params(),
+                    )
+                    st.success(
+                        f"Chuẩn hóa tự động (Quan hệ): Hợp nhất {summary['auto_aligned']} mục, "
+                        f"Gợi ý {summary['suggested_for_review']} mục, Lỗi {summary.get('error_count', 0)} mục."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Lỗi chuẩn hóa tự động quan hệ: {exc}")
 
         # Lịch sử lô quyết định lược đồ dùng chung component
         render_decision_batch_history(

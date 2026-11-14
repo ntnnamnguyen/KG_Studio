@@ -512,6 +512,69 @@ class StandaloneArchitectureTests(unittest.TestCase):
             self.assertGreater(len(chunks), 0)
             self.assertEqual(chunks[0]["doc_id"], doc["id"])
 
+    def test_bilingual_cidoc_edc_enhancements(self) -> None:
+        """Kiểm tra các cải tiến tối ưu hóa cho Lược đồ Song ngữ CIDOC CRM trong EDC+R."""
+        from backend.domain.catalogs.proposals import propose_term
+        from backend.domain.schema_intelligence.retriever import SchemaRetriever
+        from backend.integrations.embedder_gateway import EmbedderGateway, list_registered_models
+        from shared.prompt_templates import format_catalog_passage
+        from shared.schemas.project import EDCPlusRSettingsDTO
+        from shared.text_utils import clean_entity_type_name
+
+        # 1. Chuẩn hóa tên loại thực thể
+        self.assertEqual(clean_entity_type_name("E21_Person"), "e21 person")
+        self.assertEqual(clean_entity_type_name("E53-Place"), "e53 place")
+
+        # 2. Khớp trực tiếp loại thực thể khi LLM trả về snake_case
+        proj = empty_project("BilingualTest")
+        proj["entity_types"] = [
+            {"name": "E21 Person", "definition": "Cá nhân con người trong lịch sử", "description": ""}
+        ]
+        target_name, prop_id = propose_term(
+            proj,
+            "entity_types",
+            "E21_Person",
+            "Người trong lịch sử",
+            {"doc_id": "d1", "chunk_hash": "c1", "example": "Lê Lợi", "definition": "Người trong lịch sử"},
+        )
+        self.assertEqual(target_name, "E21 Person")
+        self.assertEqual(prop_id, "")  # Không tạo proposal rác
+        self.assertEqual(len(proj.get("schema_proposals", [])), 0)
+
+        # 3. Mở rộng trần Top-K cho 76 quan hệ & 30 thực thể
+        settings = EDCPlusRSettingsDTO(top_k_relations=80, top_k_entity_types=40)
+        self.assertEqual(settings.top_k_relations, 80)
+        self.assertEqual(settings.top_k_entity_types, 40)
+
+        # 4. Danh mục model embedding hỗ trợ Ollama BGE-M3
+        registered = list_registered_models()
+        bge_m3 = next((m for m in registered if m["model_id"] == "ollama:bge-m3"), None)
+        self.assertIsNotNone(bge_m3)
+        self.assertEqual(bge_m3["dim"], 1024)
+        embedder = EmbedderGateway(model_id="ollama:bge-m3")
+        self.assertEqual(embedder.dim, 1024)
+        self.assertEqual(embedder.base_url, "http://localhost:11434/v1")
+
+        # 5. Format khối gợi ý có Domain -> Range và chỉ dẫn ưu tiên nhãn chuẩn
+        sample_retrieved = {
+            "relations": [
+                {
+                    "name": "P14 carried out by",
+                    "definition": "Được thực hiện bởi",
+                    "domain": "E7 Activity",
+                    "range": "E21 Person",
+                }
+            ],
+            "entity_types": [{"name": "E21 Person", "definition": "Cá nhân"}],
+        }
+        block = SchemaRetriever.format_retrieved_schema_block(sample_retrieved)
+        self.assertIn("[E7 Activity -> E21 Person]", block)
+        self.assertIn("Ưu tiên CHỌN NGUYÊN VĂN TÊN CHUẨN", block)
+
+        # 6. Format catalog passage bổ sung aliases cho vector embedding
+        passage = format_catalog_passage("E21 Person", "Cá nhân", aliases=["Người", "Nhân vật"])
+        self.assertIn("Aliases: Người, Nhân vật", passage)
+
 
 if __name__ == "__main__":
     unittest.main()

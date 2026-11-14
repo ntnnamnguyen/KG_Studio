@@ -12,6 +12,7 @@ from backend.integrations.embedder_gateway import (
     DEFAULT_EMBED_DIM,
     MODEL_REGISTRY_DIR,
     EmbedderGateway,
+    clear_embedder_cache,
 )
 from shared.text_utils import normal, now_iso, slug, tokenize_vn
 from .dataset_io import load_jsonl as _load_jsonl
@@ -135,6 +136,7 @@ def train_schema_retriever_model(
         "description": f"Mô hình +R đã huấn luyện trên {len(records)} mẫu (Recall@5={after_metrics['recall@5']:.2f}, MRR={after_metrics['mrr']:.2f}).",
     }
     (out_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    clear_embedder_cache()
     return metadata
 
 

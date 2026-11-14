@@ -13,6 +13,12 @@ class CommitCoordinatorPort(Protocol):
     def get_project_lock(self, project_id: str) -> threading.RLock:
         ...
 
+    def record_committed_state(self, project: dict[str, Any], revision: str | None = None) -> str:
+        ...
+
+    def save_metadata_in_lock(self, project: dict[str, Any]) -> Any:
+        ...
+
     def commit(
         self,
         project: dict[str, Any],
@@ -24,7 +30,7 @@ class CommitCoordinatorPort(Protocol):
         idempotency_store_key: str = "curation_idempotency_store",
         result_dto_cls: Any | None = None,
         on_snapshot_created: Callable[[dict[str, Any], Any, str], None] | None = None,
-        vector_invalidation_kind: str | None = None,
+        vector_invalidation_kind: str | tuple[str, ...] | list[str] | None = None,
     ) -> Any:
         ...
 

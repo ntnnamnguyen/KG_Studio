@@ -422,6 +422,17 @@ def ingest_extraction(
             )
         added_edges += 1
 
+    touched_proposal_ids: list[str] = []
+    if open_mode:
+        for ent in clean.get("thuc_the", []):
+            for pid in ent.get("schema_proposal_ids", []):
+                if pid and pid not in touched_proposal_ids:
+                    touched_proposal_ids.append(pid)
+        for rel in clean.get("quan_he", []):
+            for pid in rel.get("schema_proposal_ids", []):
+                if pid and pid not in touched_proposal_ids:
+                    touched_proposal_ids.append(pid)
+
     return {
         "added_edges": added_edges,
         "added_nodes": added_nodes,
@@ -436,6 +447,7 @@ def ingest_extraction(
         "missing_endpoint": missing_endpoint,
         "rejected_items": report["rejected_items"],
         "new_proposals": len(project.get("schema_proposals", [])) - proposal_count,
+        "touched_proposal_ids": touched_proposal_ids,
     }
 
 
@@ -449,6 +461,7 @@ def cache_key(
     base_url: str = "",
     temperature: float = 0.0,
     max_tokens: int = 0,
+    extra_sig: str = "",
 ) -> str:
     parts = [
         document.get("hash", ""),
@@ -461,5 +474,7 @@ def cache_key(
         str(temperature),
         str(max_tokens),
     ]
+    if extra_sig:
+        parts.append(extra_sig)
     return sha("|".join(parts))
 

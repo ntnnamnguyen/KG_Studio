@@ -391,8 +391,8 @@ def _render_edc_plus_r_settings(facade, project: dict) -> None:
     loops = c2.selectbox("Số vòng lặp Tinh chỉnh", [1, 2, 3], index=max(0, min(2, int(cfg.refinement_loops) - 1)), key="edcr_cfg_loops")
 
     c3, c4 = st.columns(2)
-    top_k_rel = c3.slider("Top-K Quan hệ (+R)", 3, 30, int(cfg.top_k_relations), key="edcr_cfg_top_k_rel")
-    top_k_type = c4.slider("Top-K Loại thực thể (+R)", 3, 25, int(cfg.top_k_entity_types), key="edcr_cfg_top_k_type")
+    top_k_rel = c3.slider("Top-K Quan hệ (+R)", 3, 80, min(80, max(3, int(cfg.top_k_relations))), key="edcr_cfg_top_k_rel")
+    top_k_type = c4.slider("Top-K Loại thực thể (+R)", 3, 50, min(50, max(3, int(cfg.top_k_entity_types))), key="edcr_cfg_top_k_type")
 
     c5, c6 = st.columns(2)
     auto_thres = c5.slider("Ngưỡng Tự động Chuẩn hóa", 0.50, 0.99, float(cfg.auto_align_threshold), 0.01, key="edcr_cfg_auto_align")

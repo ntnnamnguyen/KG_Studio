@@ -37,6 +37,7 @@ class EngineOutput:
     prompt_content_hash: str = ""
     prepared_request_hash: str = ""
     prepared_request: dict = field(default_factory=dict)
+    run_id: str = ""
 
 
 class BaseExtractionEngine(ABC):
@@ -69,17 +70,20 @@ class BaseExtractionEngine(ABC):
         return str(req_hash), prep_dict
 
     def safe_ingest(self, ctx: ChunkContext, ingest_fn: Callable[[], Any], target_mode: str) -> Any:
-        """Thực thi hàm ingest an toàn với thread lock và bảo toàn extraction_mode gốc của dự án."""
-        prev_mode = ctx.project.get("extraction_mode")
-        ctx.project["extraction_mode"] = target_mode
-        try:
-            if ctx.lock:
-                with ctx.lock:
-                    return ingest_fn()
-            return ingest_fn()
-        finally:
-            if prev_mode is not None:
-                ctx.project["extraction_mode"] = prev_mode
+        """Thực thi hàm ingest an toàn bên trong thread lock trước khi đụng extraction_mode."""
+        def _run_guarded() -> Any:
+            prev_mode = ctx.project.get("extraction_mode")
+            ctx.project["extraction_mode"] = target_mode
+            try:
+                return ingest_fn()
+            finally:
+                if prev_mode is not None:
+                    ctx.project["extraction_mode"] = prev_mode
+
+        if ctx.lock:
+            with ctx.lock:
+                return _run_guarded()
+        return _run_guarded()
 
     def perform_ingest(self, ctx: ChunkContext, payload: dict, prompt_id: str, target_mode: str) -> dict:
         """Thực thi trích xuất và nạp dữ liệu chuẩn tắc (Entities / Edges) vào dự án."""

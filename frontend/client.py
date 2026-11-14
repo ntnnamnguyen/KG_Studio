@@ -64,8 +64,18 @@ class FrontendClient:
         *,
         proposal_ids: list[str] | None = None,
         kind: str | None = None,
+        enable_llm_verifier: bool | None = None,
+        llm_params: dict | None = None,
+        save: bool = True,
     ) -> dict:
-        return self.facade.run_target_alignment_on_pending(project, proposal_ids=proposal_ids, kind=kind)
+        return self.facade.run_target_alignment_on_pending(
+            project,
+            proposal_ids=proposal_ids,
+            kind=kind,
+            enable_llm_verifier=enable_llm_verifier,
+            llm_params=llm_params,
+            save=save,
+        )
 
     def preview_proposal_decisions(
         self,

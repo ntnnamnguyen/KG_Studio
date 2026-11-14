@@ -120,7 +120,7 @@ graph TB
    - Tích hợp kỹ thuật G-Retriever Graph RAG: trích xuất đồ thị con tối ưu qua thuật toán heuristic cây Steiner (PCST), ánh xạ văn bản - đồ thị vào câu lệnh ngữ cảnh để LLM trả lời câu hỏi kèm truy vết nguồn.
    - Trình sinh câu hỏi đánh giá tổng hợp (`qa_generator.py`) từ đồ thị đã duyệt, tạo các bộ benchmark chuẩn hóa cho đánh giá hệ thống.
 6. **Zero Training-Serving Skew (Khử lệch pha Train - Serve)**:
-   - Toàn bộ pipeline phục vụ và kịch bản huấn luyện Active Learning trong `ml_lab/` đều chia sẻ cùng bộ tách từ `tokenize_vn`, cùng template chỉ dẫn vector `SR_QUERY_INSTRUCT`, và cùng chuẩn DTOs.
+   - Toàn bộ pipeline phục vụ và kịch bản huấn luyện Active Learning trong `ml_lab/` đều chia sẻ cùng bộ tách từ `tokenize_vn`, cùng logic format truy vấn có điều kiện theo họ mô hình (`should_use_e5_instruct()` chỉ bật tiền tố `Instruct:` cho E5/Instruct, không ép lên `bge-m3`/`hybrid_vn`), cùng `format_catalog_passage(..., aliases, domain, range)` (`PASSAGE_TEMPLATE_VERSION = "v2-domain-range"`), và cùng chuẩn DTOs.
 
 ---
 
@@ -159,14 +159,14 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
 | `shared/__init__.py` | Re-export các hằng số, hàm chuẩn hóa văn bản và hàm sinh ID cốt lõi. |
 | `shared/constants.py` | Định nghĩa bốn chế độ trích xuất (`closed`, `edc`, `edc_plus_r`, `free_triples`), trạng thái kiểm duyệt, schema version (v2), prompt EDC và prompt baseline tự do riêng, cùng bộ cấu hình EDC+R mặc định. |
 | `shared/text_utils.py` | Bộ công cụ xử lý văn bản: `normal()` (chuẩn hóa Unicode NFC, gộp khoảng trắng, lowercase), `tokenize_vn()` (tách từ đơn và từ ghép đôi bigram tiếng Việt bằng Regex Unicode), `sha()` (băm SHA-256 xác định), `uid()` (sinh ID ngắn 14 ký tự hex ngẫu nhiên), `slug()` (chuyển tên tiếng Việt sang slug ASCII an toàn), `safe_filename()` (lọc tên tệp upload chống path traversal), `scrubbed()` (đệ quy xóa API key và secret trước khi ghi đĩa). |
-| `shared/catalog_utils.py` | Xử lý danh mục Catalog v2 và hợp đồng JSON EDC: `validate_catalog()`, `parse_catalog()`, `catalog_bytes()`, `atomic_write()` (ghi file tạm `.tmp` rồi replace atomic chống hỏng đĩa khi crash), `edc_prompt()`, `validate_edc_payload()`. |
+| `shared/catalog_utils.py` | Xử lý danh mục Catalog v2 và hợp đồng JSON EDC: `OPTIONAL_CATALOG_FIELDS` (`domain`, `range`) và trường `aliases`, `validate_catalog()`, `parse_catalog()`, `catalog_bytes()`, `catalog_csv_bytes()`, `atomic_write()` (ghi file tạm `.tmp` rồi replace atomic chống hỏng đĩa khi crash), `edc_prompt()`, `validate_edc_payload()`. |
 | `shared/config_loader.py` | Nạp cấu hình từ `config/default.toml` (hoặc biến môi trường `KG_STUDIO_CONFIG`), giải quyết đường dẫn tuyệt đối (`resolve_path`), hàm `save_llm_token_config_to_toml()` lưu cấu hình token động từ giao diện vào file toml. |
-| `shared/prompt_templates/__init__.py` | Định nghĩa mẫu template chỉ dẫn nhúng vector thống nhất: `SR_QUERY_INSTRUCT`, `CANON_QUERY_INSTRUCT`, và hàm `format_catalog_passage(name, definition, description)`. |
+| `shared/prompt_templates/__init__.py` | Định nghĩa mẫu template nhúng vector thống nhất (`PASSAGE_TEMPLATE_VERSION = "v2-domain-range"`): `should_use_e5_instruct()`, `format_sr_query()`, `format_canon_query()`, `format_catalog_passage(name, definition, description, *, aliases, domain, range)`. |
 | `shared/schemas/base.py` | **Nền tảng Pydantic v2**: Lớp `SchemaModel` kế thừa `pydantic.BaseModel` với `ConfigDict(arbitrary_types_allowed=True, populate_by_name=True, extra="allow")`. Cung cấp phương thức `.to_dict()` và `.from_dict()` bảo đảm tính tương thích ngược 100%. |
 | `shared/schemas/project.py` | Pydantic DTOs: `EDCPlusRSettingsDTO` (cấu hình thuật toán EDC+R) và `ProjectSummaryDTO` (thống kê tóm tắt dự án). |
 | `shared/schemas/graph.py` | Pydantic DTOs: `NodeDTO`, `EdgeDTO`, `EvidenceDTO`, và `StepTraceDTO` (ghi nhận chi tiết từng bước trích xuất, thời gian thực thi ms, và siêu dữ liệu). |
 | `shared/schemas/edc.py` | Pydantic DTOs: `AlignmentCandidateDTO` (kèm `catalog_hash`, `model_fingerprint`), `SchemaProposalDTO`, và bộ DTO duyệt hàng loạt: `ProposalDecisionDTO`, `BulkReviewRequestDTO`, `BulkReviewPreviewDTO`, `BulkReviewResultDTO`. |
-| `shared/schemas/curation.py` | Pydantic DTOs: `EdgeReviewDecisionDTO`, `CurationReviewRequestDTO`, `CurationPreviewDTO`, `CurationResultDTO`, `EntityMergeRequestDTO`, `EntityMergePreviewDTO`, `EntityMergeResultDTO`. |
+| `shared/schemas/curation.py` | Pydantic DTOs: `EdgeReviewDecisionDTO`, `CurationReviewRequestDTO`, `CurationPreviewDTO`, `CurationResultDTO` (bổ sung `invalidated_approved_count`), `EntityMergeRequestDTO`, `EntityMergePreviewDTO`, `EntityMergeResultDTO`. |
 | `shared/schemas/queries.py` | Pydantic DTOs phục vụ truy vấn phân trang nhẹ (Read Model): `ProjectHeaderDTO`, `PageDTO`, `EdgeRowDTO`, `NodeRowDTO`, `ProposalRowDTO`. |
 | `shared/schemas/training_records.py` | Pydantic DTOs tập dữ liệu huấn luyện: `SRTripletRecord`, `CanonicalizationPairRecord`, `SFTInstructionRecord`. |
 | `shared/schemas/prompts.py` | Pydantic DTOs phiên bản prompt: `PromptVersionDTO`, `PromptVersionDiffDTO`, `PromptHistoryDTO`. |
@@ -176,8 +176,8 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
 ### 2.4. Tầng Dịch Vụ & Nghiệp Vụ Backend (`backend/`)
 
 #### A. Cổng kết nối dịch vụ ngoài (`backend/integrations/`)
-- `embedder_gateway.py`: Lớp `EmbedderGateway` hỗ trợ chế độ nhúng offline CPU `hybrid_vn`, HuggingFace `sentence_transformers`, và `openai_compatible`. Hàm `list_registered_models()` tự động phát hiện mô hình từ `data/model_registry/`.
-- `neo4j_gateway.py`: Lớp `Neo4jGateway` đồng bộ đồ thị tri thức đã duyệt sang Neo4j (`sync_project`), bảo đảm Cypher Parameterized, tạo CONSTRAINT duy nhất, tự dọn dẹp cạnh cũ và node mồ côi.
+- `embedder_gateway.py`: Lớp `EmbedderGateway` hỗ trợ chế độ nhúng offline CPU `hybrid_vn`, HuggingFace `sentence_transformers`, và `openai_compatible` (tích hợp sẵn preset `"ollama:bge-m3"` 1024 chiều qua `http://localhost:11434/v1`). Hàm `list_registered_models()` tự động phát hiện mô hình từ `data/model_registry/`.
+- `neo4j_gateway.py`: Lớp `Neo4jGateway` đồng bộ đồ thị tri thức đã duyệt sang Neo4j (`sync_project`), bảo đảm Cypher Parameterized, CONSTRAINT theo từng dự án (`FOR (n:ThucThe) REQUIRE n.uid IS UNIQUE` với `uid = f"{project_id}::{nid}"`), thuộc tính cạnh `r.trang_thai`, lọc bằng chứng hợp lệ và tự dọn dẹp cạnh cũ/node mồ côi.
 - **Phân hệ Tích hợp LLM Đa Nhà Cung Cấp (`backend/integrations/llm/`)**:
   - `llm/gateway.py`: Lớp `LLMGateway` điều phối yêu cầu trích xuất, tự động điều chỉnh token budget, gọi thẩm định quan hệ nghi ngờ (`verify_alignment_choice`).
   - `llm/clients.py`: Triển khai các client chuyên biệt: `OpenAICompatibleClient`, `DeepSeekClient` (tự động gửi cờ tắt thinking mode `extra_body={"thinking": {"type": "disabled"}}`), `AnthropicClient`. Tự động cắt bỏ hậu tố `/chat/completions` thừa.
@@ -190,7 +190,7 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
 - `base.py`: Lớp trừu tượng `ProjectRepository` (`list_projects`, `load_project`, `save_project`).
 - `json_repo.py`: Triển khai `JsonProjectRepository`. Lưu trữ dự án vật lý tại `data/projects/<slug>/project.json` kèm 2 file catalog. Hỗ trợ tạo và khôi phục Snapshot (`snapshots/*.json`).
 - `sqlite_repo.py`: Triển khai `SQLiteProjectRepository` trên file CSDL `data/kg_studio.db`. **Đồng bộ gia tăng thông minh (Incremental Upsert Sync)**: thay vì xóa sạch ghi lại, hệ thống sử dụng cú pháp `INSERT ... ON CONFLICT DO UPDATE SET` và tính toán hiệu tập hợp để xóa cạnh bị loại bỏ, kết hợp 7 chỉ mục B-tree tối ưu hóa truy vấn phân trang SSOT.
-- `vector_repo.py`: Triển khai `VectorIndexRepository` tại `data/vector_indices/<project_id>/model_<fingerprint>/`. Lưu trữ vector embeddings nén `.npz`.
+- `vector_repo.py`: Triển khai `VectorIndexRepository` tại `data/vector_indices/<project_id>/model_<fingerprint>/`. Lưu trữ vector embeddings nén `.npz`, gắn khóa `passage_template_version` và kiểm tra khớp chiều vector (dim) khi nạp cache.
 
 #### C. Nghiệp vụ cốt lõi Domain (`backend/domain/`)
 - `documents/processor.py`: Đọc nội dung DOCX, PDF, TXT; hàm `chunk_records()` chia nhỏ văn bản theo ranh giới đoạn/câu, gán vị trí ký tự `start_char`, `end_char` và hash đoạn để truy vết bằng chứng.
@@ -240,8 +240,8 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
   - `curation/service.py`: Điểm re-export công khai tương thích ngược 100% cho toàn bộ phân khu Curation.
 - `graph/` (**Phân khu Đồ thị & Graph RAG**):
   - `graph/service.py`: Kiểm tra toàn vẹn đồ thị (`validate_integrity`), trích xuất đồ thị đã duyệt (`approved_graph`), sinh file JSON, CSV, ZIP.
-  - `graph/g_retriever.py`: **G-Retriever Graph RAG Engine**: Trích xuất đồ thị con tri thức phục vụ sinh câu trả lời RAG, giải bài toán Prize-Collecting Steiner Tree (PCST) để giữ lại đường nối giữa các thực thể trọng tâm, sinh prompt tích hợp text-graph cho LLM suy luận.
-  - `graph/qa_generator.py`: **Benchmark QA Generator**: Sinh tự động các cặp câu hỏi - đáp (Multi-hop QA, Factoid QA) dựa trên đồ thị đã duyệt để phục vụ đánh giá năng lực suy luận của Graph RAG.
+  - `graph/g_retriever.py`: **G-Retriever Graph RAG Engine**: Trích xuất đồ thị con tri thức phục vụ sinh câu trả lời RAG (tách token chuỗi `_` cho quan hệ CIDOC CRM, loại cạnh `STATUS_REJECTED`, không fallback khi approved rỗng, điều hướng PCST giảm chi phí hub mượt + PPR bảo toàn khối lượng xác suất nút treo, tham số `domain_topic` phi miền và giới hạn `max_input_tokens`).
+  - `graph/qa_generator.py`: **Benchmark QA Generator**: Sinh tự động các cặp câu hỏi - đáp (Multi-hop QA, Factoid QA) dựa trên đồ thị đã duyệt; mặc định `disjoint_split=True` phân chia `train/val/test` không rò rỉ cạnh qua Union-Find thành phần liên thông và khớp `target_entity_id` cho `Explainable Path`.
 - `dataset_exporter/exporter.py`: Lớp `ActiveLearningExporter` xuất dữ liệu con người đã duyệt thành 3 tập JSONL chuẩn: `sr_triplets.jsonl`, `canonicalization_pairs.jsonl`, `sft_extractions.jsonl`.
 
 #### D. Các Phân Hệ Modular Monolith (`backend/modules/`)
@@ -249,23 +249,23 @@ Kiến trúc đích Modular Monolith theo nghiệp vụ với Ports & Adapters c
 
 1. **Phân hệ Quản lý Dự án & Điều phối Commit (`backend/modules/projects/`)**:
    - `ports.py`: Định nghĩa Port trừu tượng `ProjectStorePort` (lưu trữ bundle JSON authoritative) và `ReadProjectionPort` (truy vấn đọc nhanh SQLite SSOT).
-   - `application/service.py`: `ProjectsApplicationService` điều phối tác vụ dự án: tạo, nạp, lưu, snapshot, khôi phục, thống kê tóm tắt và phân trang SQLite.
+   - `application/service.py`: `ProjectsApplicationService` điều phối tác vụ dự án: tạo, nạp, lưu, snapshot, khôi phục, thống kê tóm tắt và phân trang SQLite (tự động resync khi revision lệch và gắn cờ freshness `sync_pending` / `sync_error`).
    - `application/commit_coordinator.py`: `ProjectCommitCoordinator` - Trọng tài điều phối Transactional Commit 8 bước duy nhất cho toàn hệ thống (kiểm tra RLock, idempotency replay/conflict, revision validation, atomic JSON save kèm snapshot rollback, an toàn SQLite sync và vector invalidation).
    - `public.py`: Hợp đồng API công khai của phân hệ Projects.
 
 2. **Phân hệ Schema Intelligence & EDC Review (`backend/modules/schema_intelligence/`)**:
    - `ports.py`: Port `SchemaVectorIndexPort` và `SchemaEmbedderPort`.
-   - `application/service.py`: `SchemaIntelligenceApplicationService` điều phối quản lý danh mục, tiếp nhận đề xuất mở, tính phạm vi ảnh hưởng, xem trước (preview) và áp dụng (apply) quyết định duyệt EDC hàng loạt/đơn lẻ qua `ProjectCommitCoordinator`, cùng tác vụ Target Alignment và Schema Retrieval (+R).
+   - `application/service.py`: `SchemaIntelligenceApplicationService` điều phối quản lý danh mục, tiếp nhận đề xuất mở, tính phạm vi ảnh hưởng, xem trước (preview) và áp dụng (apply) quyết định duyệt EDC hàng loạt/đơn lẻ bắt buộc qua `ProjectCommitCoordinator` (fail-closed nếu thiếu coordinator), cùng tác vụ Target Alignment và Schema Retrieval (+R).
    - `public.py`: Hợp đồng API công khai của phân hệ Schema Intelligence.
 
 3. **Phân hệ Trích Xuất & Quản Lý Prompt (`backend/modules/extraction/`)**:
    - `ports.py`: Port `DocumentParserPort` và `LLMExtractionPort`.
-   - `application/service.py`: `ExtractionApplicationService` điều phối nạp tài liệu, chia đoạn (chunking), quản lý phiên bản prompt bất biến theo chế độ trích xuất (`closed`, `edc`, `edc_plus_r`), chuẩn bị và xem trước prepared extraction requests, và trích xuất tri thức song song qua ThreadPool an toàn đa luồng.
+   - `application/service.py`: `ExtractionApplicationService` điều phối nạp tài liệu, chia đoạn (chunking), quản lý phiên bản prompt bất biến có kiểm tra `expected_revision` theo từng chế độ trích xuất (`closed`, `edc`, `edc_plus_r`), chuẩn bị và xem trước prepared extraction requests, và trích xuất tri thức song song qua ThreadPool an toàn đa luồng (lưu run lỗi đã che khóa bí mật và ghi đầy đủ provenance).
    - `public.py`: Hợp đồng API công khai của phân hệ Extraction.
 
 4. **Phân hệ Kiểm Duyệt & Gộp Tri Thức (`backend/modules/curation/`)**:
    - `ports.py`: Port `CurationLLMPort` phục vụ gom cụm ngữ nghĩa AI.
-   - `application/service.py`: `CurationApplicationService` điều phối duyệt cạnh, chỉnh sửa sự thật fact, gộp thực thể/quan hệ/bộ ba 3 tầng, đối chiếu bằng chứng span ký tự, gom cụm ngữ nghĩa, và cam kết transactional qua `ProjectCommitCoordinator`.
+   - `application/service.py`: `CurationApplicationService` điều phối duyệt cạnh, chỉnh sửa sự thật fact, gộp thực thể/quan hệ/bộ ba 3 tầng (tự động hạ các cạnh `APPROVED` bị ảnh hưởng về `CHECK`), đối chiếu bằng chứng span ký tự, gom cụm ngữ nghĩa, và cam kết transactional bắt buộc qua `ProjectCommitCoordinator`.
    - `public.py`: Hợp đồng API công khai của phân hệ Curation.
 
 5. **Phân hệ Đồ Thị Con & Graph QA (`backend/modules/graph_qa/`)**:
@@ -382,6 +382,8 @@ Kiểm thử được thu bằng unittest discovery; số lượng và kết qu�
 | `tests/test_relation_cleaning.py` | Kiểm thử làm sạch và chuẩn hóa nhãn quan hệ tiếng Việt. |
 | `tests/test_secrets_manager.py` | Kiểm thử bộ lọc làm sạch secret và API key trước khi lưu đĩa. |
 | `tests/test_llm_package.py` | Kiểm thử tầng tích hợp LLM: kiểm tra các LLM client, làm sạch chuỗi JSON, tự động sửa ngoặc JSON bị cắt ngắn do hết token, kẹp ngân sách token đầu vào/đầu ra, chuẩn hóa URL loại bỏ `/chat/completions` thừa, và xác nhận cờ tắt thinking mode cho DeepSeek. |
+| `tests/test_architecture_boundaries.py` | Bộ kiểm thử tĩnh AST gồm 8 quy tắc ranh giới Modular Monolith (ngăn cross-module private import, domain/shared boundary, kiểm soát allowlist). |
+| `tests/test_p0_p1_fixes.py` | Bộ kiểm thử hồi quy P0 (`CR-01`..`CR-08`) + P1 (`HI-01`..`HI-08`): round-trip catalog CIDOC `domain`/`range`/`aliases`, `expected_revision` prompt version, evidence override & lọc cặp bỏ qua, invalidation khi bulk merge, fail-closed thiếu coordinator & SQLite auto-resync, GraphRAG/Neo4j/disjoint QA split, fail-closed Verifier & che khóa bí mật khi lỗi song song. |
 
 ---
 
@@ -409,8 +411,8 @@ Mỗi dự án trong `data/projects/<slug>/project.json` tuân thủ Schema Dict
             "pages": list[dict]       # Danh sách trang (đối với PDF)
         }
     ],
-    "relations": list[dict],          # Danh mục quan hệ của dự án [{name, description, definition}]
-    "entity_types": list[dict],       # Danh mục loại thực thể [{name, description, definition}]
+    "relations": list[dict],          # Danh mục quan hệ của dự án [{name, description, definition, domain?, range?, aliases?}]
+    "entity_types": list[dict],       # Danh mục loại thực thể [{name, description, definition, domain?, range?, aliases?}]
     "nodes": [                        # Danh sách thực thể cụ thể (Instance Graph)
         {
             "id": str,                # Khóa chính của node
@@ -682,7 +684,7 @@ sequenceDiagram
     Note over GraphSvc: BỘ LỌC NGHIÊM NGẶT:<br/>1. Chỉ lấy cạnh status = 'approved'<br/>2. Không vướng đề xuất EDC chưa xử lý<br/>3. Chỉ lấy các Node kết nối với các cạnh này
     GraphSvc-->>Facade: Trả về (nodes, edges) đã duyệt
     Facade->>NeoGateway: sync_project(project_data, uri, auth)
-    NeoGateway->>Neo4j: Đảm bảo CONSTRAINT trên (:ThucThe {id})
+    NeoGateway->>Neo4j: Đảm bảo CONSTRAINT theo dự án trên (:ThucThe {uid}) với uid = f"{project_id}::{id}"
     NeoGateway->>Neo4j: Đọc các cạnh hiện có của đúng project_id này
     Note over NeoGateway: Tính toán delta:<br/>- Cạnh cần xóa (stale_edges)<br/>- Node mồ côi cần xóa (orphan_nodes)<br/>- Node & Edge cần MERGE
     NeoGateway->>Neo4j: Thực thi Transaction ghi & xóa đồng thời

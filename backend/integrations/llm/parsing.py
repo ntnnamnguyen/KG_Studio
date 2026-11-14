@@ -50,12 +50,42 @@ def clean_llm_json(text: str) -> dict:
 
 
 def pick_choice_letter(content: str, valid_letters: list[str]) -> str | None:
-    """Lấy chữ cái lựa chọn (A/B/C...) từ câu trả lời ngắn của bộ xác minh."""
-    text = (content or "").strip()
-    match = re.search(r"\b([A-Z])\b", text.upper())
-    if match and match.group(1) in valid_letters:
-        return match.group(1)
-    if text and text[0].upper() in valid_letters:
-        return text[0].upper()
+    """Lấy chữ cái lựa chọn (A/B/C...) từ câu trả lời ngắn của bộ xác minh (fail-closed nếu mơ hồ)."""
+    valid = [str(x).strip().upper() for x in valid_letters if str(x).strip()]
+    if not valid:
+        return None
+    valid_set = set(valid)
+    cleaned = re.sub(r"<think>.*?</think>", " ", content or "", flags=re.IGNORECASE | re.DOTALL).strip()
+    if not cleaned:
+        return None
+    upper = cleaned.upper()
+
+    # 1. Phản hồi chỉ gồm đúng 1 chữ cái (vd: "A", "B.", "(C)", "**A**")
+    exact = re.fullmatch(r"[\s*`\"'(\[]*([A-Z])[\s*`\"').:\]!]*", upper)
+    if exact and exact.group(1) in valid_set:
+        return exact.group(1)
+
+    # 2. Nhãn kết luận tường minh (vd: "Đáp án: B", "Lựa chọn: C", "Answer: A")
+    explicit = re.findall(
+        r"(?:ĐÁP\s*ÁN|LỰA\s*CHỌN|CHỌN|ANSWER|CHOICE|OPTION)\s*[:=\-]?\s*[\(*\[]*([A-Z])[\)*\]]*\b",
+        upper,
+    )
+    explicit_valid = [ch for ch in explicit if ch in valid_set]
+    if explicit_valid:
+        return explicit_valid[-1]
+
+    # 3. Dòng bắt đầu bằng chữ cái lựa chọn (vd: "B. Trùng nghĩa...")
+    line_starts = [
+        ch
+        for ch in re.findall(r"(?m)^\s*\(?([A-Z])\)?(?:[.):]|(?:\s+-))\s+", upper)
+        if ch in valid_set
+    ]
+    if len(set(line_starts)) == 1:
+        return line_starts[0]
+
+    # 4. Chỉ có đúng 1 chữ cái hợp lệ xuất hiện độc lập trong phản hồi
+    found = [ch for ch in re.findall(r"\b([A-Z])\b", upper) if ch in valid_set]
+    if len(set(found)) == 1:
+        return found[0]
     return None
 

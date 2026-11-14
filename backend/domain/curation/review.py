@@ -229,6 +229,9 @@ def set_edge_status(
         if not val["ok"]:
             raise ValueError(val["errors"][0])
 
+        if note.strip():
+            edge["review_note"] = note.strip()
+
         ev_ctx = val["evidence_ctx"]
         edge["evidence_found"] = bool(ev_ctx.get("found", False))
         edge["doc_fingerprint"] = ev_ctx.get("doc_fingerprint", "")
@@ -255,8 +258,6 @@ def set_edge_status(
         if val["is_self_loop"]:
             edge["self_loop_confirmed"] = True
         edge["rejection_code"] = ""
-        if note.strip():
-            edge["review_note"] = note.strip()
 
         if auto_sync_catalog:
             sync_edge_schema_to_catalog(project, edge, precomputed=precomputed)
@@ -356,6 +357,7 @@ def compute_curation_request_hash(req: Any) -> str:
             "project_id": dto.project_id,
             "apply_mode": dto.apply_mode,
             "is_batch": dto.is_batch,
+            "actor": dto.actor,
             "allow_schema_bypass": dto.allow_schema_bypass,
             "auto_sync_catalog": dto.auto_sync_catalog,
             "decisions": [d.to_dict() for d in dto.decisions],

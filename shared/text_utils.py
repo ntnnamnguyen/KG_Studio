@@ -120,3 +120,14 @@ def clean_relation_name(raw_rel: str) -> str:
     return text
 
 
+def clean_entity_type_name(raw_type: str) -> str:
+    """Chuẩn hóa tên loại thực thể: thay thế _ và - bằng khoảng trắng, NFC, casefold.
+    Ví dụ: 'E21_Person' -> 'e21 person', 'E53-Place' -> 'e53 place'.
+    """
+    if not raw_type:
+        return ""
+    text = re.sub(r"[_\-]+", " ", str(raw_type)).strip()
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFC", text)).casefold()
+
+
+

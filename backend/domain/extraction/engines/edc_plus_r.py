@@ -1,6 +1,7 @@
 """Engine 3: EDC + R (Iterative Refinement + Schema Retriever + Target Alignment)."""
 from __future__ import annotations
 
+import copy
 import time
 
 from backend.domain.catalogs.service import prompt_signature
@@ -32,7 +33,31 @@ class EDCPlusREngine(BaseExtractionEngine):
 
     def process_chunk(self, ctx: ChunkContext) -> EngineOutput:
         project = ctx.project
-        settings = EDCPlusRSettingsDTO.from_dict(project.get("edc_plus_r_settings"))
+        run_id = uid()
+
+        def _read_shared_snapshot() -> tuple[EDCPlusRSettingsDTO, str, str, str, dict]:
+            snap_proj = dict(project)
+            snap_proj["extraction_mode"] = MODE_EDC_PLUS_R
+            s = EDCPlusRSettingsDTO.from_dict(project.get("edc_plus_r_settings"))
+            v_id, v_hash, b_inst = self.resolve_prompt_version_info(snap_proj)
+            b_instructions = b_inst or project.get("edc_prompt", DEFAULT_EDC_PROMPT)
+            retrieval_snapshot = {
+                "project_id": project.get("project_id", ""),
+                "relations": copy.deepcopy(project.get("relations", [])),
+                "relation_notes": copy.deepcopy(project.get("relation_notes", {})),
+                "relation_catalog": copy.deepcopy(project.get("relation_catalog", [])),
+                "entity_types": copy.deepcopy(project.get("entity_types", [])),
+                "entity_type_aliases": copy.deepcopy(project.get("entity_type_aliases", {})),
+                "relation_aliases": copy.deepcopy(project.get("relation_aliases", {})),
+            }
+            return s, v_id, v_hash, b_instructions, retrieval_snapshot
+
+        if ctx.lock:
+            with ctx.lock:
+                settings, ver_id, ver_hash, base_instructions, retrieval_proj = _read_shared_snapshot()
+        else:
+            settings, ver_id, ver_hash, base_instructions, retrieval_proj = _read_shared_snapshot()
+
         embedder = default_embedder(settings.embedder_model)
 
         step_traces: list[dict] = []
@@ -49,15 +74,12 @@ class EDCPlusREngine(BaseExtractionEngine):
 
         entity_hints: list[str] = []
         relation_hints: list[str] = []
-
-        ver_id, ver_hash, base_inst = self.resolve_prompt_version_info(project)
-        base_instructions = base_inst or project.get("edc_prompt", DEFAULT_EDC_PROMPT)
         last_prep = None
 
         for loop_idx in range(1, settings.refinement_loops + 1):
             t_sr = time.perf_counter()
             retrieved = self.retriever.retrieve_for_chunk(
-                project,
+                retrieval_proj,
                 ctx.chunk_record["text"],
                 top_k_relations=settings.top_k_relations,
                 top_k_entity_types=settings.top_k_entity_types,
@@ -107,7 +129,7 @@ class EDCPlusREngine(BaseExtractionEngine):
                 max_input_tokens=ctx.max_input_tokens,
                 client=ctx.client,
                 open_mode=True,
-                project_id=str(project.get("project_id", "")),
+                project_id=str(retrieval_proj.get("project_id", "")),
                 configuration_id=MODE_EDC_PLUS_R,
                 prompt_version_id=ver_id,
                 prompt_content_hash=ver_hash,
@@ -141,6 +163,10 @@ class EDCPlusREngine(BaseExtractionEngine):
                         "relations_extracted": len(final_payload.get("quan_he", [])),
                         "relation_definitions": final_payload.get("dinh_nghia_quan_he", []),
                         "entity_type_definitions": final_payload.get("dinh_nghia_loai", []),
+                        "prompt_version_id": ver_id,
+                        "prepared_request_hash": getattr(result.prepared_request, "request_hash", "") or "",
+                        "input_tokens": result.input_tokens,
+                        "output_tokens": result.output_tokens,
                     },
                 ).to_dict()
             )
@@ -155,7 +181,7 @@ class EDCPlusREngine(BaseExtractionEngine):
                 ctx.chunk_record["chunk_number"],
                 ctx.model,
                 prompt_id,
-                run_id=uid(),
+                run_id=run_id,
                 start_char=ctx.chunk_record.get("start_char"),
                 end_char=ctx.chunk_record.get("end_char"),
                 page=ctx.chunk_record.get("page_from"),
@@ -169,18 +195,32 @@ class EDCPlusREngine(BaseExtractionEngine):
                 "base_url": ctx.base_url,
                 "client": ctx.client,
             }
-            alignment_summary = self.aligner.align_project_proposals(
-                project,
-                auto_align_threshold=settings.auto_align_threshold,
-                candidate_threshold=settings.candidate_threshold,
-                enable_llm_verifier=settings.enable_llm_verifier,
-                llm_params=llm_params,
-                embedder=embedder,
-            )
+            touched_ids = list(stats.get("touched_proposal_ids") or [])
+            if touched_ids:
+                alignment_summary = self.aligner.align_project_proposals(
+                    project,
+                    auto_align_threshold=settings.auto_align_threshold,
+                    candidate_threshold=settings.candidate_threshold,
+                    enable_llm_verifier=settings.enable_llm_verifier,
+                    llm_params=llm_params,
+                    embedder=embedder,
+                    proposal_ids=touched_ids,
+                )
+            else:
+                alignment_summary = {
+                    "auto_aligned": 0,
+                    "suggested_for_review": 0,
+                    "novel_proposals": 0,
+                    "error_count": 0,
+                    "verifier_input_tokens": 0,
+                    "verifier_output_tokens": 0,
+                }
             align_ms = int((time.perf_counter() - t_align) * 1000)
             return stats, alignment_summary, align_ms
 
-        stats, alignment_summary, align_ms = self.safe_ingest(ctx, _do_ingest_and_align, MODE_EDC)
+        stats, alignment_summary, align_ms = self.safe_ingest(ctx, _do_ingest_and_align, MODE_EDC_PLUS_R)
+        total_in_tokens += int(alignment_summary.get("verifier_input_tokens", 0) or 0)
+        total_out_tokens += int(alignment_summary.get("verifier_output_tokens", 0) or 0)
 
         step_traces.append(
             StepTraceDTO(
@@ -211,5 +251,6 @@ class EDCPlusREngine(BaseExtractionEngine):
             prompt_content_hash=ver_hash,
             prepared_request_hash=req_hash,
             prepared_request=prep_dict,
+            run_id=run_id,
         )
 

@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -41,7 +42,15 @@ def list_registered_models(registry_dir: Path | None = None) -> list[dict]:
             "dim": DEFAULT_EMBED_DIM,
             "trained": False,
             "description": "Bộ nhúng ngữ nghĩa & từ vựng tiếng Việt tốc độ cao, không cần GPU.",
-        }
+        },
+        {
+            "model_id": "ollama:bge-m3",
+            "name": "BAAI BGE-M3 (Ollama Multilingual SOTA)",
+            "backend": "openai_compatible",
+            "dim": 1024,
+            "trained": True,
+            "description": "Mô hình nhúng đa ngôn ngữ BAAI BGE-M3 chạy qua Ollama (yêu cầu 'ollama pull bge-m3').",
+        },
     ]
     if folder.is_dir():
         for child in sorted(folder.iterdir()):
@@ -84,9 +93,15 @@ class EmbedderGateway:
     ) -> None:
         self.model_id = (model_id or "hybrid_vn:default").strip()
         self.registry_dir = registry_dir or MODEL_REGISTRY_DIR
-        self.dim = dim
+        if self.model_id.startswith("ollama:bge-m3") and dim == DEFAULT_EMBED_DIM:
+            self.dim = 1024
+        else:
+            self.dim = dim
         self.api_key = api_key
-        self.base_url = base_url
+        if self.model_id.startswith("ollama:") and not base_url:
+            self.base_url = "http://localhost:11434/v1"
+        else:
+            self.base_url = base_url
         self.term_weights: dict[str, float] = {}
         self.synonym_map: dict[str, list[str]] = {k: list(v) for k, v in BASE_VIETNAMESE_SYNONYMS.items()}
         self._st_model = None
@@ -252,22 +267,42 @@ class EmbedderGateway:
         if self.backend == "sentence_transformers":
             if self._st_model is None:
                 model_name = self.model_id.removeprefix("st:")
-                if model_name not in _ST_MODEL_CACHE:
-                    from sentence_transformers import SentenceTransformer
-                    _ST_MODEL_CACHE[model_name] = SentenceTransformer(model_name, trust_remote_code=True)
-                self._st_model = _ST_MODEL_CACHE[model_name]
+                with _EMBEDDER_CACHE_LOCK:
+                    if model_name not in _ST_MODEL_CACHE:
+                        from sentence_transformers import SentenceTransformer
+
+                        _ST_MODEL_CACHE[model_name] = SentenceTransformer(model_name, trust_remote_code=True)
+                    self._st_model = _ST_MODEL_CACHE[model_name]
             embeddings = self._st_model.encode(items, normalize_embeddings=True, convert_to_numpy=True)
             matrix = np.asarray(embeddings, dtype=np.float32)
+            if matrix.ndim == 2 and matrix.shape[1] > 0:
+                self.dim = int(matrix.shape[1])
             return matrix[0] if single else matrix
 
         if self.backend == "openai_compatible":
             from openai import OpenAI
 
             model_name = self.model_id.split(":", 1)[-1]
-            client = OpenAI(api_key=self.api_key or "ollama", base_url=self.base_url or None)
-            response = client.embeddings.create(model=model_name, input=items)
-            rows = [np.asarray(item.embedding, dtype=np.float32) for item in response.data]
+            client = OpenAI(
+                api_key=self.api_key or "ollama",
+                base_url=self.base_url or None,
+                timeout=30.0,
+            )
+            rows: list[np.ndarray] = []
+            batch_size = 64
+            for start in range(0, len(items), batch_size):
+                batch = items[start : start + batch_size]
+                response = client.embeddings.create(model=model_name, input=batch)
+                data_rows = list(getattr(response, "data", None) or [])
+                if len(data_rows) != len(batch):
+                    raise RuntimeError(
+                        f"Model nhúng '{self.model_id}' trả về {len(data_rows)}/{len(batch)} vector."
+                    )
+                rows.extend(np.asarray(item.embedding, dtype=np.float32) for item in data_rows)
             matrix = np.stack(rows, axis=0)
+            if matrix.ndim != 2 or matrix.shape[1] == 0:
+                raise RuntimeError(f"Vector nhúng từ '{self.model_id}' có kích thước không hợp lệ: {matrix.shape}.")
+            self.dim = int(matrix.shape[1])
             norms = np.linalg.norm(matrix, axis=1, keepdims=True)
             norms = np.where(norms > 1e-8, norms, 1.0)
             matrix = matrix / norms
@@ -277,13 +312,21 @@ class EmbedderGateway:
 
 
 # Bộ nhớ đệm chia sẻ các mô hình SentenceTransformer và Gateway instance
+_EMBEDDER_CACHE_LOCK = threading.RLock()
 _ST_MODEL_CACHE: dict[str, Any] = {}
 _DEFAULT_EMBEDDER_CACHE: dict[tuple[str, str], EmbedderGateway] = {}
 
 
+def clear_embedder_cache() -> None:
+    """Xóa cache EmbedderGateway để nạp lại trọng số mới ngay sau khi huấn luyện."""
+    with _EMBEDDER_CACHE_LOCK:
+        _DEFAULT_EMBEDDER_CACHE.clear()
+
+
 def default_embedder(model_id: str = "hybrid_vn:default", registry_dir: Path | None = None) -> EmbedderGateway:
     cache_key = (str(model_id), str(registry_dir or ""))
-    if cache_key not in _DEFAULT_EMBEDDER_CACHE:
-        _DEFAULT_EMBEDDER_CACHE[cache_key] = EmbedderGateway(model_id=model_id, registry_dir=registry_dir)
-    return _DEFAULT_EMBEDDER_CACHE[cache_key]
+    with _EMBEDDER_CACHE_LOCK:
+        if cache_key not in _DEFAULT_EMBEDDER_CACHE:
+            _DEFAULT_EMBEDDER_CACHE[cache_key] = EmbedderGateway(model_id=model_id, registry_dir=registry_dir)
+        return _DEFAULT_EMBEDDER_CACHE[cache_key]
 

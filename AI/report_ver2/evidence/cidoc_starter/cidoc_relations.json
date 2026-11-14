@@ -1,0 +1,608 @@
+{
+  "schema_version": 2,
+  "relations": [
+    {
+      "name": "P1_is_identified_by",
+      "description": "Được định danh bằng tên gọi.",
+      "definition": "Thực thể được gọi hoặc biết đến qua tên gọi/tên chữ (E41_Appellation).",
+      "domain": "E1_CRM_Entity",
+      "range": "E41_Appellation",
+      "aliases": [
+        "có tên gọi là",
+        "được gọi là",
+        "tên chữ là"
+      ]
+    },
+    {
+      "name": "P2_has_type",
+      "description": "Có phân loại / hạng di tích.",
+      "definition": "Xếp loại thực thể theo cấp di tích, loại hình kiến trúc hoặc phong cách.",
+      "domain": "E1_CRM_Entity",
+      "range": "E55_Type",
+      "aliases": [
+        "thuộc loại",
+        "được xếp hạng",
+        "có cấp di tích"
+      ]
+    },
+    {
+      "name": "P3_has_note",
+      "description": "Có ghi chú mô tả.",
+      "definition": "Ghi chú ngắn gọn mô tả đặc điểm của thực thể.",
+      "domain": "E1_CRM_Entity",
+      "range": "E33_Linguistic_Object",
+      "aliases": [
+        "có ghi chú"
+      ]
+    },
+    {
+      "name": "P4_has_time-span",
+      "description": "Có mốc thời gian hoặc niên đại.",
+      "definition": "Sự kiện, quá trình xây dựng hoặc thời kỳ diễn ra trong mốc thời gian cụ thể.",
+      "domain": "E2_Temporal_Entity",
+      "range": "E52_Time-Span",
+      "aliases": [
+        "vào năm",
+        "xây dựng vào thời gian",
+        "có niên đại",
+        "diễn ra vào"
+      ]
+    },
+    {
+      "name": "P5_consists_of",
+      "description": "Bao gồm giai đoạn con.",
+      "definition": "Thời kỳ lịch sử lớn bao gồm các giai đoạn ngắn hơn.",
+      "domain": "E4_Period",
+      "range": "E4_Period",
+      "aliases": [
+        "gồm thời kỳ"
+      ]
+    },
+    {
+      "name": "P7_took_place_at",
+      "description": "Sự kiện hoặc hoạt động diễn ra tại địa điểm.",
+      "definition": "Liên kết một sự kiện, lễ hội, khởi nghĩa hoặc quá trình xây dựng với nơi diễn ra.",
+      "domain": "E4_Period",
+      "range": "E53_Place",
+      "aliases": [
+        "diễn ra tại",
+        "tổ chức tại",
+        "xảy ra ở"
+      ]
+    },
+    {
+      "name": "P8_took_place_on_or_within",
+      "description": "Diễn ra ngay trên hoặc bên trong công trình vật chất.",
+      "definition": "Sự kiện diễn ra bên trong một tòa điện, sân, di tích cụ thể.",
+      "domain": "E4_Period",
+      "range": "E18_Physical_Thing",
+      "aliases": [
+        "diễn ra trong công trình"
+      ]
+    },
+    {
+      "name": "P9_consists_of",
+      "description": "Thời kỳ hoặc sự kiện gồm sự kiện thành phần.",
+      "definition": "Tách sự kiện tổng thể thành các hoạt động nhỏ hơn.",
+      "domain": "E4_Period",
+      "range": "E4_Period",
+      "aliases": [
+        "bao gồm sự kiện"
+      ]
+    },
+    {
+      "name": "P10_falls_within",
+      "description": "Nằm trong thời kỳ hoặc triều đại.",
+      "definition": "Sự kiện hoặc hoạt động xảy ra trong bối cảnh một thời kỳ lịch sử rộng hơn.",
+      "domain": "E4_Period",
+      "range": "E4_Period",
+      "aliases": [
+        "thuộc triều đại",
+        "nằm trong giai đoạn",
+        "dưới triều"
+      ]
+    },
+    {
+      "name": "P11_had_participant",
+      "description": "Có cá nhân hoặc tổ chức tham gia.",
+      "definition": "Ghi nhận tác nhân tham gia một sự kiện lịch sử hoặc lễ hội.",
+      "domain": "E5_Event",
+      "range": "E39_Actor",
+      "aliases": [
+        "có người tham gia",
+        "tham dự"
+      ]
+    },
+    {
+      "name": "P12_occurred_in_the_presence_of",
+      "description": "Sự kiện gắn với hiện diện của vật thể hoặc con người.",
+      "definition": "Sự kiện diễn ra trước chứng kiến hoặc sự hiện diện của nhân vật/hiện vật.",
+      "domain": "E5_Event",
+      "range": "E18_Physical_Thing",
+      "aliases": [
+        "gắn với sự hiện diện của"
+      ]
+    },
+    {
+      "name": "P14_carried_out_by",
+      "description": "Hoạt động do cá nhân hoặc tổ chức thực hiện.",
+      "definition": "Xác định chủ thể (vua, nghệ nhân, ban quản lý) thực hiện hoạt động xây dựng, trùng tu, sáng lập.",
+      "domain": "E7_Activity",
+      "range": "E39_Actor",
+      "aliases": [
+        "do ai thực hiện",
+        "do ai chủ trì",
+        "được thực hiện bởi",
+        "do vua cho xây"
+      ]
+    },
+    {
+      "name": "P15_was_influenced_by",
+      "description": "Hoạt động chịu ảnh hưởng bởi tư tưởng hoặc công trình.",
+      "definition": "Chịu ảnh hưởng nghệ thuật, phong thủy hoặc truyền thống văn hóa.",
+      "domain": "E7_Activity",
+      "range": "E1_CRM_Entity",
+      "aliases": [
+        "chịu ảnh hưởng bởi"
+      ]
+    },
+    {
+      "name": "P16_used_specific_object",
+      "description": "Sử dụng vật thể hoặc tư liệu cụ thể.",
+      "definition": "Hoạt động sử dụng hiện vật, bản vẽ hoặc vật liệu xác định.",
+      "domain": "E7_Activity",
+      "range": "E18_Physical_Thing",
+      "aliases": [
+        "sử dụng vật thể"
+      ]
+    },
+    {
+      "name": "P17_was_motivated_by",
+      "description": "Được thúc đẩy hoặc nhân dịp sự kiện.",
+      "definition": "Hoạt động được thực hiện vì mục đích tưởng niệm hoặc nhân biến cố lịch sử.",
+      "domain": "E7_Activity",
+      "range": "E1_CRM_Entity",
+      "aliases": [
+        "bắt nguồn từ",
+        "nhân dịp"
+      ]
+    },
+    {
+      "name": "P19_was_intended_use_of",
+      "description": "Mục đích sử dụng dự kiến.",
+      "definition": "Công năng ban đầu (thờ phụng, học tập, phòng thủ) của công trình.",
+      "domain": "E7_Activity",
+      "range": "E55_Type",
+      "aliases": [
+        "dùng để",
+        "mục đích là"
+      ]
+    },
+    {
+      "name": "P20_had_specific_purpose",
+      "description": "Có mục đích hướng tới sự kiện.",
+      "definition": "Hoạt động nhằm chuẩn bị cho sự kiện hoặc nghi lễ xác định.",
+      "domain": "E7_Activity",
+      "range": "E5_Event",
+      "aliases": [
+        "nhằm mục đích"
+      ]
+    },
+    {
+      "name": "P43_has_dimension",
+      "description": "Có kích thước hoặc diện tích đo đạc.",
+      "definition": "Liên kết công trình, khu đất hoặc hiện vật với số đo diện tích/chiều cao.",
+      "domain": "E18_Physical_Thing",
+      "range": "E54_Dimension",
+      "aliases": [
+        "có kích thước",
+        "có diện tích",
+        "cao"
+      ]
+    },
+    {
+      "name": "P44_has_condition",
+      "description": "Có tình trạng bảo tồn.",
+      "definition": "Tình trạng hư hại, nguyên vẹn hoặc đã được bảo tồn của di tích.",
+      "domain": "E18_Physical_Thing",
+      "range": "E55_Type",
+      "aliases": [
+        "tình trạng hiện nay"
+      ]
+    },
+    {
+      "name": "P45_consists_of",
+      "description": "Được làm từ chất liệu.",
+      "definition": "Xác định vật liệu cấu tạo nên công trình hay hiện vật (đá xanh, gỗ lim, đồng).",
+      "domain": "E18_Physical_Thing",
+      "range": "E57_Material",
+      "aliases": [
+        "được làm bằng",
+        "có chất liệu",
+        "làm từ"
+      ]
+    },
+    {
+      "name": "P46_is_composed_of",
+      "description": "Cấu thành từ các hạng mục kiến trúc con.",
+      "definition": "Di tích lớn bao gồm các hạng mục như tam quan, điện thờ, gác chuông, vườn bia.",
+      "domain": "E18_Physical_Thing",
+      "range": "E18_Physical_Thing",
+      "aliases": [
+        "bao gồm hạng mục",
+        "gồm có bộ phận",
+        "có thành phần"
+      ]
+    },
+    {
+      "name": "P48_has_preferred_identifier",
+      "description": "Có mã định danh hoặc số hiệu ưu tiên.",
+      "definition": "Mã hiệu kiểm kê, số lưu trữ chính thức của di sản.",
+      "domain": "E1_CRM_Entity",
+      "range": "E41_Appellation",
+      "aliases": [
+        "có mã định danh"
+      ]
+    },
+    {
+      "name": "P49_has_former_or_current_keeper",
+      "description": "Từng hoặc đang có đơn vị bảo quản, trông coi.",
+      "definition": "Đơn vị bảo tàng, ban quản lý hoặc cộng đồng trông nom di tích.",
+      "domain": "E18_Physical_Thing",
+      "range": "E39_Actor",
+      "aliases": [
+        "được trông coi bởi",
+        "đơn vị lưu giữ"
+      ]
+    },
+    {
+      "name": "P50_has_current_keeper",
+      "description": "Hiện do đơn vị nào quản lý trực tiếp.",
+      "definition": "Cơ quan hoặc cộng đồng đang quản lý hiện vật/di tích hiện nay.",
+      "domain": "E18_Physical_Thing",
+      "range": "E39_Actor",
+      "aliases": [
+        "hiện do quản lý",
+        "ban quản lý hiện tại"
+      ]
+    },
+    {
+      "name": "P51_has_former_or_current_owner",
+      "description": "Từng hoặc đang thuộc quyền sở hữu của.",
+      "definition": "Triều đại, gia tộc hoặc cơ quan sở hữu công trình/tư sản.",
+      "domain": "E18_Physical_Thing",
+      "range": "E39_Actor",
+      "aliases": [
+        "thuộc quyền sở hữu của"
+      ]
+    },
+    {
+      "name": "P52_has_current_owner",
+      "description": "Chủ sở hữu hiện tại.",
+      "definition": "Cơ quan hoặc chủ thể sở hữu hợp pháp hiện nay.",
+      "domain": "E18_Physical_Thing",
+      "range": "E39_Actor",
+      "aliases": [
+        "chủ sở hữu hiện tại"
+      ]
+    },
+    {
+      "name": "P53_has_former_or_current_location",
+      "description": "Tọa lạc tại địa điểm hoặc vùng đất.",
+      "definition": "Vị trí không gian cố định hoặc lịch sử của công trình, di tích và hiện vật vật chất.",
+      "domain": "E18_Physical_Thing",
+      "range": "E53_Place",
+      "aliases": [
+        "tọa lạc tại",
+        "nằm tại",
+        "đặt tại",
+        "ở địa điểm"
+      ]
+    },
+    {
+      "name": "P54_has_current_permanent_location",
+      "description": "Vị trí đặt cố định hiện nay.",
+      "definition": "Nơi lưu giữ thường xuyên hiện tại của hiện vật.",
+      "domain": "E18_Physical_Thing",
+      "range": "E53_Place",
+      "aliases": [
+        "hiện đặt tại"
+      ]
+    },
+    {
+      "name": "P55_has_current_location",
+      "description": "Vị trí hiện tại của hiện vật.",
+      "definition": "Địa điểm hiện vật đang có mặt tại thời điểm ghi nhận.",
+      "domain": "E18_Physical_Thing",
+      "range": "E53_Place",
+      "aliases": [
+        "hiện đang ở"
+      ]
+    },
+    {
+      "name": "P56_bears_feature",
+      "description": "Mang bộ phận hoặc dấu tích gắn liền.",
+      "definition": "Công trình mang trên mình bia đá, phù điêu, cổng tam quan.",
+      "domain": "E18_Physical_Thing",
+      "range": "E25_Human-Made_Feature",
+      "aliases": [
+        "mang dấu tích",
+        "có gắn bộ phận"
+      ]
+    },
+    {
+      "name": "P62_depicts",
+      "description": "Mô tả, khắc họa hoặc tôn vinh hình tượng.",
+      "definition": "Hiện vật/phù điêu khắc họa nhân vật, điển tích hoặc linh vật.",
+      "domain": "E24_Physical_Human-Made_Thing",
+      "range": "E1_CRM_Entity",
+      "aliases": [
+        "khắc họa",
+        "miêu tả hình tượng"
+      ]
+    },
+    {
+      "name": "P65_shows_visual_item",
+      "description": "Hiển thị hoa văn hoặc biểu tượng thị giác.",
+      "definition": "Bề mặt vật thể mang họa tiết, hoành phi, câu đối.",
+      "domain": "E24_Physical_Human-Made_Thing",
+      "range": "E28_Conceptual_Object",
+      "aliases": [
+        "có hoa văn",
+        "mang biểu tượng"
+      ]
+    },
+    {
+      "name": "P67_refers_to",
+      "description": "Tài liệu hoặc sắc phong nhắc tới thực thể.",
+      "definition": "Văn bản, bia ký, sử liệu đề cập đến nhân vật, di tích hoặc sự kiện.",
+      "domain": "E89_Propositional_Object",
+      "range": "E1_CRM_Entity",
+      "aliases": [
+        "đề cập tới",
+        "ghi chép về",
+        "nhắc đến"
+      ]
+    },
+    {
+      "name": "P70_documents",
+      "description": "Tư liệu ghi nhận bằng chứng về thực thể hoặc sự kiện.",
+      "definition": "Văn kiện, sắc phong, bản vẽ ghi nhận chi tiết về lịch sử di tích.",
+      "domain": "E31_Document",
+      "range": "E1_CRM_Entity",
+      "aliases": [
+        "ghi chép tư liệu về",
+        "minh chứng cho"
+      ]
+    },
+    {
+      "name": "P72_has_language",
+      "description": "Văn bản được viết bằng ngôn ngữ.",
+      "definition": "Ngôn ngữ của minh văn hoặc tư liệu (chữ Hán, chữ Nôm, tiếng Việt).",
+      "domain": "E33_Linguistic_Object",
+      "range": "E55_Type",
+      "aliases": [
+        "viết bằng ngôn ngữ",
+        "sử dụng chữ"
+      ]
+    },
+    {
+      "name": "P74_has_current_or_former_residence",
+      "description": "Nhân vật từng cư trú hoặc gắn bó tại địa điểm.",
+      "definition": "Quê quán, nơi ở hoặc nơi làm việc gắn với nhân vật lịch sử.",
+      "domain": "E39_Actor",
+      "range": "E53_Place",
+      "aliases": [
+        "quê ở",
+        "cư trú tại",
+        "sinh sống ở"
+      ]
+    },
+    {
+      "name": "P81_ongoing_throughout",
+      "description": "Tồn tại liên tục trong suốt giai đoạn.",
+      "definition": "Khoảng thời gian tối thiểu được xác nhận tồn tại xuyên suốt.",
+      "domain": "E52_Time-Span",
+      "range": "E52_Time-Span",
+      "aliases": [
+        "tồn tại suốt giai đoạn"
+      ]
+    },
+    {
+      "name": "P82_at_some_time_within",
+      "description": "Nằm trong khoảng thời gian xác định.",
+      "definition": "Giới hạn trên/dưới của niên đại.",
+      "domain": "E52_Time-Span",
+      "range": "E52_Time-Span",
+      "aliases": [
+        "trong khoảng thời gian"
+      ]
+    },
+    {
+      "name": "P89_falls_within",
+      "description": "Địa điểm hành chính trực thuộc địa bàn rộng hơn.",
+      "definition": "Phường/làng thuộc quận/huyện/tỉnh hoặc khu vực địa lý bao chứa.",
+      "domain": "E53_Place",
+      "range": "E53_Place",
+      "aliases": [
+        "trực thuộc địa bàn",
+        "thuộc tỉnh",
+        "thuộc quận",
+        "nằm trong vùng"
+      ]
+    },
+    {
+      "name": "P90_has_value",
+      "description": "Có giá trị đo lường.",
+      "definition": "Số đo định lượng cụ thể của kích thước.",
+      "domain": "E54_Dimension",
+      "range": "E54_Dimension",
+      "aliases": [
+        "có số đo",
+        "có giá trị"
+      ]
+    },
+    {
+      "name": "P91_has_unit",
+      "description": "Có đơn vị đo.",
+      "definition": "Đơn vị đo lường (mét, mẫu, héc-ta).",
+      "domain": "E54_Dimension",
+      "range": "E55_Type",
+      "aliases": [
+        "có đơn vị đo"
+      ]
+    },
+    {
+      "name": "P94_has_created",
+      "description": "Hoạt động sáng tác tạo ra tác phẩm/văn bia.",
+      "definition": "Liên kết quá trình sáng tác (E65_Creation) với văn bản hoặc giá trị tinh thần được tạo thành.",
+      "domain": "E65_Creation",
+      "range": "E28_Conceptual_Object",
+      "aliases": [
+        "đã sáng tác ra",
+        "soạn nên"
+      ]
+    },
+    {
+      "name": "P98_brought_into_life",
+      "description": "Sự kiện sinh ra nhân vật.",
+      "definition": "Liên kết biến cố ra đời (E67_Birth) với nhân vật E21_Person.",
+      "domain": "E67_Birth",
+      "range": "E21_Person",
+      "aliases": [
+        "sinh ra"
+      ]
+    },
+    {
+      "name": "P100_was_death_of",
+      "description": "Sự kiện qua đời của nhân vật.",
+      "definition": "Liên kết sự kiện mất (E69_Death) với nhân vật E21_Person.",
+      "domain": "E69_Death",
+      "range": "E21_Person",
+      "aliases": [
+        "là sự kiện mất của"
+      ]
+    },
+    {
+      "name": "P102_has_title",
+      "description": "Mang danh hiệu, sắc phong hoặc tiêu đề chính thức.",
+      "definition": "Văn bản, tác phẩm hoặc di tích được ban mỹ hiệu/tiêu đề cụ thể.",
+      "domain": "E73_Information_Object",
+      "range": "E35_Title",
+      "aliases": [
+        "mang tiêu đề",
+        "có mỹ hiệu"
+      ]
+    },
+    {
+      "name": "P104_is_subject_to",
+      "description": "Chịu quyền bảo hộ hoặc quy chế pháp lý.",
+      "definition": "Công trình thuộc diện bảo vệ theo luật di sản hay sắc lệnh.",
+      "domain": "E18_Physical_Thing",
+      "range": "E28_Conceptual_Object",
+      "aliases": [
+        "thuộc quy chế"
+      ]
+    },
+    {
+      "name": "P107_has_current_or_former_member",
+      "description": "Nhóm hoặc triều đại có thành viên.",
+      "definition": "Triều đại, tổ chức hoặc ban trị sự bao gồm các nhân vật thành viên.",
+      "domain": "E74_Group",
+      "range": "E39_Actor",
+      "aliases": [
+        "có thành viên là"
+      ]
+    },
+    {
+      "name": "P107i_is_current_or_former_member_of",
+      "description": "Nhân vật thuộc triều đại hoặc tổ chức.",
+      "definition": "Cá nhân là thành viên của triều đại, hội đồng hoặc dòng họ.",
+      "domain": "E39_Actor",
+      "range": "E74_Group",
+      "aliases": [
+        "thuộc triều đại",
+        "là thành viên của"
+      ]
+    },
+    {
+      "name": "P108_has_produced",
+      "description": "Quá trình tạo tác sản sinh ra công trình hoặc hiện vật.",
+      "definition": "Liên kết sự kiện xây dựng/đúc tạo (E12_Production) với công trình hoặc hiện vật (E24).",
+      "domain": "E12_Production",
+      "range": "E24_Physical_Human-Made_Thing",
+      "aliases": [
+        "tạo tác ra",
+        "xây dựng nên",
+        "đúc nên"
+      ]
+    },
+    {
+      "name": "P109_has_current_or_former_curator",
+      "description": "Bộ sưu tập do tổ chức/người phụ trách quản lý.",
+      "definition": "Chủ thể phụ trách giám tuyển và quản lý kho bảo tàng.",
+      "domain": "E78_Curated_Holding",
+      "range": "E39_Actor",
+      "aliases": [
+        "được phụ trách bởi"
+      ]
+    },
+    {
+      "name": "P128_carries",
+      "description": "Bề mặt vật thể mang nội dung văn bản hoặc chữ khắc.",
+      "definition": "Bia đá, sắc phong vật lý mang bài văn bia hoặc thông tin ghi chép.",
+      "domain": "E18_Physical_Thing",
+      "range": "E73_Information_Object",
+      "aliases": [
+        "mang nội dung",
+        "khắc bài văn",
+        "lưu giữ văn bản"
+      ]
+    },
+    {
+      "name": "P129_is_about",
+      "description": "Nội dung hướng về chủ đề hoặc nhân vật được thờ.",
+      "definition": "Tư liệu, lễ hội hoặc niềm tin hướng tới tôn vinh đối tượng cụ thể.",
+      "domain": "E89_Propositional_Object",
+      "range": "E1_CRM_Entity",
+      "aliases": [
+        "thờ phụng",
+        "tôn vinh",
+        "nói về"
+      ]
+    },
+    {
+      "name": "P130_shows_features_of",
+      "description": "Thể hiện đặc trưng giống với nguyên mẫu.",
+      "definition": "Công trình phục dựng hoặc hiện vật mô phỏng theo phong cách gốc.",
+      "domain": "E18_Physical_Thing",
+      "range": "E18_Physical_Thing",
+      "aliases": [
+        "mô phỏng theo",
+        "mang đặc điểm của"
+      ]
+    },
+    {
+      "name": "P134_continued",
+      "description": "Hoạt động tiếp nối hoạt động trước.",
+      "definition": "Đợt trùng tu hoặc giai đoạn xây dựng tiếp theo nối tiếp đợt trước.",
+      "domain": "E7_Activity",
+      "range": "E7_Activity",
+      "aliases": [
+        "tiếp nối",
+        "trùng tu tiếp"
+      ]
+    },
+    {
+      "name": "P138_represents",
+      "description": "Biểu trưng hoặc đại diện cho nhân vật/khái niệm.",
+      "definition": "Pho tượng hoặc đồ thờ đại diện cho vị thần, danh nhân được thờ.",
+      "domain": "E73_Information_Object",
+      "range": "E1_CRM_Entity",
+      "aliases": [
+        "đại diện cho",
+        "biểu trưng cho"
+      ]
+    }
+  ]
+}

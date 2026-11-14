@@ -11,6 +11,12 @@ from backend.domain.curation.merge import (
     clear_relation_duplicate_suggestions_cache,
     collapse_duplicate_edges,
 )
+from backend.domain.curation.merge_core import (
+    _clone_project_for_merge_mutation,
+    flatten_redirects,
+    remap_graph_edges_endpoints,
+)
+from shared.constants import STATUS_REJECTED
 from backend.domain.catalogs.service import compute_project_revision
 from backend.integrations.llm import LLMGateway, providers
 from backend.integrations.llm.clients import make_adapter
@@ -460,12 +466,7 @@ def bulk_apply_entity_type_merges(
     if not mappings:
         raise ValueError("Danh sách loại thực thể cần gộp trống.")
 
-    candidate = dict(project)
-    candidate["nodes"] = list(project.get("nodes", []))
-    candidate["entity_type_aliases"] = copy.deepcopy(project.get("entity_type_aliases") or {})
-    candidate["entity_types"] = [copy.deepcopy(r) for r in project.get("entity_types", [])]
-    candidate["schema_proposals"] = list(project.get("schema_proposals", []))
-    candidate["entity_type_merges"] = list(project.get("entity_type_merges", []))
+    candidate = _clone_project_for_merge_mutation(project)
     rev_before = compute_project_revision(candidate)
     batch_id = uid()
     request_id = uid()
@@ -487,18 +488,9 @@ def bulk_apply_entity_type_merges(
     if not resolved_pairs:
         raise ValueError("Không có cặp loại thực thể hợp lệ để gộp.")
 
-    parent: dict[str, str] = {}
-    for s, t in resolved_pairs:
-        parent[s] = t
-
-    flat_map: dict[str, str] = {}
-    for s in parent:
-        curr = s
-        visited = set()
-        while curr in parent and curr not in visited:
-            visited.add(curr)
-            curr = parent[curr]
-        flat_map[s] = curr
+    flat_map = flatten_redirects(resolved_pairs)
+    if not flat_map:
+        raise ValueError("Không có cặp loại thực thể hợp lệ để gộp.")
 
     affected_nodes: list[str] = []
     nodes_list = candidate["nodes"]
@@ -565,17 +557,52 @@ def bulk_apply_entity_type_merges(
             new_p["review_note"] = (str(new_p.get("review_note") or "") + f" [Gộp loại vào '{flat_map[p_name]}']").strip()
             props_list[idx] = new_p
 
-    candidate.setdefault("entity_type_merges", []).append(
+    affected_node_set = {nid for nid in affected_nodes if nid}
+    invalidated_approved_count = 0
+    invalidated_edge_ids: list[str] = []
+    if affected_node_set:
+        _, _, _, invalidated_approved_count, _, _ = remap_graph_edges_endpoints(
+            candidate["edges"],
+            {},
+            member_set=affected_node_set,
+            kind_changed_by_member={nid: True for nid in affected_node_set},
+            merge_time=merge_time,
+            actor=actor,
+            curation_history=candidate.setdefault("curation_history", []),
+            simulate_only=False,
+        )
+        invalidated_edge_ids = [
+            str(e.get("id", ""))
+            for e in candidate["edges"]
+            if e.get("status") != STATUS_REJECTED
+            and (e.get("source") in affected_node_set or e.get("target") in affected_node_set)
+        ]
+
+    type_merge_entry = {
+        "merge_id": batch_id,
+        "request_id": request_id,
+        "at": merge_time,
+        "actor": actor,
+        "is_bulk": True,
+        "merged_types_count": len(flat_map),
+        "affected_node_count": len(affected_nodes),
+        "affected_edge_count": len(invalidated_edge_ids),
+        "invalidated_approved_count": invalidated_approved_count,
+        "note": note or f"Gộp hàng loạt {len(flat_map)} loại thực thể.",
+        "mappings": flat_map,
+    }
+    candidate.setdefault("entity_type_merges", []).append(type_merge_entry)
+    candidate.setdefault("curation_history", []).append(
         {
-            "merge_id": batch_id,
+            "id": batch_id,
             "request_id": request_id,
             "at": merge_time,
             "actor": actor,
-            "is_bulk": True,
-            "merged_types_count": len(flat_map),
-            "affected_node_count": len(affected_nodes),
-            "note": note or f"Gộp hàng loạt {len(flat_map)} loại thực thể.",
-            "mappings": flat_map,
+            "decision_origin": "human",
+            "action": "bulk_entity_type_merge",
+            "target_id": f"{len(flat_map)}_entity_types",
+            "note": type_merge_entry["note"],
+            "after": type_merge_entry,
         }
     )
 
@@ -592,7 +619,8 @@ def bulk_apply_entity_type_merges(
         applied_count=len(flat_map),
         skipped_count=0,
         item_results=[{"source": s, "target": t} for s, t in flat_map.items()],
-        affected_edge_ids=[],
+        affected_edge_ids=invalidated_edge_ids,
+        invalidated_approved_count=invalidated_approved_count,
         merged_duplicate_edges=0,
     )
 

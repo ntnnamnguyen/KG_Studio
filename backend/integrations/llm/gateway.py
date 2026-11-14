@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
+from typing import Any
 
 from shared.catalog_utils import EDC_SCHEMA, validate_edc_payload
 from shared.constants import MODE_FREE_TRIPLES
@@ -274,7 +275,7 @@ class LLMGateway:
 
     # --- Bộ xác minh căn chỉnh (Target Alignment) ---
     @staticmethod
-    def verify_alignment_choice(
+    def verify_alignment_detailed(
         provider: str,
         api_key: str,
         model: str,
@@ -283,9 +284,15 @@ class LLMGateway:
         *,
         base_url: str = "",
         client=None,
-    ) -> str | None:
-        """Hỏi LLM chọn 1 chữ cái trong `valid_letters`; mọi lỗi đều trả None (không chặn luồng chính)."""
+        max_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """Hỏi LLM chọn 1 chữ cái trong `valid_letters`, trả trạng thái chi tiết và token sử dụng."""
         spec = providers.provider_spec(provider)
+        resolved_tokens = (
+            max_tokens
+            if max_tokens is not None
+            else (32 if spec.api_style == providers.API_STYLE_ANTHROPIC else 64)
+        )
         try:
             adapter = make_adapter(
                 spec,
@@ -299,9 +306,47 @@ class LLMGateway:
                 model=model,
                 user=verification_prompt,
                 temperature=0.0,
-                max_tokens=8 if spec.api_style == providers.API_STYLE_ANTHROPIC else 16,
+                max_tokens=resolved_tokens,
             )
-            return pick_choice_letter(resp.content, valid_letters)
-        except Exception:
-            return None
+            letter = pick_choice_letter(resp.content, valid_letters)
+            return {
+                "letter": letter,
+                "status": "ok" if letter is not None else "invalid",
+                "raw": resp.content,
+                "input_tokens": int(getattr(resp, "input_tokens", 0) or 0),
+                "output_tokens": int(getattr(resp, "output_tokens", 0) or 0),
+                "error": "" if letter is not None else "Không trích được chữ cái lựa chọn hợp lệ từ LLM.",
+            }
+        except Exception as exc:
+            return {
+                "letter": None,
+                "status": "error",
+                "raw": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "error": str(exc),
+            }
+
+    @staticmethod
+    def verify_alignment_choice(
+        provider: str,
+        api_key: str,
+        model: str,
+        verification_prompt: str,
+        valid_letters: list[str],
+        *,
+        base_url: str = "",
+        client=None,
+    ) -> str | None:
+        """Hỏi LLM chọn 1 chữ cái trong `valid_letters`; mọi lỗi đều trả None (không chặn luồng chính)."""
+        res = LLMGateway.verify_alignment_detailed(
+            provider,
+            api_key,
+            model,
+            verification_prompt,
+            valid_letters,
+            base_url=base_url,
+            client=client,
+        )
+        return res.get("letter")
 

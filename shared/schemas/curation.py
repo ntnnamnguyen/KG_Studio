@@ -194,6 +194,7 @@ class CurationResultDTO(SchemaModel):
     item_results: list[dict[str, Any]] = Field(default_factory=list)
     affected_edge_ids: list[str] = Field(default_factory=list)
     changed_endpoint_count: int = 0
+    invalidated_approved_count: int = 0
     merged_duplicate_edges: int = 0
     snapshot_path: str = ""
     sync_status: str = "synced"

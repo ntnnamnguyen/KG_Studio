@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -9,27 +12,48 @@ import numpy as np
 
 from backend.integrations.embedder_gateway import EmbedderGateway
 from shared.config_loader import APP_ROOT
-from shared.prompt_templates import format_canon_query, format_catalog_passage, format_sr_query
+from shared.prompt_templates import (
+    PASSAGE_TEMPLATE_VERSION,
+    format_canon_query,
+    format_catalog_passage,
+    format_sr_query,
+    should_use_e5_instruct,
+)
 from shared.text_utils import sha
 
 DEFAULT_VECTOR_DIR = APP_ROOT / "data" / "vector_indices"
 
-# Bộ nhớ đệm vector index trong RAM: (project_id, kind, model_fingerprint, catalog_hash) -> (items, vectors)
-_INDEX_MEM_CACHE: dict[tuple[str, str, str, str], tuple[list[dict], np.ndarray]] = {}
+# Bộ nhớ đệm vector index trong RAM (cô lập theo index_root):
+# (root_dir, project_id, kind, model_fingerprint, catalog_hash) -> (items, vectors)
+_VECTOR_CACHE_LOCK = threading.RLock()
+_INDEX_MEM_CACHE: dict[tuple[str, str, str, str, str], tuple[list[dict], np.ndarray]] = {}
 
 
 class VectorIndexRepository:
     def __init__(self, index_root: str | Path | None = None) -> None:
         self.index_root = Path(index_root) if index_root else DEFAULT_VECTOR_DIR
         self.index_root.mkdir(parents=True, exist_ok=True)
+        self._root_key = str(self.index_root.resolve())
 
     def _catalog_hash(self, items: list[dict]) -> str:
-        payload = json.dumps(items, ensure_ascii=False, sort_keys=True)
+        payload = json.dumps(
+            {"template_version": PASSAGE_TEMPLATE_VERSION, "items": items},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
         return sha(payload)[:16]
 
-    def _index_path(self, project_id: str, kind: str, model_fingerprint: str) -> Path:
+    def _index_path(
+        self,
+        project_id: str,
+        kind: str,
+        model_fingerprint: str,
+        *,
+        create_dir: bool = True,
+    ) -> Path:
         folder = self.index_root / (project_id or "default") / f"model_{model_fingerprint}"
-        folder.mkdir(parents=True, exist_ok=True)
+        if create_dir:
+            folder.mkdir(parents=True, exist_ok=True)
         return folder / f"{kind}_index.npz"
 
     def invalidate_project_indices(
@@ -67,11 +91,16 @@ class VectorIndexRepository:
                         removed += 1
                     except Exception:
                         pass
-        # Xóa các mục tương ứng trong bộ nhớ đệm RAM
+        # Xóa các mục tương ứng trong bộ nhớ đệm RAM (chỉ trong đúng index_root)
         proj_str = str(project_id or "default")
-        stale_keys = [k for k in _INDEX_MEM_CACHE if k[0] == proj_str and (kind is None or k[1] == kind)]
-        for k in stale_keys:
-            _INDEX_MEM_CACHE.pop(k, None)
+        with _VECTOR_CACHE_LOCK:
+            stale_keys = [
+                k
+                for k in _INDEX_MEM_CACHE
+                if k[0] == self._root_key and k[1] == proj_str and (kind is None or k[2] == kind)
+            ]
+            for k in stale_keys:
+                _INDEX_MEM_CACHE.pop(k, None)
 
         return removed
 
@@ -88,7 +117,7 @@ class VectorIndexRepository:
         if not proj_folder.exists():
             return {"valid": False, "reason": "no_index", "expected_catalog_hash": cat_hash}
         if model_fingerprint:
-            idx_path = self._index_path(project_id, kind, model_fingerprint)
+            idx_path = self._index_path(project_id, kind, model_fingerprint, create_dir=False)
             if not idx_path.exists():
                 return {"valid": False, "reason": "invalidated_or_missing", "expected_catalog_hash": cat_hash}
             try:
@@ -133,13 +162,15 @@ class VectorIndexRepository:
 
         cat_hash = self._catalog_hash(catalog_items)
         proj_str = str(project_id or "default")
-        cache_key = (proj_str, kind, str(embedder.fingerprint), cat_hash)
+        cache_key = (self._root_key, proj_str, kind, str(embedder.fingerprint), cat_hash)
 
-        # 1. Kiểm tra RAM cache trước
-        if cache_key in _INDEX_MEM_CACHE:
-            return _INDEX_MEM_CACHE[cache_key]
+        # 1. Kiểm tra RAM cache trước (thread-safe, cô lập theo index_root)
+        with _VECTOR_CACHE_LOCK:
+            cached = _INDEX_MEM_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
 
-        path = self._index_path(project_id, kind, embedder.fingerprint)
+        path = self._index_path(project_id, kind, embedder.fingerprint, create_dir=False)
 
         if path.exists():
             try:
@@ -148,8 +179,10 @@ class VectorIndexRepository:
                     if stored_hash == cat_hash:
                         items = json.loads(str(data["items_json"]))
                         vectors = np.asarray(data["vectors"], dtype=np.float32)
-                        if len(items) == vectors.shape[0]:
-                            _INDEX_MEM_CACHE[cache_key] = (items, vectors)
+                        dim_ok = embedder.dim <= 0 or (vectors.ndim == 2 and vectors.shape[1] == embedder.dim)
+                        if vectors.ndim == 2 and len(items) == vectors.shape[0] and dim_ok:
+                            with _VECTOR_CACHE_LOCK:
+                                _INDEX_MEM_CACHE[cache_key] = (items, vectors)
                             return items, vectors
             except Exception:
                 pass
@@ -159,17 +192,49 @@ class VectorIndexRepository:
                 row.get("name", ""),
                 row.get("definition", ""),
                 row.get("description", ""),
+                aliases=row.get("aliases"),
+                domain=row.get("domain", ""),
+                range=row.get("range", ""),
             )
             for row in catalog_items
         ]
-        vectors = embedder.encode(passages)
-        np.savez_compressed(
-            str(path),
-            catalog_hash=np.array(cat_hash),
-            items_json=np.array(json.dumps(catalog_items, ensure_ascii=False)),
-            vectors=vectors,
-        )
-        _INDEX_MEM_CACHE[cache_key] = (catalog_items, vectors)
+        vectors = np.asarray(embedder.encode(passages), dtype=np.float32)
+        if vectors.ndim != 2 or vectors.shape[0] != len(catalog_items) or (
+            embedder.dim > 0 and vectors.shape[1] != embedder.dim
+        ):
+            raise ValueError(
+                f"Vector index '{kind}' có kích thước {vectors.shape} không khớp danh mục ({len(catalog_items)}, {embedder.dim})."
+            )
+
+        write_path = self._index_path(project_id, kind, embedder.fingerprint, create_dir=True)
+        tmp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=str(write_path.parent),
+                prefix=f".{kind}_",
+                suffix=".tmp.npz",
+                delete=False,
+            ) as tmp_file:
+                tmp_path = tmp_file.name
+                np.savez_compressed(
+                    tmp_file,
+                    catalog_hash=np.array(cat_hash),
+                    items_json=np.array(json.dumps(catalog_items, ensure_ascii=False)),
+                    vectors=vectors,
+                )
+                tmp_file.flush()
+                os.fsync(tmp_file.fileno())
+            os.replace(tmp_path, str(write_path))
+        except Exception:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            raise
+
+        with _VECTOR_CACHE_LOCK:
+            _INDEX_MEM_CACHE[cache_key] = (catalog_items, vectors)
         return catalog_items, vectors
 
     def search(
@@ -188,14 +253,19 @@ class VectorIndexRepository:
         if not items or matrix.shape[0] == 0:
             return []
 
+        use_instruct = should_use_e5_instruct(getattr(embedder, "model_id", ""))
         if mode == "sr":
-            formatted_query = format_sr_query(query_text)
+            formatted_query = format_sr_query(query_text, use_instruct=use_instruct)
         elif mode == "canon":
-            formatted_query = format_canon_query(query_text, open_definition)
+            formatted_query = format_canon_query(query_text, open_definition, use_instruct=use_instruct)
         else:
             formatted_query = query_text
 
-        query_vec = embedder.encode(formatted_query)
+        query_vec = np.asarray(embedder.encode(formatted_query), dtype=np.float32).reshape(-1)
+        if matrix.shape[1] != query_vec.shape[0]:
+            raise ValueError(
+                f"Chiều vector truy vấn ({query_vec.shape[0]}) không khớp chỉ mục '{kind}' ({matrix.shape[1]})."
+            )
         scores = np.dot(matrix, query_vec)
         k = max(1, min(int(top_k), len(items)))
         ranked_indices = np.argsort(-scores)[:k]

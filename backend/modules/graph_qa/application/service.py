@@ -112,7 +112,15 @@ class GraphQAApplicationService:
     ) -> dict:
         if self.neo4j_gateway is None:
             raise RuntimeError("Neo4j Gateway chưa được inject vào GraphQAApplicationService")
-        return self.neo4j_gateway.sync_project(project, uri, user, password, database, driver=driver)
+        sync_payload = project
+        if project.get("documents"):
+            nodes, edges = approved_graph(project)
+            sync_payload = {
+                **project,
+                "nodes": nodes,
+                "edges": edges,
+            }
+        return self.neo4j_gateway.sync_project(sync_payload, uri, user, password, database, driver=driver)
 
     def test_neo4j(
         self,
@@ -169,6 +177,7 @@ class GraphQAApplicationService:
         max_output_tokens: int = 2048,
         client: Any = None,
         llm_client: Any = None,
+        domain_topic: str = "",
     ) -> dict[str, Any]:
         effective_key = (api_key or "").strip() or get_api_key(provider)
         return answer_question_with_graph(
@@ -187,6 +196,7 @@ class GraphQAApplicationService:
             max_output_tokens=max_output_tokens,
             client=client,
             llm_client=llm_client,
+            domain_topic=domain_topic,
         )
 
     def generate_qa_benchmark(
@@ -206,6 +216,7 @@ class GraphQAApplicationService:
         train_ratio: float = 0.80,
         val_ratio: float = 0.10,
         approved_only: bool = True,
+        disjoint_split: bool = True,
     ) -> dict[str, Any]:
         return generate_training_qa_dataset(
             project,
@@ -213,6 +224,7 @@ class GraphQAApplicationService:
             train_ratio=train_ratio,
             val_ratio=val_ratio,
             approved_only=approved_only,
+            disjoint_split=disjoint_split,
         )
 
     def paraphrase_qa_questions_with_llm(

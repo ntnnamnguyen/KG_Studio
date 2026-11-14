@@ -256,7 +256,7 @@ def render_catalogs_prompts_page(project: dict) -> None:
     with cat_tab2:
         st.caption("Danh sách các nhãn quan hệ kết nối giữa các thực thể (ví dụ: tọa lạc tại, thờ phụng, xây dựng vào...).")
         up_rel = st.file_uploader(
-            "📥 Tải lên file JSON hoặc CSV Quan hệ (cột: name, description, definition)",
+            "📥 Tải lên file JSON hoặc CSV Quan hệ (cột: name, description, definition, domain, range)",
             type=["json", "csv"],
             key="p02_up_rel",
         )
@@ -294,6 +294,8 @@ def render_catalogs_prompts_page(project: dict) -> None:
                 "name": st.column_config.TextColumn("Tên quan hệ (name)", required=True),
                 "description": st.column_config.TextColumn("Mô tả ngắn (description)"),
                 "definition": st.column_config.TextColumn("Định nghĩa phạm vi chi tiết (definition)"),
+                "domain": st.column_config.TextColumn("Miền nguồn (domain)"),
+                "range": st.column_config.TextColumn("Miền đích (range)"),
             },
         )
         if rel_rows:
@@ -322,28 +324,31 @@ def render_catalogs_prompts_page(project: dict) -> None:
     save_c1, save_c2 = st.columns([2, 1])
     with save_c1:
         if st.button("💾 Lưu Toàn bộ Thay đổi Danh mục", type="primary", key="btn_save_catalogs", width="stretch"):
-            facade.create_snapshot(project)
-            clean_rels = [r for r in edited_rels if isinstance(r, dict) and (r.get("name") or "").strip()]
-            clean_types = [t for t in edited_types if isinstance(t, dict) and (t.get("name") or "").strip()]
-            prompt_text = project.get("prompt", "")
-            facade.save_prompt_settings(project, prompt_text, clean_rels, clean_types)
-            facade.save_project(project)
+            try:
+                clean_rels = [r for r in edited_rels if isinstance(r, dict) and (r.get("name") or "").strip()]
+                clean_types = [t for t in edited_types if isinstance(t, dict) and (t.get("name") or "").strip()]
+                prompt_text = project.get("prompt", "")
+                facade.create_snapshot(project)
+                facade.save_prompt_settings(project, prompt_text, clean_rels, clean_types)
+                facade.save_project(project)
 
-            cur_gaz_sig = [(r["alias"], r["canonical_name"], r["kind"]) for r in gaz_rows]
-            new_gaz_sig = sorted(
-                [(r["alias"], r["canonical_name"], r["kind"]) for r in edited_gaz],
-                key=lambda x: (x[1].lower(), x[0].lower()),
-            )
-            if sorted(cur_gaz_sig, key=lambda x: (x[1].lower(), x[0].lower())) != new_gaz_sig:
-                facade.replace_gazetteer_entries(
-                    project,
-                    edited_gaz,
-                    source="manual_editor",
-                    expected_revision=facade.project_revision(project),
+                cur_gaz_sig = [(r["alias"], r["canonical_name"], r["kind"]) for r in gaz_rows]
+                new_gaz_sig = sorted(
+                    [(r["alias"], r["canonical_name"], r["kind"]) for r in edited_gaz],
+                    key=lambda x: (x[1].lower(), x[0].lower()),
                 )
+                if sorted(cur_gaz_sig, key=lambda x: (x[1].lower(), x[0].lower())) != new_gaz_sig:
+                    facade.replace_gazetteer_entries(
+                        project,
+                        edited_gaz,
+                        source="manual_editor",
+                        expected_revision=facade.project_revision(project),
+                    )
 
-            st.success("✅ Đã lưu danh mục lược đồ và từ điển của dự án thành công!")
-            st.rerun()
+                st.success("✅ Đã lưu danh mục lược đồ và từ điển của dự án thành công!")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"❌ Không thể lưu danh mục: {exc}")
     with save_c2:
         if (rel_rows or type_rows) and st.button("🗑️ Xóa sạch danh mục", key="btn_clear_catalogs", width="stretch"):
             facade.create_snapshot(project)

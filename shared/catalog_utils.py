@@ -16,6 +16,7 @@ CATALOG_KEYS = ("relations", "entity_types")
 CATALOG_FILES = {key: f"{key}.json" for key in CATALOG_KEYS}
 CATALOG_VERSION = 2
 CATALOG_FIELDS = ("name", "description", "definition")
+OPTIONAL_CATALOG_FIELDS = ("domain", "range")
 
 
 def _array_spec(fields: tuple[str, ...]) -> dict:
@@ -88,19 +89,32 @@ def validate_catalog(rows: object, key: str, allow_empty: bool = True) -> list[d
             row = {"name": row}
         if not isinstance(row, dict):
             raise ValueError(f"{key}: mục {index} phải là chuỗi tên hoặc JSON object có name.")
-        extra = set(row) - {*CATALOG_FIELDS, "example", "aliases"}
+        extra = set(row) - {*CATALOG_FIELDS, *OPTIONAL_CATALOG_FIELDS, "example", "aliases"}
         if extra:
             raise ValueError(f"{key}: mục {index} có trường không hỗ trợ: {', '.join(sorted(extra))}")
         item = {}
         for field in (*CATALOG_FIELDS, "example"):
             value = row.get(field, "")
+            if value is None:
+                value = ""
             if not isinstance(value, str):
                 raise ValueError(f"{key}: {field} tại mục {index} phải là chuỗi.")
             item[field] = value.strip()
+        for opt_field in OPTIONAL_CATALOG_FIELDS:
+            if opt_field in row:
+                opt_val = row.get(opt_field)
+                if opt_val is None:
+                    opt_val = ""
+                if not isinstance(opt_val, str):
+                    raise ValueError(f"{key}: {opt_field} tại mục {index} phải là chuỗi.")
+                opt_val = opt_val.strip()
+                if opt_val:
+                    item[opt_field] = opt_val
         if "aliases" in row:
             raw_aliases = row["aliases"]
             if isinstance(raw_aliases, str):
-                item["aliases"] = [a.strip() for a in raw_aliases.split(",") if a.strip()]
+                sep = r"[;|]" if (";" in raw_aliases or "|" in raw_aliases) else r","
+                item["aliases"] = [a.strip() for a in re.split(sep, raw_aliases) if a.strip()]
             elif isinstance(raw_aliases, (list, tuple, set)):
                 item["aliases"] = [str(a).strip() for a in raw_aliases if str(a).strip()]
             else:
@@ -128,11 +142,24 @@ def catalog_bytes(rows: list[dict], key: str) -> bytes:
 def catalog_csv_bytes(rows: list[dict], key: str) -> bytes:
     """Xuất danh mục thực thể hoặc quan hệ ra định dạng CSV với UTF-8 BOM cho Excel."""
     valid_rows = validate_catalog(rows, key, allow_empty=True)
+    include_domain_range = key == "relations" or any(r.get("domain") or r.get("range") for r in valid_rows)
+    include_aliases = any(r.get("aliases") for r in valid_rows)
+    headers = ["name", "description", "definition"]
+    if include_domain_range:
+        headers.extend(["domain", "range"])
+    if include_aliases:
+        headers.append("aliases")
+
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["name", "description", "definition"])
+    writer.writerow(headers)
     for r in valid_rows:
-        writer.writerow([r.get("name", ""), r.get("description", ""), r.get("definition", "")])
+        row_vals = [r.get("name", ""), r.get("description", ""), r.get("definition", "")]
+        if include_domain_range:
+            row_vals.extend([r.get("domain", ""), r.get("range", "")])
+        if include_aliases:
+            row_vals.append("; ".join(str(a) for a in (r.get("aliases") or []) if str(a).strip()))
+        writer.writerow(row_vals)
     return output.getvalue().encode("utf-8-sig")
 
 
@@ -140,6 +167,8 @@ _CATALOG_FIELD_CANDIDATES = {
     "name": ("name", "tên", "ten", "loại", "loai", "quan hệ", "quan_he", "quanhe", "type", "relation", "entity_type", "label"),
     "description": ("description", "mô tả", "mo_ta", "mota", "desc", "ghi chú", "ghi_chu"),
     "definition": ("definition", "định nghĩa", "dinh_nghia", "dinhnghia", "def", "phạm vi", "pham_vi"),
+    "domain": ("domain", "miền nguồn", "mien_nguon", "chủ thể nguồn", "chu_the_nguon", "thực thể nguồn", "thuc_the_nguon", "nguồn", "source_type", "domain_class"),
+    "range": ("range", "miền đích", "mien_dich", "đối tượng đích", "doi_tuong_dich", "thực thể đích", "thuc_the_dich", "đích", "target_type", "range_class"),
     "example": ("example", "ví dụ", "vi_du", "vidu"),
     "aliases": ("aliases", "bí danh", "bi_danh", "alias"),
 }
@@ -292,12 +321,17 @@ def relation_catalog(project: dict) -> list[dict]:
 def apply_relations(project: dict, rows: list[dict]) -> None:
     rows = validate_catalog(rows, "relations", allow_empty=True)
     project["relations"] = [row["name"] for row in rows]
-    project["relation_notes"] = {
-        row["name"]: {
+    notes: dict[str, dict] = {}
+    for row in rows:
+        entry: dict = {
             "description": row["description"],
             "definition": row["definition"],
             "aliases": row.get("aliases", []),
         }
-        for row in rows
-    }
+        if row.get("domain"):
+            entry["domain"] = row["domain"]
+        if row.get("range"):
+            entry["range"] = row["range"]
+        notes[row["name"]] = entry
+    project["relation_notes"] = notes
 

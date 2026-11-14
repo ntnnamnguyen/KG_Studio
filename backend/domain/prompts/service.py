@@ -214,6 +214,15 @@ def save_prompt_version(
     """
     ensure_project_prompt_history(project)
 
+    if expected_revision:
+        from backend.domain.catalogs.core import compute_project_revision
+
+        current_rev = compute_project_revision(project)
+        if expected_revision != current_rev:
+            raise ValueError(
+                f"Xung đột phiên bản dự án khi lưu prompt (expected={expected_revision}, actual={current_rev})."
+            )
+
     if not isinstance(content, str) or not content.strip():
         raise ValueError("Nội dung prompt không được để trống.")
 

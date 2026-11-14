@@ -395,8 +395,10 @@ def render_extraction_page(project: dict) -> None:
             s1.markdown(f"**Trạng thái:** {status_icon}")
             s2.markdown(f"**Tài liệu:** `{run.get('doc_name', '')}` · Đoạn `{run.get('chunk_number', 0)}`")
             s3.markdown(f"**Token:** In `{int(run.get('input_tokens', 0) or 0):,}` · Out `{int(run.get('output_tokens', 0) or 0):,}`")
-            stats_summary = _extraction_result_summary(run.get("ingest_stats", {}) or {}, run_mode)
+            stats_summary = _extraction_result_summary(run.get("ingest_stats") or run, run_mode)
             st.caption(f"Phương pháp: `{run_mode}` | {stats_summary}")
+            if run_status == "error" and (run.get("error") or run.get("error_kind")):
+                st.warning(f"Chi tiết lỗi ({run.get('error_kind', 'error')}): {run.get('error', '')}")
 
         if run_mode == MODE_FREE_TRIPLES:
             st.caption("Kết quả baseline độc lập; các số liệu dưới đây không phải số cạnh đồ thị đã duyệt.")

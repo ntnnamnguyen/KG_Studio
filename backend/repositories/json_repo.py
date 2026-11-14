@@ -193,7 +193,12 @@ class JsonProjectRepository(ProjectRepository):
         if meta_file.exists():
             try:
                 meta = json.loads(meta_file.read_text(encoding="utf-8"))
-                if isinstance(meta, dict) and meta.get("mtime_ns") == mtime_ns and meta.get("name"):
+                if (
+                    isinstance(meta, dict)
+                    and meta.get("mtime_ns") == mtime_ns
+                    and meta.get("size") in (None, file_size)
+                    and meta.get("name")
+                ):
                     _PROJECT_REGISTRY_CACHE[folder_key] = meta
                     return meta
             except (OSError, json.JSONDecodeError):
@@ -293,14 +298,16 @@ class JsonProjectRepository(ProjectRepository):
                     target.unlink(missing_ok=True)
                 else:
                     atomic_write(target, str(entry).encode("utf-8"))
-        except Exception:
-            pass
-        finally:
-            journal_path.unlink(missing_ok=True)
-            for bp in bak_files_to_clean:
-                bp.unlink(missing_ok=True)
-            for leftover in folder.glob(".*.journal.bak"):
-                leftover.unlink(missing_ok=True)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Khôi phục journal cho dự án trong '{folder}' thất bại; đã giữ nguyên file backup để tránh mất dữ liệu: {exc}"
+            ) from exc
+
+        journal_path.unlink(missing_ok=True)
+        for bp in bak_files_to_clean:
+            bp.unlink(missing_ok=True)
+        for leftover in folder.glob(".*.journal.bak"):
+            leftover.unlink(missing_ok=True)
 
     def load_project(self, name: str) -> dict:
         folder = self.project_dir(name)
@@ -390,6 +397,7 @@ class JsonProjectRepository(ProjectRepository):
             for _, target_path, payload_bytes in bundle_targets:
                 self._writer_fn(target_path, payload_bytes)
         except Exception:
+            rollback_ok = True
             for filename, target_path, _ in bundle_targets:
                 info = journal_files.get(filename, {})
                 try:
@@ -400,10 +408,11 @@ class JsonProjectRepository(ProjectRepository):
                         if bak_p.exists():
                             bak_p.replace(target_path)
                 except Exception:
-                    pass
-            journal_path.unlink(missing_ok=True)
-            for bp in bak_paths:
-                bp.unlink(missing_ok=True)
+                    rollback_ok = False
+            if rollback_ok:
+                journal_path.unlink(missing_ok=True)
+                for bp in bak_paths:
+                    bp.unlink(missing_ok=True)
             raise
 
         journal_path.unlink(missing_ok=True)
@@ -485,7 +494,15 @@ class JsonProjectRepository(ProjectRepository):
 
     def restore_snapshot(self, project: dict | str, path: Path | str) -> dict:
         name = project if isinstance(project, str) else project.get("name", "")
-        old = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        snap_resolved = Path(path).resolve()
+        root_resolved = self.root.resolve()
+        if not snap_resolved.is_relative_to(root_resolved) or snap_resolved.suffix.lower() != ".json":
+            raise ValueError("Đường dẫn snapshot không hợp lệ hoặc nằm ngoài thư mục dự án được phép")
+        if not snap_resolved.is_file():
+            raise ValueError(f"Không tìm thấy file snapshot để khôi phục: {snap_resolved}")
+        old = json.loads(snap_resolved.read_text(encoding="utf-8-sig"))
+        if not isinstance(old, dict):
+            raise ValueError("File snapshot không đúng định dạng JSON object")
         old["name"] = name or old.get("name", "")
         proj_id = (project.get("project_id") if isinstance(project, dict) else None) or old.get("project_id") or uid()
         old["project_id"] = proj_id

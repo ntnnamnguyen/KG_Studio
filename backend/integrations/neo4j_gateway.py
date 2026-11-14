@@ -5,14 +5,16 @@ from shared.constants import STATUS_APPROVED
 from shared.text_utils import now_iso
 
 CONSTRAINT_ENTITY_ID = (
-    "CREATE CONSTRAINT kg_studio_entity_id IF NOT EXISTS "
-    "FOR (n:ThucThe) REQUIRE n.id IS UNIQUE"
+    "CREATE CONSTRAINT kg_studio_entity_uid IF NOT EXISTS "
+    "FOR (n:ThucThe) REQUIRE n.uid IS UNIQUE"
 )
 
 MERGE_NODES = """
 UNWIND $nodes AS n
-MERGE (e:ThucThe {id: n.id, ma_du_an: $project_id})
-SET e.ten = n.ten,
+MERGE (e:ThucThe {uid: n.uid})
+SET e.id = n.id,
+    e.ma_du_an = $project_id,
+    e.ten = n.ten,
     e.loai = n.loai,
     e.mo_ta = n.mo_ta,
     e.ten_khac = n.ten_khac,
@@ -34,14 +36,14 @@ RETURN count(r) AS removed
 
 MERGE_EDGES = """
 UNWIND $edges AS e
-MATCH (a:ThucThe {id: e.source, ma_du_an: $project_id})
-MATCH (b:ThucThe {id: e.target, ma_du_an: $project_id})
+MATCH (a:ThucThe {uid: e.source_uid})
+MATCH (b:ThucThe {uid: e.target_uid})
 MERGE (a)-[r:QUAN_HE {id: e.id, ma_du_an: $project_id}]->(b)
 SET r.ten = e.ten,
     r.bang_chung = e.bang_chung,
     r.tai_lieu = e.tai_lieu,
     r.khoi = e.khoi,
-    r.trang = e.trang,
+    r.trang_thai = e.trang_thai,
     r.prompt_id = e.prompt_id,
     r.mo_hinh = e.mo_hinh,
     r.cap_nhat_luc = $updated_at
@@ -92,13 +94,35 @@ class Neo4jGateway:
         database: str = "neo4j",
         driver=None,
     ) -> dict:
-        edges = [e for e in project.get("edges", []) if e.get("status") == STATUS_APPROVED]
+        project_id = str(project.get("project_id", "") or "")
+
+        def _node_uid(nid: str) -> str:
+            return f"{project_id}::{nid}" if project_id else str(nid)
+
+        def _is_exportable_edge(e: dict) -> bool:
+            if e.get("status") != STATUS_APPROVED:
+                return False
+            has_evidence = bool(str(e.get("evidence") or "").strip())
+            is_override = bool(e.get("override"))
+            if not has_evidence and not is_override:
+                return False
+            if e.get("evidence_found") is False and not is_override:
+                return False
+            if e.get("source") == e.get("target"):
+                if not is_override and not (
+                    bool(e.get("self_loop_confirmed")) and bool(str(e.get("review_note") or "").strip())
+                ):
+                    return False
+            return True
+
+        edges = [e for e in project.get("edges", []) if _is_exportable_edge(e)]
         node_ids = {x for e in edges for x in (e["source"], e["target"])}
         nodes = [n for n in project.get("nodes", []) if n["id"] in node_ids]
         doc_names = {d["id"]: d.get("name", "") for d in project.get("documents", [])}
 
         node_rows = [
             {
+                "uid": _node_uid(n["id"]),
                 "id": n["id"],
                 "ten": n.get("name", ""),
                 "loai": n.get("kind", ""),
@@ -113,11 +137,13 @@ class Neo4jGateway:
                 "id": e["id"],
                 "source": e["source"],
                 "target": e["target"],
+                "source_uid": _node_uid(e["source"]),
+                "target_uid": _node_uid(e["target"]),
                 "ten": e.get("relation", ""),
                 "bang_chung": e.get("evidence", ""),
                 "tai_lieu": e.get("doc_name", ""),
                 "khoi": e.get("chunk_number", 0),
-                "trang": e.get("status", ""),
+                "trang_thai": e.get("status", ""),
                 "prompt_id": e.get("prompt_id", ""),
                 "mo_hinh": e.get("model", ""),
             }
@@ -132,7 +158,6 @@ class Neo4jGateway:
 
                 client = GraphDatabase.driver(uri, auth=(user, password))
             client.verify_connectivity()
-            project_id = project.get("project_id", "")
             updated_at = now_iso()
             with client.session(database=database) as session:
                 session.run(CONSTRAINT_ENTITY_ID).consume()

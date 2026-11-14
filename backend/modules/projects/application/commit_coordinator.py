@@ -16,6 +16,7 @@ import copy
 from pathlib import Path
 import threading
 from typing import Any, TypeVar
+import warnings
 
 from backend.domain.catalogs.service import catalog_rows, compute_catalog_hash, compute_project_revision
 from backend.modules.projects.ports import ProjectStorePort, ReadProjectionPort
@@ -72,6 +73,47 @@ class ProjectCommitCoordinator:
         st = self._project_file_stat(proj_name)
         if st is not None:
             self._last_disk_stat[proj_id] = st
+
+    def record_committed_state(self, project: dict[str, Any], revision: str | None = None) -> str:
+        """Ghi nhận revision và stat đĩa mới nhất để đồng bộ giữa coordinator và ProjectsApplicationService."""
+        proj_id = str(project.get("project_id") or project.get("name") or "default")
+        proj_name = str(project.get("name") or "")
+        rev = revision or compute_project_revision(project)
+        self._last_committed_revision[proj_id] = rev
+        self._record_disk_stat(proj_id, proj_name)
+        return rev
+
+    def _sync_read_projection(self, project: dict[str, Any], proj_name: str, rev: str) -> tuple[str, str]:
+        if not self.read_projection:
+            return "synced", ""
+        try:
+            payload = dict(project, _projection_revision=rev)
+            if hasattr(self.read_projection, "sync_project"):
+                self.read_projection.sync_project(payload)
+            elif hasattr(self.read_projection, "sync_from_project_dict"):
+                self.read_projection.sync_from_project_dict(payload)
+            if hasattr(self.project_store, "clear_sync_pending"):
+                self.project_store.clear_sync_pending(proj_name)
+            project["sync_pending"] = False
+            project["sync_error"] = ""
+            return "synced", ""
+        except Exception as exc:
+            err_str = str(exc)
+            if hasattr(self.project_store, "mark_sync_pending"):
+                self.project_store.mark_sync_pending(proj_name, err_str)
+            project["sync_pending"] = True
+            project["sync_error"] = err_str
+            return "sync_pending", err_str
+
+    def save_metadata_in_lock(self, project: dict[str, Any]) -> Any:
+        """Lưu metadata không phá hủy cấu trúc (vd: ứng viên alignment) trong lock chuẩn và đồng bộ state."""
+        proj_id = str(project.get("project_id") or project.get("name") or "default")
+        proj_name = str(project.get("name") or "")
+        with self._get_lock(proj_id):
+            path = self.project_store.save_project(project)
+            rev = self.record_committed_state(project)
+            self._sync_read_projection(project, proj_name, rev)
+            return path
 
     def _disk_changed_externally(self, proj_id: str, proj_name: str) -> bool:
         prev = self._last_disk_stat.get(proj_id)
@@ -134,7 +176,7 @@ class ProjectCommitCoordinator:
         idempotency_store_key: str = "curation_idempotency_store",
         result_dto_cls: Any | None = None,
         on_snapshot_created: Callable[[dict[str, Any], Any, str], None] | None = None,
-        vector_invalidation_kind: str | None = None,
+        vector_invalidation_kind: str | tuple[str, ...] | list[str] | None = None,
     ) -> Any:
         """Thực thi một transaction commit hoàn chỉnh cho dự án."""
         proj_id = str(project.get("project_id") or project.get("name") or "default")
@@ -171,9 +213,15 @@ class ProjectCommitCoordinator:
             mem_rev = self._check_revision_conflict(proj_id, proj_name, project, expected_revision)
 
             # 3. Tính catalog hash trước mutation (nếu có yêu cầu vector invalidation)
-            prev_cat_hash = ""
-            if vector_invalidation_kind in ("relations", "entity_types"):
-                prev_cat_hash = compute_catalog_hash(project, vector_invalidation_kind)
+            if vector_invalidation_kind == "all":
+                vec_kinds: tuple[str, ...] = ("relations", "entity_types")
+            elif isinstance(vector_invalidation_kind, str) and vector_invalidation_kind in ("relations", "entity_types"):
+                vec_kinds = (vector_invalidation_kind,)
+            elif isinstance(vector_invalidation_kind, (tuple, list)):
+                vec_kinds = tuple(k for k in vector_invalidation_kind if k in ("relations", "entity_types"))
+            else:
+                vec_kinds = ()
+            prev_cat_hashes = {k: compute_catalog_hash(project, k) for k in vec_kinds}
 
             # 4. Thực thi domain executor trên bản sao
             candidate, result = executor(project)
@@ -221,51 +269,39 @@ class ProjectCommitCoordinator:
                 project.update(candidate)
 
             rev_after = getattr(result, "revision_after", None) or compute_project_revision(project)
-            self._last_committed_revision[proj_id] = rev_after
-            self._record_disk_stat(proj_id, str(project.get("name") or proj_name))
+            self.record_committed_state(project, revision=rev_after)
 
             # 9. Vô hiệu hóa vector index nếu catalog thay đổi
-            if vector_invalidation_kind in ("relations", "entity_types"):
-                new_cat_hash = compute_catalog_hash(project, vector_invalidation_kind)
-                if new_cat_hash != prev_cat_hash:
+            if vec_kinds:
+                changed_kinds = [k for k in vec_kinds if compute_catalog_hash(project, k) != prev_cat_hashes[k]]
+                if changed_kinds:
                     if hasattr(result, "vector_index_status"):
                         result.vector_index_status = "invalidated"
                     if self.vector_repo:
-                        try:
-                            self.vector_repo.invalidate_project_indices(
-                                proj_id,
-                                kind=vector_invalidation_kind,
-                                current_catalog_items=catalog_rows(project, vector_invalidation_kind),
-                            )
-                        except Exception:
-                            pass
+                        for k in changed_kinds:
+                            try:
+                                self.vector_repo.invalidate_project_indices(
+                                    proj_id,
+                                    kind=k,
+                                    current_catalog_items=catalog_rows(project, k),
+                                )
+                            except Exception as exc:
+                                warnings.warn(
+                                    f"Không thể vô hiệu hóa vector index ({proj_id}/{k}): {exc}",
+                                    RuntimeWarning,
+                                    stacklevel=2,
+                                )
+                                if hasattr(result, "vector_index_status"):
+                                    result.vector_index_status = "stale_error"
                 else:
                     if hasattr(result, "vector_index_status"):
                         result.vector_index_status = "valid"
 
             # 10. Đồng bộ Read Projection SQLite an toàn
-            if self.read_projection:
-                try:
-                    if hasattr(self.read_projection, "sync_project"):
-                        self.read_projection.sync_project(project)
-                    elif hasattr(self.read_projection, "sync_from_project_dict"):
-                        self.read_projection.sync_from_project_dict(project)
-                    if hasattr(self.project_store, "clear_sync_pending"):
-                        self.project_store.clear_sync_pending(proj_name)
-                    project["sync_pending"] = False
-                    project["sync_error"] = ""
-                    if hasattr(result, "sync_status"):
-                        result.sync_status = "synced"
-                        result.sync_error = ""
-                except Exception as exc:
-                    err_str = str(exc)
-                    if hasattr(self.project_store, "mark_sync_pending"):
-                        self.project_store.mark_sync_pending(proj_name, err_str)
-                    project["sync_pending"] = True
-                    project["sync_error"] = err_str
-                    if hasattr(result, "sync_status"):
-                        result.sync_status = "sync_pending"
-                        result.sync_error = err_str
+            sync_status, sync_error = self._sync_read_projection(project, str(project.get("name") or proj_name), compute_project_revision(project))
+            if hasattr(result, "sync_status"):
+                result.sync_status = sync_status
+                result.sync_error = sync_error
 
             # 11. Lưu vào cache idempotency
             final_dict = result.to_dict() if hasattr(result, "to_dict") else dict(result)

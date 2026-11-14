@@ -1,0 +1,31 @@
+﻿name,description,definition
+E1_CRM_Entity,Thực thể tổng quát trong miền CIDOC CRM.,Lớp gốc bao trùm mọi thực thể có thể nhận diện và mô tả trong hồ sơ di sản.
+E2_Temporal_Entity,"Thực thể thời gian (thời kỳ, sự kiện, trạng thái).",Các hiện tượng xảy ra trong một khoảng thời gian xác định.
+E4_Period,"Thời kỳ lịch sử, triều đại hoặc giai đoạn văn hóa.","Tập hợp các hiện tượng gắn với triều đại, kỷ nguyên hoặc thời kỳ văn hóa - lịch sử."
+E5_Event,"Sự kiện lịch sử, nghi lễ hoặc biến cố tự nhiên.","Biến cố làm thay đổi trạng thái của sự vật, con người hoặc địa điểm tại một thời điểm."
+E7_Activity,Hoạt động có chủ đích của con người hoặc tổ chức.,Hành động được thực hiện có mục đích bởi một hay nhiều tác nhân (E39_Actor).
+E12_Production,"Quá trình xây dựng, đúc, tạc hoặc chế tác vật thể.","Hoạt động tạo mới hoặc thi công công trình kiến trúc, hiện vật, bia đá."
+E18_Physical_Thing,Vật thể vật chất hữu hình.,Các vật thể hoặc tổ hợp vật chất tồn tại trong không gian vật lý.
+E21_Person,"Cá nhân con người (vua, danh nhân, nghệ nhân, kiến trúc sư).",Nhân vật lịch sử hoặc cá nhân cụ thể được nhắc tên trong tài liệu.
+E22_Human-Made_Object,"Công trình hoặc hiện vật do con người tạo tác (chùa, đền, bia, chuông).",Đơn vị kiến trúc hoặc đồ vật độc lập có ranh giới vật chất rõ ràng do con người chế tạo.
+E24_Physical_Human-Made_Thing,Thực thể vật chất nhân tạo tổng quát.,"Bao gồm mọi công trình, hiện vật, quần thể di tích do con người xây dựng hoặc cải biến."
+E25_Human-Made_Feature,"Bộ phận gắn liền công trình hoặc dấu tích kiến trúc (bia, cổng, ban thờ).",Đặc trưng kiến trúc nhân tạo không tách rời hoặc gắn cố định trên thực thể lớn hơn.
+E28_Conceptual_Object,"Đối tượng khái niệm, tư liệu tinh thần hoặc giá trị phi vật thể.","Sản phẩm trí tuệ phi vật chất như bài văn bia, truyền thuyết, lễ hội, quy chế."
+E31_Document,"Tài liệu, sắc phong, thần tích, văn bản lưu trữ.",Tư liệu chứa thông tin ghi chép hoặc minh chứng về thực thể di sản khác.
+E33_Linguistic_Object,"Văn bản, câu đối, minh văn hoặc tác phẩm ngôn ngữ.","Nội dung ngôn ngữ xác định bằng chữ Hán, Nôm, Việt, Pháp..."
+E35_Title,"Tiêu đề tác phẩm, mỹ hiệu hoặc sắc phong.",Tên gọi mang tính nhan đề hoặc danh hiệu chính thức được ban cho thực thể.
+E39_Actor,Tác nhân (cá nhân hoặc tổ chức/triều đình có năng lực hành động).,"Chủ thể có khả năng thực hiện hoạt động hoặc nắm quyền sở hữu, quản lý."
+E41_Appellation,"Tên gọi, tên húy, tên tự, tên hiệu hoặc tên dân gian.",Chuỗi ký hiệu dùng để gọi hoặc định danh một thực thể cụ thể.
+E52_Time-Span,"Mốc thời gian, năm, niên hiệu hoặc giai đoạn lịch sử.",Khoảng thời gian trừu tượng được xác định bởi năm bắt đầu/kết thúc hoặc niên đại.
+E53_Place,"Địa điểm địa lý, địa danh hành chính hoặc vị trí không gian.","Vùng hoặc tọa độ không gian vật lý (làng, xã, quận, kinh đô, núi, sông)."
+E54_Dimension,"Kích thước, chiều cao, diện tích hoặc số lượng đo đạc.","Đại lượng đo lường định lượng (mét, ha, tấn) của một vật thể hoặc khu vực."
+E55_Type,"Phân loại khái niệm, phong cách kiến trúc hoặc hạng xếp di tích.","Thuật ngữ phân loại (ví dụ: di tích quốc gia đặc biệt, kiến trúc thời Lê)."
+E57_Material,"Chất liệu cấu thành (đá xanh, gỗ lim, đồng, gốm sứ).",Vật liệu dùng để xây dựng công trình hoặc chế tác hiện vật.
+E65_Creation,"Hoạt động sáng tác văn học, bài minh, thiết kế tinh thần.","Quá trình tạo ra đối tượng khái niệm như văn bia, thơ văn, chiếu chỉ."
+E67_Birth,Sự kiện ra đời của nhân vật lịch sử.,Biến cố đánh dấu sự sinh thành của một cá nhân (E21_Person).
+E69_Death,Sự kiện qua đời/mất của nhân vật lịch sử.,Biến cố đánh dấu thời điểm và địa điểm mất của một cá nhân.
+E73_Information_Object,"Nội dung thông tin mang tính tái bản hoặc bản đồ, hồ sơ số.",Đối tượng thông tin độc lập với vật mang vật lý.
+E74_Group,"Tổ chức, triều đại, hội đồng, ban quản lý hoặc cộng đồng cư dân.",Tập hợp hai hay nhiều cá nhân cùng hoạt động hoặc quản lý di tích.
+E78_Curated_Holding,Bộ sưu tập hiện vật hoặc kho lưu trữ bảo tàng.,"Tập hợp các hiện vật được thu thập, bảo quản và quản lý có hệ thống."
+E89_Propositional_Object,"Mệnh đề, tín ngưỡng, nhân vật được phụng thờ hoặc tư tưởng.","Nội dung tinh thần có thể đúng/sai hoặc đối tượng của sự thờ phụng, ghi nhớ."
+E92_Spacetime_Volume,Vùng không-thời gian gắn với lịch sử tồn tại của di tích.,Phạm vi kết hợp giữa không gian tồn tại và quãng thời gian tương ứng.

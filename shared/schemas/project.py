@@ -10,8 +10,8 @@ from shared.schemas.base import SchemaModel
 
 class EDCPlusRSettingsDTO(SchemaModel):
     embedder_model: str = Field(default=DEFAULT_EDC_PLUS_R_SETTINGS["embedder_model"])
-    top_k_relations: int = Field(default=DEFAULT_EDC_PLUS_R_SETTINGS["top_k_relations"], ge=1, le=50)
-    top_k_entity_types: int = Field(default=DEFAULT_EDC_PLUS_R_SETTINGS["top_k_entity_types"], ge=1, le=50)
+    top_k_relations: int = Field(default=DEFAULT_EDC_PLUS_R_SETTINGS["top_k_relations"], ge=1, le=100)
+    top_k_entity_types: int = Field(default=DEFAULT_EDC_PLUS_R_SETTINGS["top_k_entity_types"], ge=1, le=80)
     auto_align_threshold: float = Field(default=DEFAULT_EDC_PLUS_R_SETTINGS["auto_align_threshold"], ge=0.50, le=0.99)
     candidate_threshold: float = Field(default=DEFAULT_EDC_PLUS_R_SETTINGS["candidate_threshold"], ge=0.10, le=0.95)
     refinement_loops: int = Field(default=DEFAULT_EDC_PLUS_R_SETTINGS["refinement_loops"], ge=1, le=3)

@@ -1,0 +1,155 @@
+{
+  "schema_version": 2,
+  "entity_types": [
+    {
+      "name": "E1_CRM_Entity",
+      "description": "Thực thể tổng quát trong miền CIDOC CRM.",
+      "definition": "Lớp gốc bao trùm mọi thực thể có thể nhận diện và mô tả trong hồ sơ di sản."
+    },
+    {
+      "name": "E2_Temporal_Entity",
+      "description": "Thực thể thời gian (thời kỳ, sự kiện, trạng thái).",
+      "definition": "Các hiện tượng xảy ra trong một khoảng thời gian xác định."
+    },
+    {
+      "name": "E4_Period",
+      "description": "Thời kỳ lịch sử, triều đại hoặc giai đoạn văn hóa.",
+      "definition": "Tập hợp các hiện tượng gắn với triều đại, kỷ nguyên hoặc thời kỳ văn hóa - lịch sử."
+    },
+    {
+      "name": "E5_Event",
+      "description": "Sự kiện lịch sử, nghi lễ hoặc biến cố tự nhiên.",
+      "definition": "Biến cố làm thay đổi trạng thái của sự vật, con người hoặc địa điểm tại một thời điểm."
+    },
+    {
+      "name": "E7_Activity",
+      "description": "Hoạt động có chủ đích của con người hoặc tổ chức.",
+      "definition": "Hành động được thực hiện có mục đích bởi một hay nhiều tác nhân (E39_Actor)."
+    },
+    {
+      "name": "E12_Production",
+      "description": "Quá trình xây dựng, đúc, tạc hoặc chế tác vật thể.",
+      "definition": "Hoạt động tạo mới hoặc thi công công trình kiến trúc, hiện vật, bia đá."
+    },
+    {
+      "name": "E18_Physical_Thing",
+      "description": "Vật thể vật chất hữu hình.",
+      "definition": "Các vật thể hoặc tổ hợp vật chất tồn tại trong không gian vật lý."
+    },
+    {
+      "name": "E21_Person",
+      "description": "Cá nhân con người (vua, danh nhân, nghệ nhân, kiến trúc sư).",
+      "definition": "Nhân vật lịch sử hoặc cá nhân cụ thể được nhắc tên trong tài liệu."
+    },
+    {
+      "name": "E22_Human-Made_Object",
+      "description": "Công trình hoặc hiện vật do con người tạo tác (chùa, đền, bia, chuông).",
+      "definition": "Đơn vị kiến trúc hoặc đồ vật độc lập có ranh giới vật chất rõ ràng do con người chế tạo."
+    },
+    {
+      "name": "E24_Physical_Human-Made_Thing",
+      "description": "Thực thể vật chất nhân tạo tổng quát.",
+      "definition": "Bao gồm mọi công trình, hiện vật, quần thể di tích do con người xây dựng hoặc cải biến."
+    },
+    {
+      "name": "E25_Human-Made_Feature",
+      "description": "Bộ phận gắn liền công trình hoặc dấu tích kiến trúc (bia, cổng, ban thờ).",
+      "definition": "Đặc trưng kiến trúc nhân tạo không tách rời hoặc gắn cố định trên thực thể lớn hơn."
+    },
+    {
+      "name": "E28_Conceptual_Object",
+      "description": "Đối tượng khái niệm, tư liệu tinh thần hoặc giá trị phi vật thể.",
+      "definition": "Sản phẩm trí tuệ phi vật chất như bài văn bia, truyền thuyết, lễ hội, quy chế."
+    },
+    {
+      "name": "E31_Document",
+      "description": "Tài liệu, sắc phong, thần tích, văn bản lưu trữ.",
+      "definition": "Tư liệu chứa thông tin ghi chép hoặc minh chứng về thực thể di sản khác."
+    },
+    {
+      "name": "E33_Linguistic_Object",
+      "description": "Văn bản, câu đối, minh văn hoặc tác phẩm ngôn ngữ.",
+      "definition": "Nội dung ngôn ngữ xác định bằng chữ Hán, Nôm, Việt, Pháp..."
+    },
+    {
+      "name": "E35_Title",
+      "description": "Tiêu đề tác phẩm, mỹ hiệu hoặc sắc phong.",
+      "definition": "Tên gọi mang tính nhan đề hoặc danh hiệu chính thức được ban cho thực thể."
+    },
+    {
+      "name": "E39_Actor",
+      "description": "Tác nhân (cá nhân hoặc tổ chức/triều đình có năng lực hành động).",
+      "definition": "Chủ thể có khả năng thực hiện hoạt động hoặc nắm quyền sở hữu, quản lý."
+    },
+    {
+      "name": "E41_Appellation",
+      "description": "Tên gọi, tên húy, tên tự, tên hiệu hoặc tên dân gian.",
+      "definition": "Chuỗi ký hiệu dùng để gọi hoặc định danh một thực thể cụ thể."
+    },
+    {
+      "name": "E52_Time-Span",
+      "description": "Mốc thời gian, năm, niên hiệu hoặc giai đoạn lịch sử.",
+      "definition": "Khoảng thời gian trừu tượng được xác định bởi năm bắt đầu/kết thúc hoặc niên đại."
+    },
+    {
+      "name": "E53_Place",
+      "description": "Địa điểm địa lý, địa danh hành chính hoặc vị trí không gian.",
+      "definition": "Vùng hoặc tọa độ không gian vật lý (làng, xã, quận, kinh đô, núi, sông)."
+    },
+    {
+      "name": "E54_Dimension",
+      "description": "Kích thước, chiều cao, diện tích hoặc số lượng đo đạc.",
+      "definition": "Đại lượng đo lường định lượng (mét, ha, tấn) của một vật thể hoặc khu vực."
+    },
+    {
+      "name": "E55_Type",
+      "description": "Phân loại khái niệm, phong cách kiến trúc hoặc hạng xếp di tích.",
+      "definition": "Thuật ngữ phân loại (ví dụ: di tích quốc gia đặc biệt, kiến trúc thời Lê)."
+    },
+    {
+      "name": "E57_Material",
+      "description": "Chất liệu cấu thành (đá xanh, gỗ lim, đồng, gốm sứ).",
+      "definition": "Vật liệu dùng để xây dựng công trình hoặc chế tác hiện vật."
+    },
+    {
+      "name": "E65_Creation",
+      "description": "Hoạt động sáng tác văn học, bài minh, thiết kế tinh thần.",
+      "definition": "Quá trình tạo ra đối tượng khái niệm như văn bia, thơ văn, chiếu chỉ."
+    },
+    {
+      "name": "E67_Birth",
+      "description": "Sự kiện ra đời của nhân vật lịch sử.",
+      "definition": "Biến cố đánh dấu sự sinh thành của một cá nhân (E21_Person)."
+    },
+    {
+      "name": "E69_Death",
+      "description": "Sự kiện qua đời/mất của nhân vật lịch sử.",
+      "definition": "Biến cố đánh dấu thời điểm và địa điểm mất của một cá nhân."
+    },
+    {
+      "name": "E73_Information_Object",
+      "description": "Nội dung thông tin mang tính tái bản hoặc bản đồ, hồ sơ số.",
+      "definition": "Đối tượng thông tin độc lập với vật mang vật lý."
+    },
+    {
+      "name": "E74_Group",
+      "description": "Tổ chức, triều đại, hội đồng, ban quản lý hoặc cộng đồng cư dân.",
+      "definition": "Tập hợp hai hay nhiều cá nhân cùng hoạt động hoặc quản lý di tích."
+    },
+    {
+      "name": "E78_Curated_Holding",
+      "description": "Bộ sưu tập hiện vật hoặc kho lưu trữ bảo tàng.",
+      "definition": "Tập hợp các hiện vật được thu thập, bảo quản và quản lý có hệ thống."
+    },
+    {
+      "name": "E89_Propositional_Object",
+      "description": "Mệnh đề, tín ngưỡng, nhân vật được phụng thờ hoặc tư tưởng.",
+      "definition": "Nội dung tinh thần có thể đúng/sai hoặc đối tượng của sự thờ phụng, ghi nhớ."
+    },
+    {
+      "name": "E92_Spacetime_Volume",
+      "description": "Vùng không-thời gian gắn với lịch sử tồn tại của di tích.",
+      "definition": "Phạm vi kết hợp giữa không gian tồn tại và quãng thời gian tương ứng."
+    }
+  ]
+}

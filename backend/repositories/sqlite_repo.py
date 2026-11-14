@@ -28,7 +28,7 @@ class SQLiteProjectRepository:
     def _connect(self):
         with closing(sqlite3.connect(str(self.db_path))) as conn:
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA busy_timeout=5000;")
             conn.execute("PRAGMA synchronous=NORMAL;")
             conn.execute("PRAGMA temp_store=MEMORY;")
             with conn:
@@ -36,6 +36,7 @@ class SQLiteProjectRepository:
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS projects (
@@ -43,6 +44,7 @@ class SQLiteProjectRepository:
                     name TEXT NOT NULL UNIQUE,
                     extraction_mode TEXT NOT NULL DEFAULT 'closed',
                     saved_at TEXT NOT NULL DEFAULT '',
+                    revision TEXT NOT NULL DEFAULT '',
                     raw_json TEXT NOT NULL
                 );
 
@@ -78,11 +80,17 @@ class SQLiteProjectRepository:
                     kind TEXT NOT NULL,
                     name TEXT NOT NULL,
                     definition TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'pending',
                     canonical_name TEXT NOT NULL DEFAULT '',
                     auto_aligned INTEGER NOT NULL DEFAULT 0,
                     alignment_score REAL NOT NULL DEFAULT 0.0,
                     candidates_json TEXT NOT NULL DEFAULT '[]',
+                    candidates_catalog_hash TEXT NOT NULL DEFAULT '',
+                    candidates_definition_hash TEXT NOT NULL DEFAULT '',
+                    candidates_model_fingerprint TEXT NOT NULL DEFAULT '',
+                    decision_origin TEXT NOT NULL DEFAULT '',
+                    observations_json TEXT NOT NULL DEFAULT '[]',
                     PRIMARY KEY (project_id, id)
                 );
 
@@ -97,6 +105,20 @@ class SQLiteProjectRepository:
                 CREATE INDEX IF NOT EXISTS idx_proposals_kind_status ON schema_proposals(project_id, kind, status, id);
                 """
             )
+            proj_cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+            if "revision" not in proj_cols:
+                conn.execute("ALTER TABLE projects ADD COLUMN revision TEXT NOT NULL DEFAULT ''")
+            prop_cols = {row["name"] for row in conn.execute("PRAGMA table_info(schema_proposals)").fetchall()}
+            for col_name, ddl in (
+                ("description", "TEXT NOT NULL DEFAULT ''"),
+                ("candidates_catalog_hash", "TEXT NOT NULL DEFAULT ''"),
+                ("candidates_definition_hash", "TEXT NOT NULL DEFAULT ''"),
+                ("candidates_model_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+                ("decision_origin", "TEXT NOT NULL DEFAULT ''"),
+                ("observations_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ):
+                if col_name not in prop_cols:
+                    conn.execute(f"ALTER TABLE schema_proposals ADD COLUMN {col_name} {ddl}")
 
     # =========================================================================
     # BƯỚC 1: ĐỒNG BỘ GIA TĂNG (INCREMENTAL UPSERT) & CẬP NHẬT CỤC BỘ
@@ -117,23 +139,45 @@ class SQLiteProjectRepository:
             "schema_proposals",
             "curation_history",
             "schema_decisions",
+            "runs",
+            "free_triples_runs",
+            "extraction_cache",
+            "curation_idempotency_store",
+            "edc_idempotency_store",
+            "entity_merges",
+            "relation_merges",
+            "entity_type_merges",
+            "schema_decision_batches",
+            "curation_decision_batches",
+            "_projection_revision",
         }
+        revision = str(project.get("_projection_revision") or project.get("project_revision") or "")
         header_meta = {k: v for k, v in project.items() if k not in excluded_heavy_keys}
         header_meta["documents_count"] = len(project.get("documents", []))
         raw_json = json.dumps(header_meta, ensure_ascii=False)
 
         with self._connect() as conn:
+            conflict = conn.execute(
+                "SELECT project_id FROM projects WHERE name = ? AND project_id != ?",
+                (name, project_id),
+            ).fetchone()
+            if conflict:
+                old_pid = str(conflict["project_id"])
+                for tbl in ("edges", "nodes", "schema_proposals", "projects"):
+                    conn.execute(f"DELETE FROM {tbl} WHERE project_id = ?", (old_pid,))
+
             conn.execute(
                 """
-                INSERT INTO projects (project_id, name, extraction_mode, saved_at, raw_json)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO projects (project_id, name, extraction_mode, saved_at, revision, raw_json)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id) DO UPDATE SET
                     name = excluded.name,
                     extraction_mode = excluded.extraction_mode,
                     saved_at = excluded.saved_at,
+                    revision = excluded.revision,
                     raw_json = excluded.raw_json
                 """,
-                (project_id, name, mode, saved_at, raw_json),
+                (project_id, name, mode, saved_at, revision, raw_json),
             )
 
             # 1. Incremental Sync cho NODES
@@ -231,11 +275,17 @@ class SQLiteProjectRepository:
                     str(p.get("kind", "")),
                     str(p.get("name", "")),
                     str(p.get("definition", "")),
+                    str(p.get("description", "")),
                     str(p.get("status", "pending")),
                     str(p.get("canonical_name", "")),
                     1 if p.get("auto_aligned") else 0,
                     float(p.get("alignment_score", 0.0) or 0.0),
                     json.dumps(p.get("alignment_candidates", []), ensure_ascii=False),
+                    str(p.get("candidates_catalog_hash", "")),
+                    str(p.get("candidates_definition_hash", "")),
+                    str(p.get("candidates_model_fingerprint", "")),
+                    str(p.get("decision_origin", "")),
+                    json.dumps(p.get("observations", []), ensure_ascii=False),
                 )
                 for p in project.get("schema_proposals", [])
                 if p.get("id")
@@ -244,25 +294,42 @@ class SQLiteProjectRepository:
                 conn.executemany(
                     """
                     INSERT INTO schema_proposals (
-                        id, project_id, kind, name, definition, status,
-                        canonical_name, auto_aligned, alignment_score, candidates_json
+                        id, project_id, kind, name, definition, description, status,
+                        canonical_name, auto_aligned, alignment_score, candidates_json,
+                        candidates_catalog_hash, candidates_definition_hash,
+                        candidates_model_fingerprint, decision_origin, observations_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(project_id, id) DO UPDATE SET
                         kind = excluded.kind,
                         name = excluded.name,
                         definition = excluded.definition,
+                        description = excluded.description,
                         status = excluded.status,
                         canonical_name = excluded.canonical_name,
                         auto_aligned = excluded.auto_aligned,
                         alignment_score = excluded.alignment_score,
-                        candidates_json = excluded.candidates_json
+                        candidates_json = excluded.candidates_json,
+                        candidates_catalog_hash = excluded.candidates_catalog_hash,
+                        candidates_definition_hash = excluded.candidates_definition_hash,
+                        candidates_model_fingerprint = excluded.candidates_model_fingerprint,
+                        decision_origin = excluded.decision_origin,
+                        observations_json = excluded.observations_json
                     """,
                     props_data,
                 )
 
     def sync_project(self, project: dict) -> None:
         return self.sync_from_project_dict(project)
+
+    def get_project_revision(self, project_id: str) -> str:
+        """Trả về mã revision lần đồng bộ SQLite gần nhất (rỗng nếu chưa có)."""
+        pid = str(project_id or "").strip()
+        if not pid:
+            return ""
+        with self._connect() as conn:
+            row = conn.execute("SELECT revision FROM projects WHERE project_id = ?", (pid,)).fetchone()
+            return str(row["revision"] or "") if row else ""
 
     def update_edge_status(self, project_id: str, edge_id: str, status: str) -> bool:
         """Cập nhật trạng thái một cạnh trong SQLite tức thì O(1)."""
@@ -468,7 +535,7 @@ class SQLiteProjectRepository:
             "total_count": total,
             "page": page,
             "page_size": page_size,
-            "total_pages": max(1, (total + page_size - 1) // page_size),
+            "total_pages": 0 if total == 0 else ((total + page_size - 1) // page_size),
         }
 
     def query_edges_page(
@@ -482,25 +549,53 @@ class SQLiteProjectRepository:
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, Any]:
-        """Truy vấn trang cạnh quan hệ sử dụng chỉ mục SQLite tối ưu."""
-        clauses = ["project_id = ?"]
+        """Truy vấn trang cạnh quan hệ sử dụng chỉ mục SQLite tối ưu (kèm tên node nguồn/đích)."""
+        clauses = ["e.project_id = ?"]
         params: list = [project_id]
         if status and status != "all":
-            clauses.append("status = ?")
+            clauses.append("e.status = ?")
             params.append(status)
         if doc_id and doc_id != "all":
-            clauses.append("doc_id = ?")
+            clauses.append("e.doc_id = ?")
             params.append(doc_id)
         if relation and relation != "all":
-            clauses.append("relation = ?")
+            clauses.append("e.relation = ?")
             params.append(relation)
         if search and search.strip():
-            clauses.append("(source LIKE ? OR target LIKE ? OR relation LIKE ? OR evidence LIKE ?)")
+            clauses.append(
+                "(e.source LIKE ? OR e.target LIKE ? OR COALESCE(sn.name, '') LIKE ? OR COALESCE(tn.name, '') LIKE ? OR e.relation LIKE ? OR e.evidence LIKE ?)"
+            )
             q = f"%{search.strip()}%"
-            params.extend([q, q, q, q])
+            params.extend([q, q, q, q, q, q])
 
         where_clause = " AND ".join(clauses)
-        return self._paginate("edges", where_clause, params, "chunk_number ASC, id ASC", page, page_size)
+        safe_page_size = max(1, min(int(page_size), 200))
+        safe_page = max(1, int(page))
+        offset = (safe_page - 1) * safe_page_size
+        base_from = (
+            "FROM edges e "
+            "LEFT JOIN nodes sn ON sn.project_id = e.project_id AND sn.id = e.source "
+            "LEFT JOIN nodes tn ON tn.project_id = e.project_id AND tn.id = e.target"
+        )
+        with self._connect() as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) {base_from} WHERE {where_clause}",
+                params,
+            ).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT e.*, COALESCE(sn.name, '') AS source_name, COALESCE(tn.name, '') AS target_name "
+                f"{base_from} WHERE {where_clause} ORDER BY e.chunk_number ASC, e.id ASC LIMIT ? OFFSET ?",
+                params + [safe_page_size, offset],
+            ).fetchall()
+            items = [dict(r) for r in rows]
+
+        return {
+            "items": items,
+            "total_count": total,
+            "page": page,
+            "page_size": safe_page_size,
+            "total_pages": 0 if total == 0 else ((total + safe_page_size - 1) // safe_page_size),
+        }
 
     def query_nodes_page(
         self,
@@ -536,6 +631,7 @@ class SQLiteProjectRepository:
         *,
         kind: str | None = None,
         status: str | None = None,
+        search: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, Any]:
@@ -548,11 +644,17 @@ class SQLiteProjectRepository:
         if status and status != "all":
             clauses.append("status = ?")
             params.append(status)
+        if search and search.strip():
+            clauses.append("(name LIKE ? OR definition LIKE ? OR canonical_name LIKE ?)")
+            q = f"%{search.strip()}%"
+            params.extend([q, q, q])
 
         where_clause = " AND ".join(clauses)
 
         def _fmt_prop(d: dict[str, Any]) -> dict[str, Any]:
             d["alignment_candidates"] = json.loads(d.get("candidates_json") or "[]")
+            d["observations"] = json.loads(d.get("observations_json") or "[]")
+            d["auto_aligned"] = bool(d.get("auto_aligned", 0))
             return d
 
         return self._paginate("schema_proposals", where_clause, params, "id ASC", page, page_size, transform=_fmt_prop)

@@ -28,13 +28,18 @@ from backend.integrations.embedder_gateway import default_embedder
 from backend.integrations.llm import LLMGateway
 from backend.modules.extraction.ports import LLMExtractionPort
 from .free_triples_engine import FreeTriplesEngine
-from .free_triples_runs import export_free_triples_results, read_free_triples_runs, run_free_triples
+from .free_triples_runs import (
+    _redact_credential,
+    export_free_triples_results,
+    read_free_triples_runs,
+    run_free_triples,
+)
 from shared.catalog_utils import edc_prompt, relation_catalog
 from shared.constants import MODE_EDC, MODE_EDC_PLUS_R, MODE_FIXED, MODE_FREE_TRIPLES
 from shared.schemas.free_triples import free_triples_prompt
 from shared.schemas.project import EDCPlusRSettingsDTO
 from shared.schemas.prompts import PreparedExtractionRequestDTO
-from shared.text_utils import now_iso
+from shared.text_utils import now_iso, sha, uid
 
 
 class ExtractionApplicationService:
@@ -75,15 +80,22 @@ class ExtractionApplicationService:
 
     def _save_project_safe(self, project: dict) -> None:
         proj_id = str(project.get("project_id") or project.get("name") or "default")
+        proj_name = str(project.get("name") or "")
         with self.get_project_lock(proj_id):
             if self.commit_coordinator and hasattr(self.commit_coordinator, "project_store"):
                 self.commit_coordinator.project_store.save_project(project)
+                if hasattr(self.commit_coordinator, "record_committed_state"):
+                    self.commit_coordinator.record_committed_state(project)
                 if hasattr(self.commit_coordinator, "read_projection") and self.commit_coordinator.read_projection:
                     try:
                         self.commit_coordinator.read_projection.sync_project(project)
+                        if hasattr(self.commit_coordinator.project_store, "clear_sync_pending"):
+                            self.commit_coordinator.project_store.clear_sync_pending(proj_name)
                         project["sync_pending"] = False
                         project["sync_error"] = ""
                     except Exception as exc:
+                        if hasattr(self.commit_coordinator.project_store, "mark_sync_pending"):
+                            self.commit_coordinator.project_store.mark_sync_pending(proj_name, str(exc))
                         project["sync_pending"] = True
                         project["sync_error"] = str(exc)
             elif self.project_store:
@@ -129,47 +141,62 @@ class ExtractionApplicationService:
     def list_prompt_versions(self, project: dict, configuration_id: str) -> list[dict]:
         return list_prompt_versions(project, configuration_id)
 
-    def get_prompt_version(self, project: dict, configuration_id: str, version_id: str) -> dict | None:
-        return get_prompt_version(project, configuration_id, version_id)
+    def get_prompt_version(
+        self,
+        project: dict,
+        configuration_id: str = "",
+        version_id: str | None = None,
+    ) -> dict | None:
+        target_id = version_id if version_id is not None else configuration_id
+        return get_prompt_version(project, target_id)
 
     def save_prompt_version(
         self,
         project: dict,
         configuration_id: str,
         content: str,
+        note: str = "",
+        created_by: str = "local_user",
+        *,
+        origin: str = "human",
+        expected_revision: str | None = None,
         change_description: str = "",
-        author: str = "user",
-    ) -> dict:
+        author: str = "",
+    ) -> tuple[dict, bool]:
+        resolved_note = note or change_description
+        resolved_author = created_by if (created_by != "local_user" or not author) else author
         return save_prompt_version(
             project,
-            configuration_id=configuration_id,
-            content=content,
-            change_description=change_description,
-            author=author,
+            configuration_id,
+            content,
+            note=resolved_note,
+            created_by=resolved_author,
+            origin=origin,
+            expected_revision=expected_revision,
         )
 
     def restore_prompt_version(
         self,
         project: dict,
-        configuration_id: str,
-        version_id: str,
+        target_version_id: str,
         note: str = "",
-    ) -> dict | None:
+        created_by: str = "local_user",
+    ) -> tuple[dict, bool]:
         return restore_prompt_version(
             project,
-            configuration_id=configuration_id,
-            version_id=version_id,
+            target_version_id,
             note=note,
+            created_by=created_by,
         )
 
     def diff_prompt_versions(
         self,
-        project: dict,
-        configuration_id: str,
-        version_id_a: str,
-        version_id_b: str,
-    ) -> dict[str, Any]:
-        return diff_prompt_versions(project, configuration_id, version_id_a, version_id_b)
+        v1_content: str,
+        v2_content: str,
+        v1_name: str = "Bản cũ",
+        v2_name: str = "Bản mới",
+    ) -> str:
+        return diff_prompt_versions(v1_content, v2_content, v1_name=v1_name, v2_name=v2_name)
 
     # --- Request Preparation & Extraction Execution ---
 
@@ -390,19 +417,109 @@ class ExtractionApplicationService:
             if self.project_store is not None and self.commit_coordinator is None and persist_run:
                 raise RuntimeError("Lưu baseline cần ProjectCommitCoordinator; không ghi trực tiếp qua store.")
             return run_free_triples(engine, ctx, coordinator=self.commit_coordinator, persist_run=persist_run)
-        output = engine.process_chunk(ctx)
 
-        sys_prompt = extraction_prompt(project)
-        rel_sig = (
-            "edc_plus_r"
-            if mode == MODE_EDC_PLUS_R
-            else ("edc" if mode == MODE_EDC else "|".join(project.get("relations", [])))
-        )
-        p_id = prompt_signature(sys_prompt, [rel_sig])
-        c_key = cache_key(document, chunk_record, p_id, rel_sig, provider, model, base_url, temperature, max_tokens)
+        def _snapshot_run_meta() -> tuple[str, str, str, str, str]:
+            snap_proj = dict(project)
+            snap_proj["extraction_mode"] = mode
+            sys_prompt = extraction_prompt(snap_proj)
+            rel_sig = (
+                "edc_plus_r"
+                if mode == MODE_EDC_PLUS_R
+                else ("edc" if mode == MODE_EDC else "|".join(project.get("relations", [])))
+            )
+            p_id = prompt_signature(sys_prompt, [rel_sig])
+            active_ver = self.get_active_prompt_version(snap_proj, mode) or {}
+            ver_id = str(active_ver.get("id") or "")
+            ver_hash = str(active_ver.get("content_hash") or "")
+            extra_payload: dict[str, Any] = {
+                "max_input_tokens": max_input_tokens,
+                "prompt_version_id": ver_id,
+                "prompt_content_hash": ver_hash,
+            }
+            if mode == MODE_EDC_PLUS_R:
+                extra_payload["settings"] = EDCPlusRSettingsDTO.from_dict(project.get("edc_plus_r_settings")).to_dict()
+                extra_payload["relations"] = relation_catalog(project)
+                extra_payload["entity_types"] = project.get("entity_types", [])
+            elif mode == MODE_EDC:
+                extra_payload["entity_types"] = [t.get("name", "") for t in project.get("entity_types", []) if isinstance(t, dict)]
+            else:
+                extra_payload["relation_notes"] = project.get("relation_notes", {})
+            extra_sig = sha(json.dumps(extra_payload, ensure_ascii=False, sort_keys=True))[:16]
+            c_key = cache_key(
+                document,
+                chunk_record,
+                p_id,
+                rel_sig,
+                provider,
+                model,
+                base_url,
+                temperature,
+                max_tokens,
+                extra_sig=extra_sig,
+            )
+            return rel_sig, p_id, ver_id, ver_hash, c_key
 
-        raw = output.raw_response or ""
+        if lock:
+            with lock:
+                rel_sig, p_id, ver_id, ver_hash, c_key = _snapshot_run_meta()
+        else:
+            rel_sig, p_id, ver_id, ver_hash, c_key = _snapshot_run_meta()
+
+        try:
+            output = engine.process_chunk(ctx)
+        except Exception as exc:
+            raw_err_prep = getattr(exc, "prepared_request", {})
+            if hasattr(raw_err_prep, "to_dict"):
+                raw_err_prep = raw_err_prep.to_dict()
+            err_prep = _redact_credential(dict(raw_err_prep or {}), api_key)
+            err_raw = _redact_credential(str(getattr(exc, "raw", "") or "")[:100_000], api_key)
+            err_msg = _redact_credential(str(exc), api_key)
+            error_run = {
+                "run_id": uid(),
+                "at": now_iso(),
+                "doc_id": document["id"],
+                "doc_name": document.get("name", ""),
+                "chunk_number": chunk_record["chunk_number"],
+                "chunk_hash": chunk_record.get("chunk_hash", ""),
+                "cache_key": c_key,
+                "provider": provider,
+                "model": model,
+                "prompt_id": p_id,
+                "prompt_version_id": err_prep.get("prompt_version_id") or ver_id,
+                "prompt_content_hash": err_prep.get("prompt_content_hash") or ver_hash,
+                "prepared_request_hash": err_prep.get("request_hash", ""),
+                "prepared_request": err_prep,
+                "extraction_mode": mode,
+                "input_tokens": int(getattr(exc, "input_tokens", 0) or 0),
+                "output_tokens": int(getattr(exc, "output_tokens", 0) or 0),
+                "added_nodes": 0,
+                "added_edges": 0,
+                "duplicates": 0,
+                "discarded": 0,
+                "evidence_mismatch": 0,
+                "disallowed_relations": [],
+                "rejected_items": [],
+                "new_proposals": 0,
+                "warnings": [],
+                "step_traces": [],
+                "alignment_summary": {},
+                "raw_response": err_raw,
+                "raw_truncated": len(str(getattr(exc, "raw", "") or "")) > 100_000,
+                "status": "error",
+                "error": err_msg,
+                "error_kind": str(getattr(exc, "kind", type(exc).__name__)),
+            }
+            if lock:
+                with lock:
+                    project.setdefault("runs", []).append(error_run)
+            else:
+                project.setdefault("runs", []).append(error_run)
+            raise
+
+        raw = _redact_credential(output.raw_response or "", api_key)
+        prep_safe = _redact_credential(getattr(output, "prepared_request", {}), api_key)
         run_record = {
+            "run_id": getattr(output, "run_id", "") or uid(),
             "at": now_iso(),
             "doc_id": document["id"],
             "doc_name": document.get("name", ""),
@@ -412,10 +529,10 @@ class ExtractionApplicationService:
             "provider": provider,
             "model": model,
             "prompt_id": p_id,
-            "prompt_version_id": getattr(output, "prompt_version_id", ""),
-            "prompt_content_hash": getattr(output, "prompt_content_hash", ""),
+            "prompt_version_id": getattr(output, "prompt_version_id", "") or ver_id,
+            "prompt_content_hash": getattr(output, "prompt_content_hash", "") or ver_hash,
             "prepared_request_hash": getattr(output, "prepared_request_hash", ""),
-            "prepared_request": getattr(output, "prepared_request", {}),
+            "prepared_request": prep_safe,
             "extraction_mode": mode,
             "input_tokens": output.input_tokens,
             "output_tokens": output.output_tokens,
@@ -512,6 +629,12 @@ class ExtractionApplicationService:
                     failed_tasks.append({"doc": doc, "rec": rec, "error": error_text})
                     if on_progress:
                         on_progress(idx, total_tasks, doc, rec, None, exc)
+            if failed_tasks and save_after_chunk and not baseline:
+                try:
+                    with proj_lock:
+                        save_fn(project)
+                except Exception:
+                    pass
             return {
                 "total": total_tasks,
                 "success_count": success_count,
@@ -558,6 +681,13 @@ class ExtractionApplicationService:
                     failed_tasks.append({"doc": doc, "rec": rec, "error": error_text})
                     if on_progress:
                         on_progress(completed_count, total_tasks, doc, rec, None, exc)
+
+        if failed_tasks and save_after_chunk and not baseline:
+            try:
+                with proj_lock:
+                    save_fn(project)
+            except Exception:
+                pass
 
         return {
             "total": total_tasks,

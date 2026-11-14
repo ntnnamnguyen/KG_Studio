@@ -34,4 +34,4 @@ class TrainingApplicationService:
         return self.exporter.build_canonicalization_pairs(project)
 
     def build_sft_instructions(self, project: dict) -> list[SFTInstructionRecord]:
-        return self.exporter.build_sft_instructions(project)
+        return self.exporter.build_sft_records(project)

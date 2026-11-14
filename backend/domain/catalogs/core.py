@@ -135,10 +135,28 @@ def compute_project_revision(project: dict) -> str:
         )
         for k, v in (project.get("domain_gazetteer") or {}).items()
     )
+    nd_entities = sorted(
+        (
+            str(r.get("node_a_id", "")),
+            str(r.get("node_b_id", "")),
+            str(r.get("pair_fingerprint", "")),
+        )
+        for r in (project.get("not_duplicate_pairs") or ())
+        if isinstance(r, dict)
+    )
+    nd_rels = sorted(
+        (
+            str(r.get("relation_a", "")),
+            str(r.get("relation_b", "")),
+            str(r.get("pair_fingerprint", "")),
+            str(r.get("kind", "")),
+        )
+        for r in (project.get("not_duplicate_relation_pairs") or ())
+        if isinstance(r, dict)
+    )
     tail = (
         f"T:{node_redirs}{sep}{rel_redirs}{sep}"
-        f"{len(project.get('not_duplicate_pairs', ()))}{sep}"
-        f"{len(project.get('not_duplicate_relation_pairs', ()))}{sep}"
+        f"{nd_entities}{sep}{nd_rels}{sep}"
         f"{p_bindings}{sep}{p_versions}{sep}{gaz_items}"
     )
     upd(tail.encode("utf-8"))

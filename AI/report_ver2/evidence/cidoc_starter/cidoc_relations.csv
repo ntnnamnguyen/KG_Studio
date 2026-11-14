@@ -1,0 +1,56 @@
+﻿name,description,definition,domain,range,aliases
+P1_is_identified_by,Được định danh bằng tên gọi.,Thực thể được gọi hoặc biết đến qua tên gọi/tên chữ (E41_Appellation).,E1_CRM_Entity,E41_Appellation,có tên gọi là; được gọi là; tên chữ là
+P2_has_type,Có phân loại / hạng di tích.,"Xếp loại thực thể theo cấp di tích, loại hình kiến trúc hoặc phong cách.",E1_CRM_Entity,E55_Type,thuộc loại; được xếp hạng; có cấp di tích
+P3_has_note,Có ghi chú mô tả.,Ghi chú ngắn gọn mô tả đặc điểm của thực thể.,E1_CRM_Entity,E33_Linguistic_Object,có ghi chú
+P4_has_time-span,Có mốc thời gian hoặc niên đại.,"Sự kiện, quá trình xây dựng hoặc thời kỳ diễn ra trong mốc thời gian cụ thể.",E2_Temporal_Entity,E52_Time-Span,vào năm; xây dựng vào thời gian; có niên đại; diễn ra vào
+P5_consists_of,Bao gồm giai đoạn con.,Thời kỳ lịch sử lớn bao gồm các giai đoạn ngắn hơn.,E4_Period,E4_Period,gồm thời kỳ
+P7_took_place_at,Sự kiện hoặc hoạt động diễn ra tại địa điểm.,"Liên kết một sự kiện, lễ hội, khởi nghĩa hoặc quá trình xây dựng với nơi diễn ra.",E4_Period,E53_Place,diễn ra tại; tổ chức tại; xảy ra ở
+P8_took_place_on_or_within,Diễn ra ngay trên hoặc bên trong công trình vật chất.,"Sự kiện diễn ra bên trong một tòa điện, sân, di tích cụ thể.",E4_Period,E18_Physical_Thing,diễn ra trong công trình
+P9_consists_of,Thời kỳ hoặc sự kiện gồm sự kiện thành phần.,Tách sự kiện tổng thể thành các hoạt động nhỏ hơn.,E4_Period,E4_Period,bao gồm sự kiện
+P10_falls_within,Nằm trong thời kỳ hoặc triều đại.,Sự kiện hoặc hoạt động xảy ra trong bối cảnh một thời kỳ lịch sử rộng hơn.,E4_Period,E4_Period,thuộc triều đại; nằm trong giai đoạn; dưới triều
+P11_had_participant,Có cá nhân hoặc tổ chức tham gia.,Ghi nhận tác nhân tham gia một sự kiện lịch sử hoặc lễ hội.,E5_Event,E39_Actor,có người tham gia; tham dự
+P12_occurred_in_the_presence_of,Sự kiện gắn với hiện diện của vật thể hoặc con người.,Sự kiện diễn ra trước chứng kiến hoặc sự hiện diện của nhân vật/hiện vật.,E5_Event,E18_Physical_Thing,gắn với sự hiện diện của
+P14_carried_out_by,Hoạt động do cá nhân hoặc tổ chức thực hiện.,"Xác định chủ thể (vua, nghệ nhân, ban quản lý) thực hiện hoạt động xây dựng, trùng tu, sáng lập.",E7_Activity,E39_Actor,do ai thực hiện; do ai chủ trì; được thực hiện bởi; do vua cho xây
+P15_was_influenced_by,Hoạt động chịu ảnh hưởng bởi tư tưởng hoặc công trình.,"Chịu ảnh hưởng nghệ thuật, phong thủy hoặc truyền thống văn hóa.",E7_Activity,E1_CRM_Entity,chịu ảnh hưởng bởi
+P16_used_specific_object,Sử dụng vật thể hoặc tư liệu cụ thể.,"Hoạt động sử dụng hiện vật, bản vẽ hoặc vật liệu xác định.",E7_Activity,E18_Physical_Thing,sử dụng vật thể
+P17_was_motivated_by,Được thúc đẩy hoặc nhân dịp sự kiện.,Hoạt động được thực hiện vì mục đích tưởng niệm hoặc nhân biến cố lịch sử.,E7_Activity,E1_CRM_Entity,bắt nguồn từ; nhân dịp
+P19_was_intended_use_of,Mục đích sử dụng dự kiến.,"Công năng ban đầu (thờ phụng, học tập, phòng thủ) của công trình.",E7_Activity,E55_Type,dùng để; mục đích là
+P20_had_specific_purpose,Có mục đích hướng tới sự kiện.,Hoạt động nhằm chuẩn bị cho sự kiện hoặc nghi lễ xác định.,E7_Activity,E5_Event,nhằm mục đích
+P43_has_dimension,Có kích thước hoặc diện tích đo đạc.,"Liên kết công trình, khu đất hoặc hiện vật với số đo diện tích/chiều cao.",E18_Physical_Thing,E54_Dimension,có kích thước; có diện tích; cao
+P44_has_condition,Có tình trạng bảo tồn.,"Tình trạng hư hại, nguyên vẹn hoặc đã được bảo tồn của di tích.",E18_Physical_Thing,E55_Type,tình trạng hiện nay
+P45_consists_of,Được làm từ chất liệu.,"Xác định vật liệu cấu tạo nên công trình hay hiện vật (đá xanh, gỗ lim, đồng).",E18_Physical_Thing,E57_Material,được làm bằng; có chất liệu; làm từ
+P46_is_composed_of,Cấu thành từ các hạng mục kiến trúc con.,"Di tích lớn bao gồm các hạng mục như tam quan, điện thờ, gác chuông, vườn bia.",E18_Physical_Thing,E18_Physical_Thing,bao gồm hạng mục; gồm có bộ phận; có thành phần
+P48_has_preferred_identifier,Có mã định danh hoặc số hiệu ưu tiên.,"Mã hiệu kiểm kê, số lưu trữ chính thức của di sản.",E1_CRM_Entity,E41_Appellation,có mã định danh
+P49_has_former_or_current_keeper,"Từng hoặc đang có đơn vị bảo quản, trông coi.","Đơn vị bảo tàng, ban quản lý hoặc cộng đồng trông nom di tích.",E18_Physical_Thing,E39_Actor,được trông coi bởi; đơn vị lưu giữ
+P50_has_current_keeper,Hiện do đơn vị nào quản lý trực tiếp.,Cơ quan hoặc cộng đồng đang quản lý hiện vật/di tích hiện nay.,E18_Physical_Thing,E39_Actor,hiện do quản lý; ban quản lý hiện tại
+P51_has_former_or_current_owner,Từng hoặc đang thuộc quyền sở hữu của.,"Triều đại, gia tộc hoặc cơ quan sở hữu công trình/tư sản.",E18_Physical_Thing,E39_Actor,thuộc quyền sở hữu của
+P52_has_current_owner,Chủ sở hữu hiện tại.,Cơ quan hoặc chủ thể sở hữu hợp pháp hiện nay.,E18_Physical_Thing,E39_Actor,chủ sở hữu hiện tại
+P53_has_former_or_current_location,Tọa lạc tại địa điểm hoặc vùng đất.,"Vị trí không gian cố định hoặc lịch sử của công trình, di tích và hiện vật vật chất.",E18_Physical_Thing,E53_Place,tọa lạc tại; nằm tại; đặt tại; ở địa điểm
+P54_has_current_permanent_location,Vị trí đặt cố định hiện nay.,Nơi lưu giữ thường xuyên hiện tại của hiện vật.,E18_Physical_Thing,E53_Place,hiện đặt tại
+P55_has_current_location,Vị trí hiện tại của hiện vật.,Địa điểm hiện vật đang có mặt tại thời điểm ghi nhận.,E18_Physical_Thing,E53_Place,hiện đang ở
+P56_bears_feature,Mang bộ phận hoặc dấu tích gắn liền.,"Công trình mang trên mình bia đá, phù điêu, cổng tam quan.",E18_Physical_Thing,E25_Human-Made_Feature,mang dấu tích; có gắn bộ phận
+P62_depicts,"Mô tả, khắc họa hoặc tôn vinh hình tượng.","Hiện vật/phù điêu khắc họa nhân vật, điển tích hoặc linh vật.",E24_Physical_Human-Made_Thing,E1_CRM_Entity,khắc họa; miêu tả hình tượng
+P65_shows_visual_item,Hiển thị hoa văn hoặc biểu tượng thị giác.,"Bề mặt vật thể mang họa tiết, hoành phi, câu đối.",E24_Physical_Human-Made_Thing,E28_Conceptual_Object,có hoa văn; mang biểu tượng
+P67_refers_to,Tài liệu hoặc sắc phong nhắc tới thực thể.,"Văn bản, bia ký, sử liệu đề cập đến nhân vật, di tích hoặc sự kiện.",E89_Propositional_Object,E1_CRM_Entity,đề cập tới; ghi chép về; nhắc đến
+P70_documents,Tư liệu ghi nhận bằng chứng về thực thể hoặc sự kiện.,"Văn kiện, sắc phong, bản vẽ ghi nhận chi tiết về lịch sử di tích.",E31_Document,E1_CRM_Entity,ghi chép tư liệu về; minh chứng cho
+P72_has_language,Văn bản được viết bằng ngôn ngữ.,"Ngôn ngữ của minh văn hoặc tư liệu (chữ Hán, chữ Nôm, tiếng Việt).",E33_Linguistic_Object,E55_Type,viết bằng ngôn ngữ; sử dụng chữ
+P74_has_current_or_former_residence,Nhân vật từng cư trú hoặc gắn bó tại địa điểm.,"Quê quán, nơi ở hoặc nơi làm việc gắn với nhân vật lịch sử.",E39_Actor,E53_Place,quê ở; cư trú tại; sinh sống ở
+P81_ongoing_throughout,Tồn tại liên tục trong suốt giai đoạn.,Khoảng thời gian tối thiểu được xác nhận tồn tại xuyên suốt.,E52_Time-Span,E52_Time-Span,tồn tại suốt giai đoạn
+P82_at_some_time_within,Nằm trong khoảng thời gian xác định.,Giới hạn trên/dưới của niên đại.,E52_Time-Span,E52_Time-Span,trong khoảng thời gian
+P89_falls_within,Địa điểm hành chính trực thuộc địa bàn rộng hơn.,Phường/làng thuộc quận/huyện/tỉnh hoặc khu vực địa lý bao chứa.,E53_Place,E53_Place,trực thuộc địa bàn; thuộc tỉnh; thuộc quận; nằm trong vùng
+P90_has_value,Có giá trị đo lường.,Số đo định lượng cụ thể của kích thước.,E54_Dimension,E54_Dimension,có số đo; có giá trị
+P91_has_unit,Có đơn vị đo.,"Đơn vị đo lường (mét, mẫu, héc-ta).",E54_Dimension,E55_Type,có đơn vị đo
+P94_has_created,Hoạt động sáng tác tạo ra tác phẩm/văn bia.,Liên kết quá trình sáng tác (E65_Creation) với văn bản hoặc giá trị tinh thần được tạo thành.,E65_Creation,E28_Conceptual_Object,đã sáng tác ra; soạn nên
+P98_brought_into_life,Sự kiện sinh ra nhân vật.,Liên kết biến cố ra đời (E67_Birth) với nhân vật E21_Person.,E67_Birth,E21_Person,sinh ra
+P100_was_death_of,Sự kiện qua đời của nhân vật.,Liên kết sự kiện mất (E69_Death) với nhân vật E21_Person.,E69_Death,E21_Person,là sự kiện mất của
+P102_has_title,"Mang danh hiệu, sắc phong hoặc tiêu đề chính thức.","Văn bản, tác phẩm hoặc di tích được ban mỹ hiệu/tiêu đề cụ thể.",E73_Information_Object,E35_Title,mang tiêu đề; có mỹ hiệu
+P104_is_subject_to,Chịu quyền bảo hộ hoặc quy chế pháp lý.,Công trình thuộc diện bảo vệ theo luật di sản hay sắc lệnh.,E18_Physical_Thing,E28_Conceptual_Object,thuộc quy chế
+P107_has_current_or_former_member,Nhóm hoặc triều đại có thành viên.,"Triều đại, tổ chức hoặc ban trị sự bao gồm các nhân vật thành viên.",E74_Group,E39_Actor,có thành viên là
+P107i_is_current_or_former_member_of,Nhân vật thuộc triều đại hoặc tổ chức.,"Cá nhân là thành viên của triều đại, hội đồng hoặc dòng họ.",E39_Actor,E74_Group,thuộc triều đại; là thành viên của
+P108_has_produced,Quá trình tạo tác sản sinh ra công trình hoặc hiện vật.,Liên kết sự kiện xây dựng/đúc tạo (E12_Production) với công trình hoặc hiện vật (E24).,E12_Production,E24_Physical_Human-Made_Thing,tạo tác ra; xây dựng nên; đúc nên
+P109_has_current_or_former_curator,Bộ sưu tập do tổ chức/người phụ trách quản lý.,Chủ thể phụ trách giám tuyển và quản lý kho bảo tàng.,E78_Curated_Holding,E39_Actor,được phụ trách bởi
+P128_carries,Bề mặt vật thể mang nội dung văn bản hoặc chữ khắc.,"Bia đá, sắc phong vật lý mang bài văn bia hoặc thông tin ghi chép.",E18_Physical_Thing,E73_Information_Object,mang nội dung; khắc bài văn; lưu giữ văn bản
+P129_is_about,Nội dung hướng về chủ đề hoặc nhân vật được thờ.,"Tư liệu, lễ hội hoặc niềm tin hướng tới tôn vinh đối tượng cụ thể.",E89_Propositional_Object,E1_CRM_Entity,thờ phụng; tôn vinh; nói về
+P130_shows_features_of,Thể hiện đặc trưng giống với nguyên mẫu.,Công trình phục dựng hoặc hiện vật mô phỏng theo phong cách gốc.,E18_Physical_Thing,E18_Physical_Thing,mô phỏng theo; mang đặc điểm của
+P134_continued,Hoạt động tiếp nối hoạt động trước.,Đợt trùng tu hoặc giai đoạn xây dựng tiếp theo nối tiếp đợt trước.,E7_Activity,E7_Activity,tiếp nối; trùng tu tiếp
+P138_represents,Biểu trưng hoặc đại diện cho nhân vật/khái niệm.,"Pho tượng hoặc đồ thờ đại diện cho vị thần, danh nhân được thờ.",E73_Information_Object,E1_CRM_Entity,đại diện cho; biểu trưng cho

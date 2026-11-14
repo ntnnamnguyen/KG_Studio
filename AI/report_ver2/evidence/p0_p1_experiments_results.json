@@ -1,0 +1,524 @@
+{
+  "ran_at": "2026-11-14T14:46:11",
+  "exp1_catalog_roundtrip": {
+    "entity_types_count": 30,
+    "relations_count": 55,
+    "json_relations_count": 55,
+    "domain_preserved": "55/55",
+    "range_preserved": "55/55",
+    "aliases_preserved": "55/55",
+    "passage_template_version": "v2-domain-range",
+    "sample_passage": "P53_has_former_or_current_location: Tọa lạc tại địa điểm hoặc vùng đất. | Vị trí không gian cố định hoặc lịch sử của công trình, di tích và hiện vật vật chất. | Scope: E18_Physical_Thing -> E53_Place | Aliases: tọa lạc tại, nằm tại, đặt tại, ở địa điểm",
+    "starter_dir": "AI/report_ver2/evidence/cidoc_starter"
+  },
+  "exp2_schema_retrieval_sr": {
+    "prompt_e5_check": {
+      "bge_m3_use_instruct": false,
+      "bge_m3_sample_query": "vị trí xây dựng",
+      "e5_large_use_instruct": true
+    },
+    "hybrid_vn_rich": {
+      "model_id": "hybrid_vn:default",
+      "dim": 1024,
+      "uses_e5_instruct": true,
+      "num_queries": 20,
+      "recall_at_5": 0.85,
+      "recall_at_15": 1.0,
+      "recall_at_30": 1.0,
+      "mrr": 0.7812,
+      "index_build_ms": 56.9,
+      "avg_query_ms": 0.82
+    },
+    "bge_m3_bare": {
+      "model_id": "ollama:bge-m3",
+      "dim": 1024,
+      "uses_e5_instruct": false,
+      "num_queries": 20,
+      "recall_at_5": 0.9,
+      "recall_at_15": 1.0,
+      "recall_at_30": 1.0,
+      "mrr": 0.6863,
+      "index_build_ms": 9541.0,
+      "avg_query_ms": 4200.42
+    },
+    "bge_m3_rich": {
+      "model_id": "ollama:bge-m3",
+      "dim": 1024,
+      "uses_e5_instruct": false,
+      "num_queries": 20,
+      "recall_at_5": 0.95,
+      "recall_at_15": 1.0,
+      "recall_at_30": 1.0,
+      "mrr": 0.7625,
+      "index_build_ms": 9413.1,
+      "avg_query_ms": 4176.93
+    },
+    "live_bge_m3_status": "ok"
+  },
+  "exp3_target_alignment_verifier": {
+    "parsing_ambiguous_ab": null,
+    "parsing_think_tag_b": "B",
+    "fail_closed_check": {
+      "auto_aligned": 0,
+      "error_count": 3,
+      "all_still_pending": true
+    },
+    "live_qwen_verifier": {
+      "status": "ok",
+      "strict_threshold_086": {
+        "elapsed_s": 44.15,
+        "summary": {
+          "auto_aligned": 0,
+          "suggested_for_review": 9,
+          "novel_proposals": 0,
+          "error_count": 0,
+          "verifier_input_tokens": 3155,
+          "verifier_output_tokens": 18
+        },
+        "decisions": [
+          {
+            "id": "p_et_pagoda",
+            "kind": "entity_types",
+            "name": "Ngôi chùa cổ",
+            "status": "pending",
+            "score": 0.5533,
+            "llm_verified_candidates": [
+              "E24_Physical_Human-Made_Thing"
+            ],
+            "top_candidate": "E22_Human-Made_Object"
+          },
+          {
+            "id": "p_et_place",
+            "kind": "entity_types",
+            "name": "Địa điểm hành chính",
+            "status": "pending",
+            "score": 0.7386,
+            "llm_verified_candidates": [
+              "E53_Place"
+            ],
+            "top_candidate": "E53_Place"
+          },
+          {
+            "id": "p_et_event",
+            "kind": "entity_types",
+            "name": "Sự kiện văn hóa truyền thống",
+            "status": "pending",
+            "score": 0.655,
+            "llm_verified_candidates": [
+              "E2_Temporal_Entity"
+            ],
+            "top_candidate": "E5_Event"
+          },
+          {
+            "id": "p_et_person",
+            "kind": "entity_types",
+            "name": "Nhân vật lịch sử",
+            "status": "pending",
+            "score": 0.63,
+            "llm_verified_candidates": [
+              "E21_Person"
+            ],
+            "top_candidate": "E21_Person"
+          },
+          {
+            "id": "p_et_material",
+            "kind": "entity_types",
+            "name": "Vật liệu xây dựng",
+            "status": "pending",
+            "score": 0.7756,
+            "llm_verified_candidates": [
+              "E57_Material"
+            ],
+            "top_candidate": "E57_Material"
+          },
+          {
+            "id": "p_rel_loc",
+            "kind": "relations",
+            "name": "đóng tại địa bàn",
+            "status": "pending",
+            "score": 0.7238,
+            "llm_verified_candidates": [
+              "P53_has_former_or_current_location"
+            ],
+            "top_candidate": "P53_has_former_or_current_location"
+          },
+          {
+            "id": "p_rel_evt",
+            "kind": "relations",
+            "name": "tổ chức ở nơi",
+            "status": "pending",
+            "score": 0.7445,
+            "llm_verified_candidates": [
+              "P7_took_place_at"
+            ],
+            "top_candidate": "P7_took_place_at"
+          },
+          {
+            "id": "p_rel_mat",
+            "kind": "relations",
+            "name": "chế tác bằng vật liệu",
+            "status": "pending",
+            "score": 0.659,
+            "llm_verified_candidates": [
+              "P45_consists_of"
+            ],
+            "top_candidate": "P45_consists_of"
+          },
+          {
+            "id": "p_rel_about",
+            "kind": "relations",
+            "name": "ghi nhớ tôn vinh",
+            "status": "pending",
+            "score": 0.6576,
+            "llm_verified_candidates": [
+              "P138_represents"
+            ],
+            "top_candidate": "P129_is_about"
+          }
+        ]
+      },
+      "bilingual_threshold_072": {
+        "elapsed_s": 44.69,
+        "summary": {
+          "auto_aligned": 4,
+          "suggested_for_review": 5,
+          "novel_proposals": 0,
+          "error_count": 0,
+          "verifier_input_tokens": 3157,
+          "verifier_output_tokens": 18
+        },
+        "decisions": [
+          {
+            "id": "p_et_pagoda",
+            "kind": "entity_types",
+            "name": "Ngôi chùa cổ",
+            "status": "pending",
+            "aligned_to": "",
+            "decision_origin": "",
+            "score": 0.5533,
+            "candidate_verified_by_llm": true,
+            "llm_verified_candidates": [
+              "E24_Physical_Human-Made_Thing"
+            ],
+            "error": ""
+          },
+          {
+            "id": "p_et_place",
+            "kind": "entity_types",
+            "name": "Địa điểm hành chính",
+            "status": "merged",
+            "aligned_to": "E53_Place",
+            "decision_origin": "llm_verified_auto",
+            "score": 0.7386,
+            "candidate_verified_by_llm": true,
+            "llm_verified_candidates": [
+              "E53_Place"
+            ],
+            "error": ""
+          },
+          {
+            "id": "p_et_event",
+            "kind": "entity_types",
+            "name": "Sự kiện văn hóa truyền thống",
+            "status": "pending",
+            "aligned_to": "",
+            "decision_origin": "",
+            "score": 0.655,
+            "candidate_verified_by_llm": true,
+            "llm_verified_candidates": [
+              "E2_Temporal_Entity"
+            ],
+            "error": ""
+          },
+          {
+            "id": "p_et_person",
+            "kind": "entity_types",
+            "name": "Nhân vật lịch sử",
+            "status": "pending",
+            "aligned_to": "",
+            "decision_origin": "",
+            "score": 0.63,
+            "candidate_verified_by_llm": true,
+            "llm_verified_candidates": [
+              "E21_Person"
+            ],
+            "error": ""
+          },
+          {
+            "id": "p_et_material",
+            "kind": "entity_types",
+            "name": "Vật liệu xây dựng",
+            "status": "merged",
+            "aligned_to": "E57_Material",
+            "decision_origin": "llm_verified_auto",
+            "score": 0.7756,
+            "candidate_verified_by_llm": true,
+            "llm_verified_candidates": [
+              "E57_Material"
+            ],
+            "error": ""
+          },
+          {
+            "id": "p_rel_loc",
+            "kind": "relations",
+            "name": "đóng tại địa bàn",
+            "status": "merged",
+            "aligned_to": "P53_has_former_or_current_location",
+            "decision_origin": "llm_verified_auto",
+            "score": 0.7238,
+            "candidate_verified_by_llm": true,
+            "llm_verified_candidates": [
+              "P53_has_former_or_current_location"
+            ],
+            "error": ""
+          },
+          {
+            "id": "p_rel_evt",
+            "kind": "relations",
+            "name": "tổ chức ở nơi",
+            "status": "merged",
+            "aligned_to": "P7_took_place_at",
+            "decision_origin": "llm_verified_auto",
+            "score": 0.7445,
+            "candidate_verified_by_llm": true,
+            "llm_verified_candidates": [
+              "P7_took_place_at"
+            ],
+            "error": ""
+          },
+          {
+            "id": "p_rel_mat",
+            "kind": "relations",
+            "name": "chế tác bằng vật liệu",
+            "status": "pending",
+            "aligned_to": "",
+            "decision_origin": "",
+            "score": 0.659,
+            "candidate_verified_by_llm": true,
+            "llm_verified_candidates": [
+              "P45_consists_of"
+            ],
+            "error": ""
+          },
+          {
+            "id": "p_rel_about",
+            "kind": "relations",
+            "name": "ghi nhớ tôn vinh",
+            "status": "pending",
+            "aligned_to": "",
+            "decision_origin": "",
+            "score": 0.6576,
+            "candidate_verified_by_llm": true,
+            "llm_verified_candidates": [
+              "P138_represents"
+            ],
+            "error": ""
+          }
+        ]
+      }
+    }
+  },
+  "exp4_parallel_edcr_stress": {
+    "total_tasks": 12,
+    "success_count": 11,
+    "failed_count": 1,
+    "workers": 4,
+    "elapsed_ms": 381.8,
+    "saved_nodes": 22,
+    "saved_edges": 11,
+    "ok_runs_persisted": 11,
+    "error_runs_persisted": 1,
+    "processed_chunks_count": 11,
+    "sqlite_synced_edges": 11,
+    "sync_pending": false,
+    "secret_leaked_in_saved_json": false,
+    "error_run_token_accounting": {
+      "input_tokens": 210,
+      "output_tokens": 14
+    }
+  },
+  "exp5_graphrag_cidoc_and_qa": {
+    "empty_approved_edges_count": 0,
+    "approved_only_false_excludes_rejected": true,
+    "neo4j_exportable_edges_with_evidence_filter": 19,
+    "total_approved_raw_edges": 20,
+    "retrieval_benchmark_summary": [
+      {
+        "Phương pháp": "1. Baseline (Naive Top-K Triples)",
+        "Mã": "naive_topk",
+        "Số câu hỏi": 5,
+        "Thu hồi Đáp án Đích (%)": 100.0,
+        "Thu hồi Cạnh Chuẩn (%)": 100.0,
+        "Nối mạch 2-Hop Bridge (%)": 100.0,
+        "Độ liên thông Đồ thị con (%)": 89.1,
+        "Token Ngữ cảnh TB": 462,
+        "Thời gian Truy xuất TB (ms)": 0.98
+      },
+      {
+        "Phương pháp": "2. HippoRAG (Personalized PageRank)",
+        "Mã": "ppr",
+        "Số câu hỏi": 5,
+        "Thu hồi Đáp án Đích (%)": 100.0,
+        "Thu hồi Cạnh Chuẩn (%)": 100.0,
+        "Nối mạch 2-Hop Bridge (%)": 100.0,
+        "Độ liên thông Đồ thị con (%)": 97.8,
+        "Token Ngữ cảnh TB": 634,
+        "Thời gian Truy xuất TB (ms)": 0.64
+      },
+      {
+        "Phương pháp": "3. G-Retriever (Hub-Penalized PCST + 1-Hop)",
+        "Mã": "pcst",
+        "Số câu hỏi": 5,
+        "Thu hồi Đáp án Đích (%)": 100.0,
+        "Thu hồi Cạnh Chuẩn (%)": 100.0,
+        "Nối mạch 2-Hop Bridge (%)": 100.0,
+        "Độ liên thông Đồ thị con (%)": 94.0,
+        "Token Ngữ cảnh TB": 458,
+        "Thời gian Truy xuất TB (ms)": 0.52
+      }
+    ],
+    "qa_disjoint_metrics": {
+      "total": 43,
+      "train_val_test": [
+        35,
+        4,
+        4
+      ],
+      "split_metrics": {
+        "disjoint_split": true,
+        "distinct_gold_edges": 19,
+        "dropped_cross_split_samples": 0,
+        "train_val_edge_overlap": 0,
+        "train_test_edge_overlap": 0,
+        "val_test_edge_overlap": 0,
+        "train_val_anchor_entity_overlap": 2,
+        "train_test_anchor_entity_overlap": 1,
+        "val_test_anchor_entity_overlap": 0
+      }
+    },
+    "qa_non_disjoint_metrics": {
+      "total": 43,
+      "train_val_test": [
+        34,
+        3,
+        6
+      ],
+      "split_metrics": {
+        "disjoint_split": false,
+        "distinct_gold_edges": 19,
+        "dropped_cross_split_samples": 0,
+        "train_val_edge_overlap": 1,
+        "train_test_edge_overlap": 2,
+        "val_test_edge_overlap": 3,
+        "train_val_anchor_entity_overlap": 1,
+        "train_test_anchor_entity_overlap": 2,
+        "val_test_anchor_entity_overlap": 1
+      }
+    },
+    "live_graphrag_qwen": {
+      "status": "ok",
+      "used_llm": true,
+      "retrieved_edges": 6,
+      "answer_preview": "Dựa trên Đồ thị Tri thức (Knowledge Graph) và Bằng chứng nguyên văn được cung cấp, dưới đây là phân tích chuỗi suy luận và câu trả lời cho câu hỏi của bạn:\n\n### 1. Phân tích chuỗi suy luận trên đồ thị\n\nĐể xác định chất liệu và thời gian chế tác của \"82 bia Tiến sĩ\", hệ thống thực hiện các bước truy xuất sau:\n\n*   **Bước 1:** Xác định thực thể chính",
+      "has_hanoi_hardcode_in_prompt": false,
+      "input_tokens": 808,
+      "output_tokens": 512,
+      "llm_latency_ms": 5972.5
+    }
+  },
+  "exp6_real_project_readonly": {
+    "status": "ok",
+    "project_name": "KG_HaNoi_EDC_R_A",
+    "nodes_count": 1587,
+    "edges_total": 1941,
+    "edges_approved_raw": 1655,
+    "edges_exportable_with_evidence": 1651,
+    "neo4j_sync_nodes_written": 1435,
+    "neo4j_sync_edges_written": 1651,
+    "proposals_total": 1048,
+    "sqlite_auto_resync": {
+      "cold_resync_and_query_ms": 122.3,
+      "warm_node_query_ms": 18.36,
+      "sqlite_edges_total": 1941,
+      "sqlite_nodes_total": 1587,
+      "sync_pending": false
+    },
+    "graphrag_real_benchmark": [
+      {
+        "Phương pháp": "1. Baseline (Naive Top-K Triples)",
+        "Mã": "naive_topk",
+        "Số câu hỏi": 18,
+        "Thu hồi Đáp án Đích (%)": 66.7,
+        "Thu hồi Cạnh Chuẩn (%)": 83.3,
+        "Nối mạch 2-Hop Bridge (%)": 33.3,
+        "Độ liên thông Đồ thị con (%)": 47.7,
+        "Token Ngữ cảnh TB": 1984,
+        "Thời gian Truy xuất TB (ms)": 42.06
+      },
+      {
+        "Phương pháp": "2. HippoRAG (Personalized PageRank)",
+        "Mã": "ppr",
+        "Số câu hỏi": 18,
+        "Thu hồi Đáp án Đích (%)": 100.0,
+        "Thu hồi Cạnh Chuẩn (%)": 100.0,
+        "Nối mạch 2-Hop Bridge (%)": 100.0,
+        "Độ liên thông Đồ thị con (%)": 60.2,
+        "Token Ngữ cảnh TB": 1765,
+        "Thời gian Truy xuất TB (ms)": 51.15
+      },
+      {
+        "Phương pháp": "3. G-Retriever (Hub-Penalized PCST + 1-Hop)",
+        "Mã": "pcst",
+        "Số câu hỏi": 18,
+        "Thu hồi Đáp án Đích (%)": 94.4,
+        "Thu hồi Cạnh Chuẩn (%)": 97.2,
+        "Nối mạch 2-Hop Bridge (%)": 100.0,
+        "Độ liên thông Đồ thị con (%)": 63.2,
+        "Token Ngữ cảnh TB": 1934,
+        "Thời gian Truy xuất TB (ms)": 43.74
+      }
+    ],
+    "qa_disjoint_split": {
+      "total": 400,
+      "train_val_test": [
+        345,
+        36,
+        19
+      ],
+      "split_metrics": {
+        "disjoint_split": true,
+        "distinct_gold_edges": 323,
+        "dropped_cross_split_samples": 0,
+        "train_val_edge_overlap": 0,
+        "train_test_edge_overlap": 0,
+        "val_test_edge_overlap": 0,
+        "train_val_anchor_entity_overlap": 7,
+        "train_test_anchor_entity_overlap": 5,
+        "val_test_anchor_entity_overlap": 0
+      }
+    },
+    "qa_leaky_split": {
+      "total": 400,
+      "train_val_test": [
+        320,
+        40,
+        40
+      ],
+      "split_metrics": {
+        "disjoint_split": false,
+        "distinct_gold_edges": 323,
+        "dropped_cross_split_samples": 0,
+        "train_val_edge_overlap": 21,
+        "train_test_edge_overlap": 19,
+        "val_test_edge_overlap": 5,
+        "train_val_anchor_entity_overlap": 17,
+        "train_test_anchor_entity_overlap": 12,
+        "val_test_anchor_entity_overlap": 3
+      }
+    },
+    "duplicate_pairs_before": 72,
+    "duplicate_pairs_after_dismiss_1": 71,
+    "dismissed_pair_immediately_filtered": true
+  },
+  "total_elapsed_s": 288.9
+}
