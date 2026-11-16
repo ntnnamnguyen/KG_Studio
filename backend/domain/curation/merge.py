@@ -44,9 +44,11 @@ from .relation_merge import (
     bulk_apply_relation_merges,
     clear_relation_duplicate_suggestions_cache,
     collapse_duplicate_edges,
+    mark_edge_groups_not_duplicate_bulk,
     mark_relation_pair_not_duplicate,
     mark_relation_pairs_not_duplicate_bulk,
     relation_duplicate_suggestions,
+    triple_duplicate_suggestions,
 )
 
 

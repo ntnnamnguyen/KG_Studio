@@ -235,6 +235,13 @@ class KGStudioFacade:
             project, tasks, chunk_extractor=self.extract_chunk, project_saver=self.save_project, **kwargs
         )
 
+    def recover_key_typo_runs(self, project: dict) -> int:
+        from backend.domain.extraction.validator import recover_key_typo_runs as domain_recover
+        recovered = domain_recover(project)
+        if recovered > 0:
+            self.save_project(project)
+        return recovered
+
     # =========================================================================
     # 3. PHÂN HỆ SCHEMA INTELLIGENCE (backend/modules/schema_intelligence)
     # =========================================================================
@@ -366,8 +373,54 @@ class KGStudioFacade:
     def bulk_apply_relation_merges(self, project: dict, mappings: list[Any], *, collapse_edges: bool = False, note: str = "", actor: str = "human_reviewer") -> CurationResultDTO:
         return self.curation_service.bulk_apply_relation_merges(project, mappings, collapse_edges=collapse_edges, note=note, actor=actor)
 
-    def collapse_duplicate_edges(self, project: dict, *, actor: str = "human_reviewer", note: str = "") -> CurationResultDTO:
-        return self.curation_service.collapse_duplicate_edges(project, actor=actor, note=note)
+    def triple_duplicate_suggestions(
+        self,
+        project: dict,
+        fuzzy_threshold: float = 0.70,
+        *,
+        include_dismissed: bool = False,
+        include_fuzzy_same_endpoints: bool = True,
+        include_inverse_pairs: bool = True,
+    ) -> list[dict[str, Any]]:
+        return self.curation_service.triple_duplicate_suggestions(
+            project,
+            fuzzy_threshold=fuzzy_threshold,
+            include_dismissed=include_dismissed,
+            include_fuzzy_same_endpoints=include_fuzzy_same_endpoints,
+            include_inverse_pairs=include_inverse_pairs,
+        )
+
+    def collapse_duplicate_edges(
+        self,
+        project: dict,
+        *,
+        selected_groups: list[dict[str, Any] | list[str]] | None = None,
+        actor: str = "human_reviewer",
+        note: str = "",
+    ) -> CurationResultDTO:
+        return self.curation_service.collapse_duplicate_edges(
+            project,
+            selected_groups=selected_groups,
+            actor=actor,
+            note=note,
+        )
+
+    def mark_edge_groups_not_duplicate_bulk(
+        self,
+        project: dict,
+        groups: list[dict[str, Any] | tuple[str, str] | list[str]],
+        *,
+        note: str = "",
+        actor: str = "human_reviewer",
+        save: bool = True,
+    ) -> dict[str, Any]:
+        return self.curation_service.mark_edge_groups_not_duplicate_bulk(
+            project,
+            groups,
+            note=note,
+            actor=actor,
+            save=save,
+        )
 
     def mark_relation_pair_not_duplicate(self, project: dict, rel_a: str, rel_b: str, note: str = "") -> dict:
         return self.curation_service.mark_relation_pair_not_duplicate(project, rel_a, rel_b, note=note)

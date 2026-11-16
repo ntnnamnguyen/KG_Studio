@@ -45,10 +45,19 @@ GENERIC_ENTITY_NAMES: set[str] = {
 }
 
 
-def clean_rel_name(rel: str) -> str:
-    """Loại bỏ dấu gạch dưới và khoảng trắng thừa trong tên quan hệ."""
-    raw = str(rel or "").replace("_", " ").strip()
-    return re.sub(r"\s+", " ", raw)
+from backend.domain.graph.schema_verbalizer import (
+    contains_raw_english_relation,
+    is_valid_multihop_bridge_kind,
+    resolve_entity_type_spec,
+    resolve_relation_label_vi,
+    resolve_relation_spec,
+    resolve_worship_polarity,
+)
+
+
+def clean_rel_name(rel: str, *, relation_notes: dict[str, Any] | None = None) -> str:
+    """Chuẩn hóa tên quan hệ thành cụm từ tiếng Việt dễ đọc (dịch mã quan hệ tiếng Anh nếu có)."""
+    return resolve_relation_label_vi(rel, relation_notes=relation_notes)
 
 
 RELATION_SEMANTIC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -117,8 +126,21 @@ RELATION_SEMANTIC_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+_SEMANTIC_ALIAS_TO_LEGACY: dict[str, str] = {
+    "APPELLATION": "NAMING_IDENTITY",
+    "CULTURE": "GENERAL",
+    "MATERIAL": "GENERAL",
+    "PART_WHOLE": "CONTENT_CONTAINER",
+    "CAUSE_RESULT": "GENERAL",
+    "EVENT_ACTIVITY": "GENERAL",
+}
+
+
 def classify_relation_semantic(rel: str) -> str:
-    """Phân loại vị từ quan hệ vào nhóm ngữ nghĩa tiếng Việt chuẩn (dùng word-boundary padding)."""
+    """Phân loại vị từ quan hệ vào nhóm ngữ nghĩa chuẩn (hỗ trợ cả tiếng Việt và mã quan hệ CIDOC/tiếng Anh)."""
+    spec = resolve_relation_spec(rel)
+    if spec.semantic:
+        return _SEMANTIC_ALIAS_TO_LEGACY.get(spec.semantic, spec.semantic)
     r_padded = f" {normal(rel)} "
     for category, keys in RELATION_SEMANTIC_RULES:
         if any(k in r_padded for k in keys):
@@ -161,99 +183,225 @@ _FIXED_1HOP_TEMPLATES: dict[str, list[str]] = {
 }
 
 
-def _get_1hop_variants(sem: str, rel_c: str, r_norm: str, u_name: str, vk: str) -> list[str]:
-    if sem in _FIXED_1HOP_TEMPLATES:
-        return [t.format(u=u_name) for t in _FIXED_1HOP_TEMPLATES[sem]]
+def _target_wh_by_kind(v_kind: str) -> str:
+    """Chọn cụm từ hỏi (WH-phrase) khớp ngữ nghĩa của loại thực thể đích."""
+    vk = normal(v_kind)
+    et_spec = resolve_entity_type_spec(v_kind)
+    role = et_spec.role
+    if any(x in vk for x in ("thời gian", "năm", "niên đại", "time", "date")):
+        return "vào thời gian nào"
+    if any(x in vk for x in ("thời kỳ", "giai đoạn", "triều đại", "period")):
+        return "vào thời kỳ nào"
+    if any(x in vk for x in ("địa chỉ", "address")):
+        return "ở địa chỉ nào"
+    if any(x in vk for x in ("số đo", "kích thước", "dimension", "diện tích", "chiều dài", "chiều cao", "chiều rộng")):
+        return "với thông số bao nhiêu"
+    if any(x in vk for x in ("số lượng", "count")):
+        return "với số lượng bao nhiêu"
+    if any(x in vk for x in ("chất liệu", "vật liệu", "material")):
+        return "từ chất liệu gì"
+    if role == "person":
+        return "nhân vật nào"
+    if role == "org":
+        return "tổ chức hay đơn vị nào"
+    if role == "place":
+        return "ở địa điểm nào"
+    if role in ("shrine", "building"):
+        return f"{et_spec.short_noun} nào"
+    if role == "artifact":
+        return f"{et_spec.short_noun} nào"
+    if role == "event":
+        return f"{et_spec.short_noun} nào"
+    if role == "period":
+        return "vào thời kỳ nào"
+    if role == "practice":
+        return "nghề truyền thống hay tập quán nào"
+    return f"{et_spec.short_noun} nào" if et_spec.short_noun else "đối tượng nào"
 
-    if sem == "LOCATION":
-        if "thuộc" in rel_c:
+
+def _format_open_vietnamese_predicate(rel_c: str, target_kind: str = "") -> str:
+    """Chuyển cụm vị ngữ mở tiếng Việt thành cụm hỏi chuẩn ngữ pháp (tránh 'vào ngày vào thời gian nào', 'đối tượng nào')."""
+    import unicodedata
+
+    phrase = re.sub(r"\s+", " ", str(rel_c or "").strip()).rstrip("?.! ")
+    if not phrase:
+        return "có thông tin liên quan gì"
+    p_low = unicodedata.normalize("NFC", phrase).lower()
+
+    if p_low.endswith((" buổi sáng", " buổi chiều", " buổi tối", " ban ngày", " ban đêm")):
+        return f"{phrase} vào khung giờ nào"
+    if p_low.endswith((
+        " vào năm", " năm", " vào ngày", " ngày", " vào tháng", " tháng",
+        " thời", " thời kỳ", " giai đoạn", " thế kỷ", " niên đại",
+        " triều", " triều đại", " đời vua", " nhân dịp", " dịp",
+    )):
+        return f"{phrase} nào"
+    if p_low.endswith((" vào", " từ năm", " đến năm", " từ thời", " sau năm", " trước năm")):
+        return f"{phrase} thời gian nào"
+    if p_low.endswith((" từ sau", " từ trước")):
+        return f"{phrase} sự kiện hay mốc thời gian nào"
+    if p_low.endswith((
+        " giá vé", " mức giá", " chi phí", " tổng vốn", " vốn đầu tư", " kinh phí",
+        " diện tích", " chiều dài", " chiều cao", " chiều rộng", " chu vi",
+        " độ sâu", " độ dày", " đường kính", " khối lượng", " trọng lượng",
+        " sức chứa", " số lượng", " số tầng", " bao nhiêu",
+    )):
+        return f"{phrase} là bao nhiêu"
+    if p_low.endswith((
+        " hồ", " sông", " cầu", " phố", " đường", " chùa", " đền", " đình", " miếu", " phủ",
+        " làng", " xã", " phường", " quận", " huyện", " tỉnh", " thành phố",
+        " khu vực", " khu vực xây dựng", " địa bàn", " địa điểm", " vị trí",
+        " buổi hòa nhạc", " lễ hội", " sự kiện", " dự án", " chương trình",
+        " công trình", " bảo tàng", " đơn vị", " tổ chức", " tác phẩm",
+        " bộ sưu tập", " bản đồ", " giải thưởng", " danh hiệu", " nghề",
+    )):
+        return f"{phrase} nào"
+    if any(w in p_low.split()[-2:] for w in ("vào", "ngày", "năm")) and any(x in p_low for x in ("năm", "ngày")):
+        return f"{phrase} nào"
+
+    wh_target = _target_wh_by_kind(target_kind)
+    return f"{phrase} {wh_target}"
+
+
+_PURE_LOCATIVE_OPEN_RELS: set[str] = {
+    "tọa lạc", "tọa lạc tại", "tọa lạc ở", "nằm ở", "nằm tại",
+    "đặt tại", "ở tại", "ở", "tại", "vị trí", "nằm trên",
+}
+
+
+def _get_1hop_variants(
+    sem: str,
+    rel_c: str,
+    r_norm: str,
+    u_name: str,
+    vk: str,
+    *,
+    spec_wh: str = "",
+) -> list[str]:
+    r_words = rel_c.strip().split()
+    if sem == "WORSHIP":
+        if "được thờ" in r_norm:
             return [
-                f"{u_name} thuộc quận, huyện hay khu vực nào của Hà Nội?",
-                f"{u_name} trực thuộc địa bàn nào?",
-                f"Khu vực nào là nơi {u_name} tọa lạc?",
+                f"{u_name} được thờ phụng tại đâu?",
+                f"Địa điểm nào thờ phụng {u_name}?",
+                f"{u_name} được lập đền thờ tại nơi nào?",
             ]
-        if any(k in rel_c for k in ("giáp", "gần", "cách")):
-            return [f"{u_name} {rel_c} địa danh nào?", f"Khu vực nào nằm {rel_c} {u_name}?"]
         return [
-            f"{u_name} tọa lạc ở đâu?",
-            f"{u_name} nằm tại khu vực hoặc quận nào của Hà Nội?",
-            f"Vị trí của {u_name} nằm ở đâu?",
-            f"{u_name} nằm trên địa bàn nào của Hà Nội?",
+            f"{u_name} thờ phụng vị anh hùng hay nhân vật nào?",
+            f"Ai là người được thờ phụng tại {u_name}?",
+            f"{u_name} là nơi thờ tự nhân vật nào?",
         ]
 
-    if sem == "TEMPORAL" or any(x in vk for x in ("thời gian", "năm")):
-        if "sinh" in r_norm:
-            return [f"{u_name} sinh vào năm nào?", f"Năm sinh của {u_name} là năm bao nhiêu?"]
-        if "mất" in r_norm:
-            return [f"{u_name} mất vào năm nào?", f"Năm mất của {u_name} là khi nào?"]
-        if any(k in r_norm for k in ("khởi dựng", "xây dựng", "thành lập")):
+    if sem in _FIXED_1HOP_TEMPLATES and not spec_wh:
+        if sem != "CONTENT_CONTAINER" or r_norm in {"bao gom", "trung bay", "luu giu", "chua", "so huu"}:
+            return [t.format(u=u_name) for t in _FIXED_1HOP_TEMPLATES[sem]]
+
+    if sem == "LOCATION":
+        if spec_wh:
+            return [f"{u_name} {spec_wh}?"]
+        if r_norm in {"thuoc", "truc thuoc", "thuoc dia phan", "thuoc khu vuc"}:
             return [
-                f"{u_name} được xây dựng vào năm nào?",
-                f"{u_name} được khởi dựng khi nào?",
-                f"Công trình {u_name} được xây dựng vào thời gian nào?",
+                f"{u_name} thuộc địa bàn hoặc khu vực nào?",
+                f"{u_name} trực thuộc khu vực nào?",
             ]
-        if "diễn ra" in r_norm:
-            return [f"Sự kiện {u_name} diễn ra vào thời điểm nào?", f"{u_name} diễn ra vào năm nào?"]
-        if "niên đại" in r_norm:
-            return [f"{u_name} có niên đại từ khi nào?", f"Niên đại lịch sử của {u_name} là vào thời kỳ nào?"]
-        if rel_c.endswith(" vào"):
-            return [f"{u_name} {rel_c} năm nào?", f"{u_name} {rel_c} thời gian nào?"]
-        return [f"{u_name} {rel_c} vào năm nào?", f"{u_name} {rel_c} vào thời gian nào?"]
+        if any(k in r_norm for k in ("giáp", "tiếp giáp", "gần", "cách", "song song")) and len(r_words) <= 3:
+            return [f"{u_name} {rel_c} địa điểm nào?", f"Khu vực nào {rel_c} {u_name}?"]
+        if "quê" in r_norm and len(r_words) <= 4:
+            return [f"{u_name} có quê quán ở đâu?", f"Quê quán của {u_name} ở địa phương nào?"]
+        if "sinh" in r_norm and len(r_words) <= 3:
+            return [f"{u_name} sinh ra tại đâu?", f"Nơi sinh của {u_name} ở đâu?"]
+        if ("chế tác" in r_norm or "sản xuất" in r_norm) and len(r_words) <= 4:
+            return [f"{u_name} được chế tác tại địa phương nào?", f"{u_name} có xuất xứ sản xuất từ đâu?"]
+        if "diễn ra" in r_norm and len(r_words) <= 3:
+            return [f"{u_name} diễn ra tại địa điểm nào?", f"Địa điểm diễn ra {u_name} ở đâu?"]
+        if "địa chỉ" in r_norm and len(r_words) <= 4:
+            return [f"{u_name} có địa chỉ tại đâu?", f"Địa chỉ cụ thể của {u_name} ở đâu?"]
+        if rel_c.lower().strip() in _PURE_LOCATIVE_OPEN_RELS:
+            return [
+                f"{u_name} tọa lạc ở đâu?",
+                f"Vị trí của {u_name} nằm ở địa bàn nào?",
+                f"{u_name} nằm tại khu vực nào?",
+            ]
+        return [f"{u_name} {_format_open_vietnamese_predicate(rel_c, vk)}?"]
+
+    if sem == "TEMPORAL" or any(x in vk for x in ("thời gian", "năm")):
+        if spec_wh:
+            return [f"{u_name} {spec_wh}?"]
+        if r_norm in {"sinh", "sinh nam", "sinh vao", "nam sinh"}:
+            return [f"{u_name} sinh vào năm nào?", f"Năm sinh của {u_name} là khi nào?"]
+        if r_norm in {"mat", "mat nam", "mat vao", "nam mat", "qua doi"}:
+            return [f"{u_name} mất vào năm nào?", f"Năm mất của {u_name} là khi nào?"]
+        if r_norm in {"khoi dung", "xay dung vao", "duoc xay dung vao", "thanh lap vao", "duoc thanh lap vao"}:
+            return [
+                f"{u_name} được xây dựng vào thời gian nào?",
+                f"{u_name} được khởi dựng khi nào?",
+            ]
+        if r_norm in {"dien ra", "dien ra vao"}:
+            return [f"Sự kiện {u_name} diễn ra vào thời điểm nào?", f"{u_name} diễn ra vào thời gian nào?"]
+        if r_norm in {"co nien dai", "nien dai"}:
+            return [f"{u_name} có niên đại từ thời kỳ hoặc năm nào?", f"Niên đại của {u_name} là khi nào?"]
+        return [f"{u_name} {_format_open_vietnamese_predicate(rel_c, vk)}?"]
 
     if sem == "AGENT_CREATOR":
         if "triều vua" in r_norm:
             return [
                 f"{u_name} được xây dựng dưới triều vua nào?",
                 f"Vị vua nào đã cho xây dựng {u_name}?",
-                f"{u_name} gắn liền với triều đại của vị vua nào?",
             ]
+        if "kế nhiệm" in r_norm:
+            return [f"{u_name} kế nhiệm nhân vật nào?", f"Ai là người tiền nhiệm của {u_name}?"]
+        if spec_wh:
+            return [f"{u_name} {spec_wh}?"]
         if "thiết kế" in r_norm:
-            return [f"{u_name} do ai thiết kế?", f"Kiến trúc sư nào đã thiết kế {u_name}?", f"Công trình {u_name} được thiết kế bởi ai?"]
+            return [f"{u_name} do ai thiết kế?", f"Công trình {u_name} được thiết kế bởi ai?"]
         if "trụ trì" in r_norm:
             return [f"Ai là người trụ trì {u_name}?", f"Sư trụ trì của {u_name} là ai?"]
-        if "tác giả" in r_norm:
-            return [f"Ai là tác giả của {u_name}?", f"Tác giả sáng tác {u_name} là ai?"]
-        return [f"Ai là người {rel_c} {u_name}?", f"{u_name} do ai {rel_c}?", f"Nhân vật nào gắn liền với việc {rel_c} {u_name}?"]
+        if "tác giả" in r_norm or "sáng tác" in r_norm:
+            return [f"Ai là tác giả của {u_name}?", f"{u_name} do ai sáng tác?"]
+        return [f"{u_name} {rel_c} ai hoặc đơn vị nào?"]
 
     if sem == "NAMING_IDENTITY":
         if "đổi tên" in r_norm:
             return [f"{u_name} được đổi tên thành gì?", f"Tên mới sau khi đổi của {u_name} là gì?"]
         if "tên cũ" in r_norm:
             return [f"{u_name} từng mang tên cũ là gì?", f"Tên gọi trước đây của {u_name} là gì?"]
-        return [f"{u_name} còn được gọi bằng tên nào khác?", f"{u_name} có tên gọi khác là gì?", f"Tên gọi khác của {u_name} trong lịch sử là gì?"]
+        if "tên gọi là" in r_norm:
+            return [f"{u_name} có tên gọi là gì?", f"Tên gọi của {u_name} là gì?"]
+        return [f"{u_name} còn được gọi bằng tên nào khác?", f"{u_name} có tên gọi khác là gì?"]
 
-    if sem == "ORGANIZATION":
+    if sem == "ORGANIZATION" or sem == "DYNASTY_ORG":
+        if spec_wh:
+            return [f"{u_name} {spec_wh}?"]
         if any(k in r_norm for k in ("hợp nhất", "sáp nhập")):
-            return [f"{u_name} hợp nhất hoặc sáp nhập với đơn vị nào?", f"{u_name} được sáp nhập thành tổ chức nào?"]
-        if any(k in r_norm for k in ("giám đốc", "chủ tịch", "chức vụ")):
-            return [f"{u_name} đảm nhiệm chức vụ hoặc vai trò gì?", f"Ai là người lãnh đạo tại {u_name}?"]
-        return [f"{u_name} trực thuộc cơ quan hay tổ chức nào?", f"{u_name} có quan hệ hợp tác với đơn vị nào?"]
+            return [f"{u_name} hợp nhất hoặc sáp nhập với đơn vị nào?"]
+        return [f"{u_name} trực thuộc cơ quan, tổ chức hay triều đại nào?"]
 
     if sem == "MEASUREMENT":
+        if spec_wh:
+            return [f"{u_name} {spec_wh}?"]
         if "diện tích" in r_norm:
-            return [f"Diện tích của {u_name} là bao nhiêu?", f"{u_name} có diện tích rộng bao nhiêu?"]
+            return [f"Diện tích của {u_name} là bao nhiêu?"]
         if "chiều dài" in r_norm or "dài" in r_norm:
-            return [f"{u_name} có chiều dài bao nhiêu mét?", f"Chiều dài của {u_name} là bao nhiêu?"]
+            return [f"{u_name} có chiều dài bao nhiêu?"]
         if "chiều cao" in r_norm or "cao" in r_norm:
-            return [f"{u_name} cao bao nhiêu mét?", f"Chiều cao của công trình {u_name} là bao nhiêu?"]
-        return [f"Quy mô số đo của {u_name} là bao nhiêu?", f"{u_name} có quy mô như thế nào?"]
+            return [f"{u_name} có chiều cao bao nhiêu?"]
+        return [f"{u_name} có {rel_c} bao nhiêu?"]
 
     if sem == "CONNECTION":
+        if spec_wh:
+            return [f"{u_name} {spec_wh}?"]
         if "bắc qua" in r_norm:
-            return [f"{u_name} bắc qua con sông nào?", f"Cây cầu {u_name} bắc qua sông nào ở Hà Nội?"]
+            return [f"{u_name} bắc qua con sông hay địa điểm nào?"]
         if "chảy qua" in r_norm:
-            return [f"{u_name} chảy qua những địa phận nào?", f"Dòng sông {u_name} đi qua những khu vực nào?"]
-        if "nối" in r_norm:
-            return [f"{u_name} nối liền những khu vực nào?", f"Tuyến đường {u_name} kết nối những địa điểm nào?"]
-        if any(k in r_norm for k in ("chuyến bay", "đường bay")):
-            return [f"{u_name} khai thác các chuyến bay kết nối tới địa điểm nào?", f"{u_name} có đường bay đến thành phố hay quốc gia nào?"]
-        return [f"{u_name} kết nối với những địa điểm nào?"]
+            return [f"{u_name} chảy qua những địa phận nào?"]
+        if "nối" in r_norm or "kết nối" in r_norm:
+            return [f"{u_name} nối liền với địa điểm nào?"]
+        return [f"{u_name} kết nối với địa điểm nào?"]
 
-    return [
-        f"Cho biết thông tin về việc {u_name} {rel_c}?",
-        f"{u_name} {rel_c} ai hoặc địa danh nào?",
-        f"{u_name} {rel_c} như thế nào?",
-    ]
+    if spec_wh:
+        return [f"{u_name} {spec_wh}?"]
+
+    return [f"{u_name} {_format_open_vietnamese_predicate(rel_c, vk)}?"]
 
 
 def synthesize_1hop_natural_question(
@@ -262,15 +410,30 @@ def synthesize_1hop_natural_question(
     v_name: str,
     v_kind: str = "",
     idx_seed: int = 0,
+    *,
+    u_kind: str = "",
+    relation_notes: dict[str, Any] | None = None,
 ) -> str:
-    """Sinh câu hỏi 1-hop tự nhiên như con người gõ tìm kiếm, không dùng từ ngữ máy tính."""
-    sem = classify_relation_semantic(rel)
-    rel_c = clean_rel_name(rel)
+    """Sinh câu hỏi 1-hop tự nhiên bằng tiếng Việt chuẩn, không lọt mã tiếng Anh."""
+    spec = resolve_relation_spec(
+        rel,
+        source_kind=u_kind,
+        target_kind=v_kind,
+        relation_notes=relation_notes,
+    )
+    polarity = resolve_worship_polarity(rel, source_kind=u_kind, target_kind=v_kind)
+    if polarity == "shrine_to_deity":
+        sem = "WORSHIP"
+        rel_c = "thờ phụng"
+    elif polarity == "deity_to_shrine":
+        sem = "WORSHIP"
+        rel_c = "được thờ tại"
+    else:
+        sem = classify_relation_semantic(rel)
+        rel_c = spec.label_vi or clean_rel_name(rel, relation_notes=relation_notes)
     r_norm = normal(rel_c)
     vk = normal(v_kind)
-    variants = _get_1hop_variants(sem, rel_c, r_norm, u_name, vk)
-    return _clean_natural_question_text(variants[idx_seed % len(variants)])
-
+    variants = _get_1hop_variants(sem, rel_c, r_norm, u_name, vk, spec_wh=spec.forward_wh)
     return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
 
@@ -281,7 +444,7 @@ _INVERSE_SEM_TEMPLATES: dict[str, list[str]] = {
         "Địa danh nào tọa lạc trên địa bàn {v}?",
     ],
     "WORSHIP": [
-        "Những ngôi đền, ngôi chùa nào tại Hà Nội thờ phụng {v}?",
+        "Những di tích, ngôi đền hay ngôi chùa nào thờ phụng {v}?",
         "{v} được thờ phụng tại di tích nào?",
         "Nơi nào là địa điểm thờ cúng {v}?",
     ],
@@ -319,24 +482,50 @@ def synthesize_1hop_inverse_question(
     v_name: str,
     u_kind: str = "",
     idx_seed: int = 0,
+    *,
+    v_kind: str = "",
+    relation_notes: dict[str, Any] | None = None,
 ) -> str:
-    """Sinh câu hỏi 1-hop ngược (tìm chủ thể) tự nhiên không có từ ngữ máy tính."""
-    sem = classify_relation_semantic(rel)
-    rel_c = clean_rel_name(rel)
-    uk_lbl = _infer_entity_natural_label(u_name, u_kind)
+    """Sinh câu hỏi 1-hop ngược (tìm chủ thể) tự nhiên đúng ngữ nghĩa và chiều quan hệ."""
+    spec = resolve_relation_spec(
+        rel,
+        source_kind=u_kind,
+        target_kind=v_kind,
+        relation_notes=relation_notes,
+    )
+    polarity = resolve_worship_polarity(rel, source_kind=u_kind, target_kind=v_kind)
+    uk_lbl = _infer_entity_natural_label(u_name, u_kind, outgoing_rel=rel)
+    u_noun = uk_lbl if uk_lbl and uk_lbl not in ("đối tượng", "thông tin") else resolve_entity_type_spec(u_kind).short_noun
+    if not u_noun or u_noun == "đối tượng":
+        u_noun = "công trình, địa danh hay nhân vật"
 
-    if sem in _INVERSE_SEM_TEMPLATES:
-        variants = [t.format(v=v_name) for t in _INVERSE_SEM_TEMPLATES[sem]]
+    if polarity == "shrine_to_deity":
+        variants = [
+            f"Di tích hay công trình nào thờ phụng {v_name}?",
+            f"Nơi nào là địa điểm thờ phụng {v_name}?",
+        ]
+    elif polarity == "deity_to_shrine":
+        variants = [
+            f"Nhân vật hay đối tượng nào được thờ phụng tại {v_name}?",
+            f"Ai được thờ phụng tại {v_name}?",
+        ]
+    elif spec.inverse_clause and spec.semantic:
+        clause = spec.inverse_clause.format(obj=v_name)
+        u_cap = u_noun[0].upper() + u_noun[1:] if len(u_noun) > 1 else u_noun.upper()
+        variants = [
+            f"{u_cap} nào {clause}?",
+            f"Những {u_noun} nào {clause}?",
+        ]
     else:
-        if uk_lbl and uk_lbl != "thông tin":
-            variants = [
-                f"{uk_lbl.capitalize()} nào {rel_c} {v_name}?",
-                f"Có những {uk_lbl} nào {rel_c} {v_name}?",
-            ]
+        sem = classify_relation_semantic(rel)
+        rel_c = spec.label_vi or clean_rel_name(rel, relation_notes=relation_notes)
+        if sem in _INVERSE_SEM_TEMPLATES and "kế nhiệm" not in normal(rel_c) and len(rel_c.split()) <= 3:
+            variants = [t.format(v=v_name) for t in _INVERSE_SEM_TEMPLATES[sem]]
         else:
+            u_cap = u_noun[0].upper() + u_noun[1:] if len(u_noun) > 1 else u_noun.upper()
             variants = [
-                f"Công trình, địa danh hay nhân vật nào {rel_c} {v_name}?",
-                f"Nơi nào hoặc đơn vị nào {rel_c} {v_name}?",
+                f"{u_cap} nào {rel_c} {v_name}?",
+                f"Những {u_noun} nào {rel_c} {v_name}?",
             ]
 
     return _clean_natural_question_text(variants[idx_seed % len(variants)])
@@ -373,12 +562,12 @@ _SEM_IN_LABELS: dict[str, str] = {
 
 
 def _infer_entity_natural_label(name: str, kind: str, incoming_rel: str = "", outgoing_rel: str = "") -> str:
-    """Suy luận danh từ chỉ loại tự nhiên (địa danh, ngôi chùa, vị vua, hiện vật...) thay cho chữ 'thực thể'/'đối tượng'."""
-    n_lower = name.lower()
+    """Suy luận danh từ chỉ loại tự nhiên tiếng Việt từ tên, loại CIDOC và ngữ cảnh quan hệ."""
+    n_lower = str(name or "").lower()
     for prefixes, lbl in _NAME_PREFIX_LABELS:
         if any(n_lower.startswith(p) for p in prefixes):
             return lbl
-    if any(n_lower.startswith(x) for x in ("vua ", "hoàng đế ", "lý ", "trần ", "lê ", "nguyễn ")) and len(name.split()) <= 4:
+    if any(n_lower.startswith(x) for x in ("vua ", "hoàng đế ", "lý ", "trần ", "lê ", "nguyễn ")) and len(str(name or "").split()) <= 4:
         return "nhân vật"
 
     k_norm = normal(kind)
@@ -386,12 +575,17 @@ def _infer_entity_natural_label(name: str, kind: str, incoming_rel: str = "", ou
         if any(k in k_norm for k in keywords):
             return lbl
 
+    if str(kind or "").strip():
+        et_spec = resolve_entity_type_spec(kind)
+        if et_spec.short_noun and et_spec.short_noun != "thực thể":
+            return et_spec.short_noun
+
     if incoming_rel:
         sem_in = classify_relation_semantic(incoming_rel)
         if sem_in in _SEM_IN_LABELS:
             return _SEM_IN_LABELS[sem_in]
 
-    return "thông tin"
+    return "đối tượng"
 
 
 _ATTRIBUTE_DESCRIPTORS: tuple[tuple[str, tuple[str, ...], str], ...] = (
@@ -419,87 +613,102 @@ def _format_attribute_descriptor(rel: str) -> str:
 
 
 _EXACT_PREDICATE_PHRASES: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("thờ",), "thờ phụng vị anh hùng hay danh nhân nào?"),
+    (("thờ phụng", "thờ tự", "thờ cúng", "được thờ"), "thờ phụng vị anh hùng hay danh nhân nào?"),
     (("thiết kế",), "do ai thiết kế?"),
     (("tác giả",), "do ai là tác giả?"),
     (("trụ trì",), "do vị sư nào trụ trì?"),
     (("dời đô",), "dời kinh đô từ đâu?"),
-    (("triều",), "thuộc triều đại nào?"),
     (("bắc qua",), "bắc qua con sông nào?"),
     (("chảy qua",), "chảy qua những khu vực nào?"),
-    (("chức vụ", "chủ tịch", "giám đốc"), "đảm nhiệm chức vụ hay vai trò gì?"),
     (("công nhận", "xếp hạng"), "được xếp hạng hay công nhận danh hiệu gì?"),
-    (("bao gồm", "chứa"), "bao gồm những công trình hay hiện vật nào?"),
-    (("trưng bày", "lưu giữ"), "trưng bày hay lưu giữ những hiện vật nào?"),
     (("chuyến bay", "đường bay"), "kết nối đường bay tới đâu?"),
 )
 
 
-def _format_predicate_question(rel: str, c_kind: str = "") -> str:
-    """Tạo cụm hỏi tự nhiên theo quan hệ đích mà không bị lặp từ hay máy móc."""
+def _format_predicate_question(
+    rel: str,
+    c_kind: str = "",
+    *,
+    source_kind: str = "",
+    relation_notes: dict[str, Any] | None = None,
+) -> str:
+    """Tạo cụm hỏi vị ngữ tự nhiên bằng tiếng Việt chuẩn theo ngữ nghĩa quan hệ và loại đích."""
+    spec = resolve_relation_spec(
+        rel,
+        source_kind=source_kind,
+        target_kind=c_kind,
+        relation_notes=relation_notes,
+    )
+    polarity = resolve_worship_polarity(rel, source_kind=source_kind, target_kind=c_kind)
+    if polarity == "shrine_to_deity":
+        return "thờ phụng ai hoặc vị thần nào?"
+    if polarity == "deity_to_shrine":
+        return "được thờ phụng tại đâu?"
+
+    # Nếu là HAS_TYPE nhưng đích lại là số đo/kích thước (dữ liệu gán loại hẹp), hỏi sát hơn theo đích
+    if spec.relation_key in {"HAS_TYPE", "ASSIGNED_TYPE"} and c_kind:
+        c_role = resolve_entity_type_spec(c_kind).role
+        if c_role == "literal" and "dimension" in normal(c_kind):
+            return "có thông số kích thước là gì?"
+
+    if spec.forward_wh and spec.semantic:
+        return f"{spec.forward_wh}?"
+
     sem = classify_relation_semantic(rel)
-    rel_c = clean_rel_name(rel)
+    rel_c = spec.label_vi or clean_rel_name(rel, relation_notes=relation_notes)
     ck = normal(c_kind)
     r_norm = normal(rel_c)
 
-    if "thuộc" in r_norm:
-        if any(x in ck for x in ("quận", "huyện", "phường", "tỉnh", "địa danh", "địa bàn")):
-            return "thuộc quận hay khu vực nào của Hà Nội?"
-        return "thuộc sự kiện lịch sử nào?" if "sự kiện" in ck else "thuộc quận, khu vực hay tổ chức nào?"
+    if "thuộc" in r_norm and not rel_c.lower().strip().endswith((" thời", " thời kỳ", " giai đoạn", " thế kỷ")):
+        if any(x in ck for x in ("quận", "huyện", "phường", "tỉnh", "địa danh", "địa bàn", "admin", "place")):
+            return "thuộc địa bàn hay khu vực nào?"
+        return "thuộc sự kiện lịch sử nào?" if "sự kiện" in ck else "thuộc khu vực hay tổ chức nào?"
 
-    if any(x in r_norm for x in ("tọa lạc", "nằm ở", "nằm tại", "đặt tại")):
-        return "ở đâu?"
+    if any(x in r_norm for x in ("tọa lạc", "nằm ở", "nằm tại", "đặt tại")) and len(rel_c.split()) <= 3:
+        return "nằm ở đâu?"
 
     if any(x in r_norm for x in ("giáp", "tiếp giáp", "gần", "cách", "đối diện")):
-        return f"{rel_c} địa danh hay khu vực nào?"
+        return f"{rel_c} địa điểm nào?"
 
-    if sem == "TEMPORAL" or any(x in ck for x in ("thời gian", "năm")) or any(x in r_norm for x in ("năm", "thời gian", "ngày", "khi", "niên đại")):
+    if sem == "TEMPORAL" or any(x in ck for x in ("thời gian", "năm")) or any(x in r_norm for x in ("năm", "thời gian", "ngày", "niên đại")):
+        if rel_c.lower().strip().endswith((" vào năm", " năm", " vào ngày", " ngày", " thời", " thời kỳ", " giai đoạn")):
+            return f"{rel_c} nào?"
         if rel_c.endswith(" vào"):
             return f"{rel_c} năm nào?"
-        if "vào" in r_norm:
-            return f"{rel_c} khi nào?"
-        if "niên đại" in r_norm:
-            return "có niên đại từ khi nào?"
-        if "sinh" in r_norm:
+        if "niên đại" in r_norm and len(rel_c.split()) <= 3:
+            return "có niên đại từ thời kỳ hoặc năm nào?"
+        if r_norm in {"sinh", "sinh nam", "sinh vao"}:
             return "sinh vào năm nào?"
-        if "mất" in r_norm:
+        if r_norm in {"mat", "mat nam", "mat vao"}:
             return "mất vào năm nào?"
-        return f"{rel_c} vào năm nào?"
+        return f"{_format_open_vietnamese_predicate(rel_c, c_kind)}?"
 
     for keys, phrase in _EXACT_PREDICATE_PHRASES:
         if any(k in r_norm for k in keys):
             return phrase
 
-    if any(x in r_norm for x in ("hợp nhất", "sáp nhập")):
-        return f"{rel_c} đơn vị hay bảo tàng nào?"
+    if any(x in r_norm for x in ("hợp nhất", "sáp nhập")) and len(rel_c.split()) <= 3:
+        return f"{rel_c} đơn vị nào?"
 
-    if "tên" in r_norm or "gọi" in r_norm:
+    if ("tên" in r_norm or "gọi" in r_norm) and len(rel_c.split()) <= 4 and not rel_c.lower().endswith("hồ"):
         if "đổi tên" in r_norm:
             return "được đổi tên thành gì?"
         if "tên cũ" in r_norm:
             return "từng mang tên cũ là gì?"
         if "mang tên" in r_norm:
-            return "mang tên là gì?"
+            return "có tên gọi là gì?"
         return "còn được gọi là gì?"
 
-    if any(x in r_norm for x in ("nơi sống", "làm việc")):
-        return f"{rel_c} của danh nhân nào?"
+    if any(x in r_norm for x in ("nơi sống", "làm việc")) and len(rel_c.split()) <= 4:
+        return f"{rel_c} của nhân vật nào?"
 
-    if any(x in r_norm for x in ("tặng", "khen thưởng", "bằng khen", "giải thưởng")):
-        return f"{rel_c} phần thưởng hay danh hiệu gì?"
+    if any(x in r_norm for x in ("tặng", "khen thưởng", "bằng khen", "giải thưởng")) and len(rel_c.split()) <= 4:
+        return f"{rel_c} danh hiệu hay phần thưởng gì?"
 
-    if sem == "MEASUREMENT" or any(x in r_norm for x in ("diện tích", "chiều dài", "chiều cao", "quy mô", "kích thước")):
-        return f"có {rel_c} là bao nhiêu?"
+    if sem == "MEASUREMENT" or any(x in r_norm for x in ("diện tích", "chiều dài", "chiều cao", "chiều rộng", "độ sâu", "độ dày", "đường kính", "khối lượng", "số đo", "kích thước")):
+        return f"{rel_c} là bao nhiêu?"
 
-    # Fallback dựa theo kiểu đích c_kind
-    if any(x in ck for x in ("nhân vật", "người", "danh nhân", "vị vua")):
-        return f"{rel_c} nhân vật nào?"
-    if any(x in ck for x in ("địa danh", "địa bàn", "vị trí")):
-        return f"{rel_c} ở địa danh nào?"
-    if any(x in ck for x in ("đơn vị", "tổ chức", "bảo tàng", "trường")):
-        return f"{rel_c} đơn vị nào?"
-
-    return f"{rel_c} nội dung hay nhân vật nào?"
+    return f"{_format_open_vietnamese_predicate(rel_c, c_kind)}?"
 
 
 _2HOP_SEM_PATTERNS: tuple[tuple[str, str, list[str]], ...] = (
@@ -536,20 +745,29 @@ def synthesize_2hop_bridge_question(
     c_name: str,
     c_kind: str,
     idx_seed: int = 0,
+    *,
+    u_kind: str = "",
+    relation_notes: dict[str, Any] | None = None,
 ) -> str:
-    """Sinh câu hỏi 2-hop bắc cầu siêu tự nhiên như con người hỏi lịch sử/địa lý."""
+    """Sinh câu hỏi 2-hop bắc cầu tự nhiên bằng tiếng Việt, bảo toàn đúng chiều cả 2 quan hệ."""
+    spec1 = resolve_relation_spec(r1, source_kind=u_kind, target_kind=b_kind, relation_notes=relation_notes)
+    spec2 = resolve_relation_spec(r2, source_kind=b_kind, target_kind=c_kind, relation_notes=relation_notes)
     sem1 = classify_relation_semantic(r1)
     sem2 = classify_relation_semantic(r2)
-    r1_c = clean_rel_name(r1)
-    r2_c = clean_rel_name(r2)
+    r1_c = spec1.label_vi or clean_rel_name(r1, relation_notes=relation_notes)
     ck = normal(c_kind)
 
-    if sem1 == "LOCATION" and (sem2 == "LOCATION" or any(x in ck for x in ("quận", "huyện", "tỉnh"))):
-        variants = [
-            f"{u_name} tọa lạc tại địa danh nào và nơi đó thuộc quận nào của Hà Nội?",
-            f"Địa bàn nơi {u_name} tọa lạc thuộc quận hay khu vực nào?",
-            f"{u_name} nằm ở đâu và khu vực đó trực thuộc địa bàn nào?",
-        ]
+    if sem1 == "LOCATION" and (sem2 == "LOCATION" or any(x in ck for x in ("quận", "huyện", "tỉnh", "địa danh"))):
+        if spec1.forward_wh and spec2.forward_wh:
+            variants = [
+                f"{u_name} {spec1.forward_wh} và khu vực đó {spec2.forward_wh}?",
+                f"Địa danh nơi {u_name} tọa lạc {spec2.forward_wh}?",
+            ]
+        else:
+            variants = [
+                f"{u_name} tọa lạc tại địa danh nào và nơi đó thuộc khu vực hay đơn vị nào?",
+                f"Địa bàn nơi {u_name} tọa lạc thuộc đơn vị hay khu vực nào?",
+            ]
         return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
     if "bắc qua" in normal(r1_c) and sem2 == "CONNECTION":
@@ -559,45 +777,60 @@ def synthesize_2hop_bridge_question(
         ]
         return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
+    # Nếu r1 thuộc dạng thờ phụng (IS_WORSHIPPED_AT/WORSHIPPED_AT), giữ đúng chiều chủ động/bị động
+    pol1 = resolve_worship_polarity(r1, source_kind=u_kind, target_kind=b_kind)
+    is_display_rel = spec1.relation_key in {"DISPLAYS", "HOLDS_COLLECTION"} or any(
+        w in r1_c.lower() for w in ("trưng bày", "lưu giữ", "bộ sưu tập")
+    )
     for s1, s2, templates in _2HOP_SEM_PATTERNS:
         if sem1 == s1 and sem2 == s2:
+            if s1 == "WORSHIP" and pol1 != "shrine_to_deity":
+                break
+            if s1 == "CONTENT_CONTAINER" and not is_display_rel:
+                break
+            if s1 == "AGENT_CREATOR" and ("kế nhiệm" in r1_c.lower() or spec1.relation_key == "SUCCEEDED"):
+                break
             variants = [t.format(u=u_name) for t in templates]
             return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
-    # TRƯỜNG HỢP TỔNG QUÁT TỰ NHIÊN: Suy luận từ chỉ loại danh từ thay vì dùng chữ "thực thể" / "đối tượng"
     b_lbl = _infer_entity_natural_label(b_name, b_kind, incoming_rel=r1, outgoing_rel=r2)
-    q_tail = _format_predicate_question(r2, c_kind)
+    q_tail = _format_predicate_question(r2, c_kind, source_kind=b_kind, relation_notes=relation_notes)
+    b_noun = b_lbl if b_lbl and b_lbl not in ("đối tượng", "thông tin") else resolve_entity_type_spec(b_kind).short_noun
+    if not b_noun or b_noun == "thực thể":
+        b_noun = "đối tượng"
 
-    _GEN_BRIDGE_MAP = {
-        ("địa danh", "địa bàn"): [
-            f"{u_name} tọa lạc tại địa danh nào và nơi này {q_tail}",
-            f"Khu vực nơi {u_name} tọa lạc {q_tail}",
-            f"Địa bàn nơi {u_name} đặt vị trí {q_tail}",
-        ],
-        ("nhân vật", "vị vua", "danh nhân"): [
-            f"{u_name} gắn liền với nhân vật lịch sử nào và người đó {q_tail}",
-            f"Nhân vật gắn liền với {u_name} {q_tail}",
-        ],
-        ("hiện vật", "bảo vật"): [
-            f"{u_name} lưu giữ hoặc trưng bày hiện vật nào và hiện vật này {q_tail}",
-            f"Hiện vật quý gắn với {u_name} {q_tail}",
-        ],
-        ("đơn vị", "tổ chức", "bảo tàng"): [
-            f"{u_name} liên kết hoặc sáp nhập với đơn vị nào và tổ chức này {q_tail}",
-            f"Đơn vị liên kết với {u_name} {q_tail}",
-        ],
-    }
-    for keys, var_list in _GEN_BRIDGE_MAP.items():
-        if b_lbl in keys:
-            variants = var_list
-            break
+    b_ref = "người đó" if any(x in b_noun for x in ("nhân vật", "vua", "danh nhân", "vị thần")) else (
+        "nơi đó" if any(x in b_noun for x in ("địa danh", "địa điểm", "khu vực", "di tích", "chợ", "làng")) else f"{b_noun} này"
+    )
+
+    if pol1 == "deity_to_shrine":
+        variants = [
+            f"{u_name} được thờ phụng tại {b_noun} nào và {b_ref} {q_tail}",
+            f"Di tích thờ {u_name} {q_tail}",
+        ]
+    elif pol1 == "shrine_to_deity":
+        variants = [
+            f"{u_name} thờ phụng nhân vật nào và người đó {q_tail}",
+            f"Nhân vật được thờ tại {u_name} {q_tail}",
+        ]
+    elif spec1.forward_wh and spec1.semantic == "LOCATION" and spec1.relation_key in {"LOCATED_IN", "PART_OF_PLACE"}:
+        variants = [
+            f"{u_name} {spec1.forward_wh} và {b_ref} {q_tail}",
+            f"Khu vực nơi {u_name} {r1_c} {q_tail}",
+        ]
+    elif spec1.forward_wh and spec1.semantic == "AGENT_CREATOR" and "kế nhiệm" not in r1_c:
+        variants = [
+            f"{u_name} {spec1.forward_wh} và {b_ref} {q_tail}",
+            f"Chủ thể đã {r1_c.replace('được ', '').replace(' bởi', '').strip()} {u_name} {q_tail}",
+        ]
+    elif spec1.forward_wh:
+        variants = [
+            f"{u_name} {spec1.forward_wh} và {b_ref} {q_tail}",
+        ]
     else:
         variants = [
-            f"{u_name} {r1_c} {b_lbl} nào và {b_lbl} này {q_tail}",
-            f"Cho biết {b_lbl} gắn liền với việc {r1_c} của {u_name} và {b_lbl} này {q_tail}",
+            f"{u_name} {r1_c} {b_noun} nào và {b_ref} {q_tail}",
         ]
-
-    return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
     return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
@@ -618,9 +851,9 @@ def synthesize_intersection_question(
 
     if sem1 == "LOCATION" and sem2 == "LOCATION":
         variants = [
-            f"Cả hai công trình {a_name} và {b_name} cùng tọa lạc tại quận hay khu vực nào của Hà Nội?",
-            f"{a_name} và {b_name} có chung điểm tương đồng gì về địa bàn tọa lạc?",
-            f"Khu vực nào là nơi tọa lạc của cả hai di tích {a_name} lẫn {b_name}?",
+            f"Cả hai công trình hoặc địa điểm {a_name} và {b_name} cùng tọa lạc tại khu vực nào?",
+            f"{a_name} và {b_name} cùng gắn với địa bàn hay khu vực chung nào?",
+            f"Khu vực nào là nơi tọa lạc của cả {a_name} lẫn {b_name}?",
         ]
         return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
@@ -731,6 +964,8 @@ def generate_qa_benchmark(
     seen_queries: set[str] = set()
     used_source_nodes: set[str] = set()
 
+    r_notes = project.get("relation_notes") if isinstance(project.get("relation_notes"), dict) else None
+
     # 1. 2-Hop Bridge (55% số câu)
     target_2hop = max(6, int(num_questions * 0.55))
     step_idx = 0
@@ -741,6 +976,7 @@ def generate_qa_benchmark(
             continue
         u_node = index.nodes_by_id.get(u, {})
         u_name = str(u_node.get("name", "")).strip()
+        u_kind = str(u_node.get("kind") or "").strip()
         if not u_name or len(u_name.split()) < 2 or normal(u_name) in GENERIC_ENTITY_NAMES:
             continue
         if not (1 <= index.degree.get(u, 0) <= 25):
@@ -754,7 +990,7 @@ def generate_qa_benchmark(
             b_node = index.nodes_by_id.get(b, {})
             b_name = str(b_node.get("name", "")).strip()
             b_kind = str(b_node.get("kind") or "đối tượng").strip()
-            if not b_name or normal(b_name) in GENERIC_ENTITY_NAMES or normal(b_kind) in ("mốc thời gian", "số đo"):
+            if not b_name or normal(b_name) in GENERIC_ENTITY_NAMES or not is_valid_multihop_bridge_kind(b_kind):
                 continue
 
             r1 = str(e1.get("relation", "")).strip()
@@ -771,7 +1007,16 @@ def generate_qa_benchmark(
 
                 step_idx += 1
                 q_text = synthesize_2hop_bridge_question(
-                    u_name, r1, b_name, b_kind, r2, c_name, c_kind, idx_seed=step_idx
+                    u_name,
+                    r1,
+                    b_name,
+                    b_kind,
+                    r2,
+                    c_name,
+                    c_kind,
+                    idx_seed=step_idx,
+                    u_kind=u_kind,
+                    relation_notes=r_notes,
                 )
                 if q_text in seen_queries:
                     continue
@@ -879,6 +1124,7 @@ def generate_qa_benchmark(
         u_node = index.nodes_by_id.get(u, {})
         v_node = index.nodes_by_id.get(v, {})
         u_name = str(u_node.get("name", "")).strip()
+        u_kind = str(u_node.get("kind") or "").strip()
         v_name = str(v_node.get("name", "")).strip()
         v_kind = str(v_node.get("kind") or "").strip()
         rel = str(e.get("relation", "")).strip()
@@ -888,7 +1134,9 @@ def generate_qa_benchmark(
             continue
 
         fact_idx += 1
-        q_text = synthesize_1hop_natural_question(u_name, rel, v_name, v_kind, idx_seed=fact_idx)
+        q_text = synthesize_1hop_natural_question(
+            u_name, rel, v_name, v_kind, idx_seed=fact_idx, u_kind=u_kind, relation_notes=r_notes
+        )
         if q_text in seen_queries:
             continue
         seen_queries.add(q_text)
@@ -995,6 +1243,8 @@ def generate_training_qa_dataset(
             }
         )
 
+    r_notes = project.get("relation_notes") if isinstance(project.get("relation_notes"), dict) else None
+
     # 1. 2-Hop Bridge & Explainable Path
     step_counter = 0
     for u, e1_list in index.out_edges.items():
@@ -1002,6 +1252,7 @@ def generate_training_qa_dataset(
             break
         u_node = index.nodes_by_id.get(u, {})
         u_name = str(u_node.get("name", "")).strip()
+        u_kind = str(u_node.get("kind") or "").strip()
         if not u_name or normal(u_name) in GENERIC_ENTITY_NAMES or index.degree.get(u, 0) > 35:
             continue
 
@@ -1015,7 +1266,7 @@ def generate_training_qa_dataset(
             b_node = index.nodes_by_id.get(b, {})
             b_name = str(b_node.get("name", "")).strip()
             b_kind = str(b_node.get("kind") or "đối tượng").strip()
-            if not b_name or normal(b_name) in GENERIC_ENTITY_NAMES or normal(b_kind) in ("mốc thời gian", "số đo"):
+            if not b_name or normal(b_name) in GENERIC_ENTITY_NAMES or not is_valid_multihop_bridge_kind(b_kind):
                 continue
             r1 = str(e1.get("relation", "")).strip()
             ev1 = str(e1.get("evidence", "")).strip()
@@ -1036,13 +1287,22 @@ def generate_training_qa_dataset(
                 chain_str = f"{u_name} ──[{r1}]──► {b_name} ──[{r2}]──► {c_name}"
                 ans_str = (
                     f"Thực thể đích là **{c_name}** (thông qua cầu nối trung gian **{b_name}**).\n"
-                    f"- Bước 1: {u_name} {clean_rel_name(r1)} {b_name} — Bằng chứng: \"{ev1}\" [{e1['id']} | {e1.get('doc_name', '')}].\n"
-                    f"- Bước 2: {b_name} {clean_rel_name(r2)} {c_name} — Bằng chứng: \"{ev2}\" [{e2['id']} | {e2.get('doc_name', '')}]."
+                    f"- Bước 1: {u_name} {clean_rel_name(r1, relation_notes=r_notes)} {b_name} — Bằng chứng: \"{ev1}\" [{e1['id']} | {e1.get('doc_name', '')}].\n"
+                    f"- Bước 2: {b_name} {clean_rel_name(r2, relation_notes=r_notes)} {c_name} — Bằng chứng: \"{ev2}\" [{e2['id']} | {e2.get('doc_name', '')}]."
                 )
 
                 if len(buckets["2hop_bridge"]) < q_2hop_cap:
                     q_b = synthesize_2hop_bridge_question(
-                        u_name, r1, b_name, b_kind, r2, c_name, c_kind, idx_seed=step_counter
+                        u_name,
+                        r1,
+                        b_name,
+                        b_kind,
+                        r2,
+                        c_name,
+                        c_kind,
+                        idx_seed=step_counter,
+                        u_kind=u_kind,
+                        relation_notes=r_notes,
                     )
                     _make_sample(
                         "2hop_bridge",
@@ -1211,9 +1471,11 @@ def generate_training_qa_dataset(
 
         edge_counter += 1
         if len(buckets["1hop_forward"]) < q_1hop_f_cap and normal(u_name) not in GENERIC_ENTITY_NAMES:
-            q_f = synthesize_1hop_natural_question(u_name, rel, v_name, v_kind, idx_seed=edge_counter)
+            q_f = synthesize_1hop_natural_question(
+                u_name, rel, v_name, v_kind, idx_seed=edge_counter, u_kind=u_kind, relation_notes=r_notes
+            )
             ans_f = (
-                f"Theo dữ liệu lịch sử, **{u_name}** {clean_rel_name(rel)} **{v_name}**.\n"
+                f"Theo dữ liệu lịch sử, **{u_name}** {clean_rel_name(rel, relation_notes=r_notes)} **{v_name}**.\n"
                 f"- Bằng chứng nguyên văn: \"{ev}\" [{e['id']} | {e.get('doc_name', '')}]."
             )
             _make_sample(
@@ -1235,9 +1497,11 @@ def generate_training_qa_dataset(
             and index.degree.get(v, 0) <= 15
             and edge_counter % 2 == 1
         ):
-            q_inv = synthesize_1hop_inverse_question(u_name, rel, v_name, u_kind, idx_seed=edge_counter)
+            q_inv = synthesize_1hop_inverse_question(
+                u_name, rel, v_name, u_kind, idx_seed=edge_counter, v_kind=v_kind, relation_notes=r_notes
+            )
             ans_inv = (
-                f"Chủ thể {clean_rel_name(rel)} **{v_name}** là **{u_name}** ({u_kind}).\n"
+                f"Chủ thể {clean_rel_name(rel, relation_notes=r_notes)} **{v_name}** là **{u_name}** ({u_kind}).\n"
                 f"- Bằng chứng nguyên văn: \"{ev}\" [{e['id']} | {e.get('doc_name', '')}]."
             )
             _make_sample(
@@ -1484,10 +1748,11 @@ def paraphrase_qa_questions_with_llm(
     system_prompt = (
         "Bạn là chuyên gia ngôn ngữ học tiếng Việt. Nhiệm vụ của bạn là viết lại (paraphrase) danh sách câu hỏi "
         "thành văn phong tự nhiên 100% như người dùng thật gõ tìm kiếm trên Google hoặc hỏi trong đời thường.\n"
-        "Quy tắc:\n"
-        "1. Giữ nguyên nghĩa gốc, đúng tên riêng các thực thể lịch sử/địa danh.\n"
-        "2. Tuyệt đối không dùng các từ ngữ máy móc như 'theo đồ thị tri thức', 'có mối quan hệ', 'đối tượng nào'.\n"
-        "3. Trả về đúng định dạng JSON danh sách các chuỗi câu hỏi: [\"câu 1\", \"câu 2\", ...]."
+        "Quy tắc bắt buộc:\n"
+        "1. Giữ nguyên nghĩa gốc, đúng chiều chủ thể - đối tượng (chủ động/bị động) và đúng tên riêng các thực thể hạt giống.\n"
+        "2. Không được để lộ đáp án vào trong câu hỏi và không dùng câu chữ máy móc như 'theo đồ thị tri thức', 'có mối quan hệ', 'đối tượng hay thông tin nào'.\n"
+        "3. Tuyệt đối 100% tiếng Việt: không giữ nguyên mã quan hệ tiếng Anh viết hoa hay gạch dưới (như BUILT_BY, LOCATED_IN, PART_OF_PLACE, HAS_PART...).\n"
+        "4. Trả về đúng định dạng JSON danh sách các chuỗi câu hỏi: [\"câu 1\", \"câu 2\", ...]."
     )
 
     updated_items = [dict(it) for it in items]

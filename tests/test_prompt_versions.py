@@ -321,6 +321,56 @@ class TestPromptVersioning(unittest.TestCase):
         self.assertEqual(latest_run["prepared_request_hash"], output.prepared_request_hash)
         self.assertIn("system_prompt", latest_run["prepared_request"])
 
+    def test_default_prompts_aligned_per_mode_and_json_key_normalization(self) -> None:
+        from backend.integrations.llm.parsing import clean_llm_json
+        from backend.repositories.json_repo import empty_project
+        from shared.catalog_utils import validate_edc_payload
+        from shared.constants import DEFAULT_EDC_PLUS_R_PROMPT
+
+        # 1. Mỗi chế độ có prompt mặc định riêng phù hợp cấu trúc hiện tại
+        self.assertNotEqual(DEFAULT_PROMPTS[MODE_EDC], DEFAULT_PROMPTS[MODE_EDC_PLUS_R])
+        self.assertIn("GỢI Ý LOẠI THỰC THỂ CHUẨN", DEFAULT_PROMPTS[MODE_EDC_PLUS_R])
+        self.assertIn("GỢI Ý QUAN HỆ CHUẨN", DEFAULT_PROMPTS[MODE_EDC_PLUS_R])
+
+        fresh = empty_project("Fresh Default Check")
+        self.assertEqual(
+            get_active_prompt_content(fresh, MODE_EDC_PLUS_R),
+            DEFAULT_EDC_PLUS_R_PROMPT.strip(),
+        )
+        self.assertEqual(
+            get_active_prompt_content(fresh, MODE_EDC),
+            DEFAULT_EDC_PROMPT.strip(),
+        )
+
+        # 2. Chuẩn hóa khóa JSON khi LLM vô tình viết 'dinh nghia' / 'dinh nghĩa' thay vì 'dinh_nghia'
+        raw_with_spaced_and_accented_keys = """{
+            "thuc_the": [{"ten": "Chùa Một Cột", "loại": "Monument", "mô tả": "Di tích lịch sử"}],
+            "quan_he": [{"nguồn": "Chùa Một Cột", "quan hệ": "BUILT_BY", "đích": "Lý Thái Tông", "trích dẫn": "Chùa Một Cột do Lý Thái Tông xây"}],
+            "dinh_nghia_quan_he": [
+                {"ten": "khởi dựng", "dinh nghia": "Quan hệ chỉ việc bắt đầu xây dựng công trình"},
+                {"ten": "trùng tu", "dinh nghĩa": "Quan hệ chỉ việc tu sửa công trình"}
+            ],
+            "dinh_nghia_loai": [{"tên": "Di tích", "định nghĩa": "Công trình văn hóa lịch sử"}]
+        }"""
+        parsed = clean_llm_json(raw_with_spaced_and_accented_keys)
+        validated = validate_edc_payload(parsed)
+        self.assertEqual(validated["dinh_nghia_quan_he"][0]["dinh_nghia"], "Quan hệ chỉ việc bắt đầu xây dựng công trình")
+        self.assertEqual(validated["dinh_nghia_quan_he"][1]["dinh_nghia"], "Quan hệ chỉ việc tu sửa công trình")
+        self.assertEqual(validated["dinh_nghia_loai"][0]["dinh_nghia"], "Công trình văn hóa lịch sử")
+        self.assertEqual(validated["thuc_the"][0]["mo_ta"], "Di tích lịch sử")
+        self.assertEqual(validated["quan_he"][0]["trich_dan"], "Chùa Một Cột do Lý Thái Tông xây")
+
+        # Khóa lạ không thuộc schema vẫn bị từ chối nghiêm ngặt
+        with self.assertRaises(ValueError):
+            validate_edc_payload(
+                {
+                    "thuc_the": [],
+                    "quan_he": [],
+                    "dinh_nghia_quan_he": [{"ten": "a", "dinh_nghia": "b", "truong_la": "c"}],
+                    "dinh_nghia_loai": [],
+                }
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

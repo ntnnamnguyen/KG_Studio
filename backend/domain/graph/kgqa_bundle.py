@@ -31,6 +31,14 @@ from backend.domain.graph.qa_generator import (
     synthesize_1hop_natural_question,
     synthesize_2hop_bridge_question,
 )
+from backend.domain.graph.schema_verbalizer import (
+    contains_raw_english_relation,
+    is_valid_multihop_bridge_kind,
+    resolve_entity_type_spec,
+    resolve_relation_label_vi,
+    resolve_relation_spec,
+    resolve_worship_polarity,
+)
 from shared.constants import STATUS_APPROVED
 from shared.text_utils import normal
 
@@ -69,6 +77,8 @@ _BANNED_QA_FRAGMENTS = (
     "có mối quan hệ",
     "đối tượng hay thông tin nào",
     "thực thể hay đối tượng nào",
+    "cho biết thông tin về việc",
+    "nội dung hay nhân vật nào",
 )
 
 _PLACEHOLDER_GENERIC_NOUNS = frozenset({
@@ -81,6 +91,28 @@ _PLACEHOLDER_GENERIC_NOUNS = frozenset({
     "xã",
     "không rõ",
     "chưa rõ",
+    "khu vực",
+    "địa điểm",
+    "địa danh",
+})
+
+# Các thực thể địa lý cấp vĩ mô quá rộng không nên dùng làm mốc lọc ngược (rev+fwd / 1hop_inverse)
+_MACRO_HUB_TOPICS = frozenset({
+    "hà nội",
+    "thành phố hà nội",
+    "tp hà nội",
+    "tp. hà nội",
+    "việt nam",
+    "bắc kỳ",
+    "đồng bằng bắc bộ",
+    "miền bắc",
+    "trung quốc",
+    "pháp",
+    "thực dân pháp",
+    "đông dương",
+    "liên bang đông dương thuộc pháp",
+    "châu á",
+    "đông nam á",
 })
 
 _KIND_LIST_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -165,38 +197,39 @@ def _clean_node_aliases(
 
 
 def _kind_semantic_hint(raw_kind: str) -> str:
-    """Bổ sung gợi ý tiếng Việt cho tag tiếng Anh/CIDOC (chỉ dùng nội bộ để chia câu hỏi tự nhiên)."""
+    """Trả về tên loại thực thể ngắn gọn bằng tiếng Việt (không ghép trùng lặp)."""
     raw = str(raw_kind or "").strip()
-    k = normal(raw)
-    if any(t in k for t in ("person", "actor", "author", "creator", "nhân vật")):
-        return f"{raw} nhân vật"
-    if any(t in k for t in ("place", "location", "admin", "địa danh", "địa điểm")):
-        return f"{raw} địa danh"
-    if any(t in k for t in ("event", "sự kiện")):
-        return f"{raw} sự kiện lịch sử"
-    if any(t in k for t in ("group", "org", "dynasty", "tổ chức", "triều")):
-        return f"{raw} tổ chức"
-    if any(t in k for t in ("time", "date", "year", "thời gian", "năm")):
-        return f"{raw} thời gian"
-    if any(t in k for t in ("object", "monument", "building", "công trình", "di tích")):
-        return f"{raw} công trình di tích"
-    return raw
+    if not raw:
+        return ""
+    return resolve_entity_type_spec(raw).short_noun
 
 
-def _natural_predicate_tail(rel: str, target_kind: str) -> str:
-    """Sinh cụm hỏi vị ngữ tự nhiên, ưu tiên ngữ nghĩa đích (ví dụ dưới triều + Nhân vật)."""
-    rel_c = clean_rel_name(rel) or rel
+def _natural_predicate_tail(
+    rel: str,
+    target_kind: str,
+    *,
+    source_kind: str = "",
+    relation_notes: dict[str, Any] | None = None,
+) -> str:
+    """Sinh cụm hỏi vị ngữ tiếng Việt chuẩn theo chiều quan hệ và loại đích."""
+    rel_c = clean_rel_name(rel, relation_notes=relation_notes) or rel
     r_norm = normal(rel_c)
-    tk_hint = _kind_semantic_hint(target_kind)
+    tk_hint = resolve_entity_type_spec(target_kind).short_noun if target_kind else ""
     tk_norm = normal(tk_hint)
     if any(x in r_norm for x in ("dưới triều", "dưới thời", "triều vua", "đời vua")) and "nhân vật" in tk_norm:
         return f"được {rel_c} ai?" if not rel_c.startswith("được") else f"{rel_c} ai?"
     if any(x in r_norm for x in ("dưới triều", "dưới thời", "triều")) and "tổ chức" in tk_norm:
         return f"gắn với triều đại hay {rel_c} nào?"
-    return _format_predicate_question(rel, tk_hint)
+    return _format_predicate_question(rel, target_kind, source_kind=source_kind, relation_notes=relation_notes)
 
 
 def _infer_plural_noun_from_kind(kinds: list[str]) -> str:
+    for k in kinds:
+        raw = str(k or "").strip()
+        if raw:
+            noun = resolve_entity_type_spec(raw).plural_noun
+            if noun and noun not in ("thực thể", "đối tượng"):
+                return noun
     joined = " ".join(normal(k) for k in kinds if str(k or "").strip())
     for keywords, hint in _KIND_LIST_HINTS:
         if any(kw in joined for kw in keywords):
@@ -214,17 +247,35 @@ def synthesize_2hop_rev_fwd_question(
     c_name: str,
     c_kind: str,
     idx_seed: int = 0,
+    *,
+    relation_notes: dict[str, Any] | None = None,
 ) -> str:
-    """Sinh câu hỏi 2-hop dạng reverse -> forward: bridge -[r1]-> topic(u) & bridge -[r2]-> answer(c)."""
-    b_label = _infer_entity_natural_label(b_name, _kind_semantic_hint(b_kind), outgoing_rel=r1)
-    r1_c = clean_rel_name(r1) or r1
-    pred_tail = _natural_predicate_tail(r2, c_kind)
+    """Sinh câu hỏi 2-hop reverse -> forward: bridge -[r1]-> topic(u) & bridge -[r2]-> answer(c)."""
+    b_label = _infer_entity_natural_label(b_name, b_kind, outgoing_rel=r1)
+    if not b_label or b_label in ("thông tin", "đối tượng"):
+        b_label = resolve_entity_type_spec(b_kind).short_noun or "đối tượng"
+    b_cap = b_label[0].upper() + b_label[1:] if len(b_label) > 1 else b_label.upper()
+
+    spec1 = resolve_relation_spec(
+        r1,
+        source_kind=b_kind,
+        target_kind=u_kind,
+        relation_notes=relation_notes,
+    )
+    r1_clause = (spec1.inverse_clause or f"{spec1.label_vi} {{obj}}").format(obj=u_name)
+
+    pred_tail = _natural_predicate_tail(
+        r2,
+        c_kind,
+        source_kind=b_kind,
+        relation_notes=relation_notes,
+    )
     pred_body = pred_tail.rstrip("?").strip()
 
     templates = [
-        f"{b_label} {r1_c} {u_name} {pred_body}?",
-        f"Cho biết {b_label.lower()} {r1_c} {u_name} {pred_body}?",
-        f"{b_label} nào {r1_c} {u_name} và {pred_body}?",
+        f"{b_cap} nào {r1_clause} và {pred_body}?",
+        f"Cho biết {b_label} {r1_clause} và {pred_body}?",
+        f"{b_cap} {r1_clause} {pred_body}?",
     ]
     chosen = templates[idx_seed % len(templates)]
     return _clean_natural_question_text(chosen)
@@ -236,43 +287,97 @@ def synthesize_list_question(
     direction: str,
     answer_kinds: list[str],
     idx_seed: int = 0,
+    *,
+    topic_kind: str = "",
+    relation_notes: dict[str, Any] | None = None,
 ) -> str:
-    """Sinh câu hỏi liệt kê nhiều đáp án (question_type='list') tự nhiên bằng tiếng Việt."""
+    """Sinh câu hỏi liệt kê nhiều đáp án (question_type='list') tự nhiên 100% tiếng Việt."""
     noun_hint = _infer_plural_noun_from_kind(answer_kinds)
-    rel_c = clean_rel_name(rel) or rel
-    r_norm = normal(rel_c)
+    first_ans_kind = answer_kinds[0] if answer_kinds else ""
 
     if direction == "reverse":
-        if any(k in r_norm for k in ("tọa lạc", "nằm ở", "nằm tại", "thuộc")):
+        spec = resolve_relation_spec(
+            rel,
+            source_kind=first_ans_kind,
+            target_kind=topic_kind,
+            relation_notes=relation_notes,
+        )
+        clause = (spec.inverse_clause or f"{spec.label_vi} {{obj}}").format(obj=topic_name)
+        variants = [
+            f"Những {noun_hint} nào {clause}?",
+            f"Hãy liệt kê các {noun_hint} {clause}?",
+            f"Có những {noun_hint} nào {clause}?",
+        ]
+        return _clean_natural_question_text(variants[idx_seed % len(variants)])
+
+    # direction == "forward": topic -[rel]-> answers
+    spec = resolve_relation_spec(
+        rel,
+        source_kind=topic_kind,
+        target_kind=first_ans_kind,
+        relation_notes=relation_notes,
+    )
+    polarity = resolve_worship_polarity(rel, source_kind=topic_kind, target_kind=first_ans_kind)
+    if polarity == "shrine_to_deity":
+        variants = [
+            f"{topic_name} thờ phụng những nhân vật hay danh nhân nào?",
+            f"Hãy liệt kê các nhân vật được thờ phụng tại {topic_name}?",
+        ]
+    elif polarity == "deity_to_shrine":
+        variants = [
+            f"{topic_name} được thờ phụng tại những địa điểm nào?",
+            f"Hãy liệt kê những ngôi đền hoặc di tích thờ {topic_name}?",
+        ]
+    elif spec.list_wh and spec.semantic:
+        variants = [
+            f"{topic_name} {spec.list_wh}?",
+            f"Hãy cho biết {topic_name} {spec.list_wh}?",
+        ]
+    else:
+        rel_c = (spec.label_vi or clean_rel_name(rel, relation_notes=relation_notes) or rel).strip()
+        rel_low = rel_c.lower()
+        if rel_low.endswith((" thời", " thời kỳ", " giai đoạn")):
+            stem = re.sub(r"\s+(?:thời kỳ|thời|giai đoạn)$", "", rel_c, flags=re.IGNORECASE).strip()
             variants = [
-                f"Những {noun_hint} nào {rel_c} {topic_name}?",
-                f"Hãy liệt kê các {noun_hint} {rel_c} {topic_name}?",
-                f"Kể tên những {noun_hint} {rel_c} {topic_name}?",
+                f"{topic_name} {stem} những thời kỳ nào?",
+                f"Hãy cho biết {topic_name} {stem} những thời kỳ hoặc giai đoạn nào?",
+            ]
+        elif rel_low.endswith(" vào"):
+            variants = [
+                f"{topic_name} {rel_c} những ngày hoặc mốc thời gian nào?",
+                f"Hãy liệt kê những thời điểm {topic_name} {rel_c}?",
+            ]
+        elif rel_low.endswith(" trong khu vực"):
+            variants = [
+                f"{topic_name} nằm gần hoặc liên quan đến những địa điểm nào trong khu vực?",
+                f"Hãy liệt kê các công trình trong khu vực gắn với {topic_name}?",
+            ]
+        elif re.match(r"^(có|bao gồm|gồm)\s+.+$", rel_low) and len(rel_c.split()) >= 2 and (noun_hint == "đối tượng" or noun_hint.split()[0] in rel_low.split()):
+            verb, rest = rel_c.split(None, 1)
+            variants = [
+                f"{topic_name} {verb} những {rest} nào?",
+                f"Hãy cho biết {topic_name} {verb} những {rest} nào?",
+            ]
+        elif rel_low.endswith(" hồ") or rel_low.endswith(" sông") or rel_low.endswith(" phố"):
+            variants = [
+                f"{topic_name} {rel_c} nào?",
+                f"Hãy liệt kê các {rel_c.split()[-1]} được nhắc tới qua {topic_name}?",
+            ]
+        elif noun_hint != "đối tượng":
+            variants = [
+                f"{topic_name} {rel_c} những {noun_hint} nào?",
+                f"Hãy liệt kê các {noun_hint} mà {topic_name} {rel_c}?",
+            ]
+        elif rel_low in {"tọa lạc tại", "nằm ở", "nằm tại"}:
+            variants = [
+                f"{topic_name} tọa lạc tại những địa điểm hay khu vực nào?",
+                f"Hãy liệt kê các địa danh gắn với vị trí của {topic_name}?",
             ]
         else:
             variants = [
-                f"Những {noun_hint} nào {rel_c} {topic_name}?",
-                f"Hãy liệt kê các {noun_hint} {rel_c} {topic_name}?",
-                f"Có những {noun_hint} nào {rel_c} {topic_name}?",
+                f"Hãy liệt kê các mục mà {topic_name} {rel_c}?",
+                f"{topic_name} {rel_c} những mục hoặc đối tượng nào?",
             ]
-        return _clean_natural_question_text(variants[idx_seed % len(variants)])
-
-    # direction == "forward"
-    if any(k in r_norm for k in ("thờ",)):
-        variants = [
-            f"{topic_name} thờ những nhân vật hay danh nhân nào?",
-            f"Hãy liệt kê các nhân vật được thờ phụng tại {topic_name}?",
-        ]
-    elif any(k in r_norm for k in ("bao gồm", "chứa", "trưng bày", "lưu giữ")):
-        variants = [
-            f"{topic_name} {rel_c} những {noun_hint} nào?",
-            f"Hãy liệt kê các {noun_hint} được {topic_name} {rel_c}?",
-        ]
-    else:
-        variants = [
-            f"{topic_name} {rel_c} những {noun_hint} nào?",
-            f"Hãy liệt kê tất cả {noun_hint} mà {topic_name} {rel_c}?",
-        ]
     return _clean_natural_question_text(variants[idx_seed % len(variants)])
 
 
@@ -281,22 +386,33 @@ def build_kgqa_schema_contract(
     export_nodes: list[dict[str, Any]],
     export_edges: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Tạo schema_contract.json giữ nguyên vẹn 100% entity_types và relations của dự án."""
+    """Tạo schema_contract.json giữ nguyên vẹn 100% entity_types và relations của dự án với label_vi ngắn gọn."""
+    from backend.domain.graph.schema_verbalizer import (
+        resolve_entity_type_label_vi,
+        resolve_relation_label_vi,
+    )
+
     entity_type_notes: dict[str, dict[str, str]] = {}
     for item in project.get("entity_types") or []:
         if isinstance(item, dict):
             t_name = str(item.get("name", "")).strip()
             if t_name:
-                label = str(item.get("definition") or item.get("description") or t_name).strip()
-                entity_type_notes[t_name] = {"type": t_name, "label_vi": label or t_name}
+                label = resolve_entity_type_label_vi(t_name, item)
+                entity_type_notes[t_name] = {"type": t_name, "label_vi": label}
         elif isinstance(item, str) and item.strip():
             t_name = item.strip()
-            entity_type_notes[t_name] = {"type": t_name, "label_vi": t_name}
+            entity_type_notes[t_name] = {
+                "type": t_name,
+                "label_vi": resolve_entity_type_label_vi(t_name),
+            }
 
     for node in export_nodes:
         t_name = str(node.get("type", "")).strip()
         if t_name and t_name not in entity_type_notes:
-            entity_type_notes[t_name] = {"type": t_name, "label_vi": t_name}
+            entity_type_notes[t_name] = {
+                "type": t_name,
+                "label_vi": resolve_entity_type_label_vi(t_name),
+            }
 
     node_types = {k: entity_type_notes[k] for k in sorted(entity_type_notes, key=lambda x: (normal(x), x))}
 
@@ -307,15 +423,14 @@ def build_kgqa_schema_contract(
         r_name = str(rel_name or "").strip()
         if not r_name or r_name in relation_specs:
             return
-        note = rel_notes_raw.get(r_name) if isinstance(rel_notes_raw, dict) else {}
-        label = ""
-        if isinstance(note, dict):
-            label = str(note.get("definition") or note.get("description") or "").strip()
-        phrase = clean_rel_name(r_name) or r_name
+        label = resolve_relation_label_vi(
+            r_name,
+            relation_notes=rel_notes_raw if isinstance(rel_notes_raw, dict) else None,
+        )
         relation_specs[r_name] = {
             "relation": r_name,
-            "label_vi": label or phrase,
-            "template": f"{{head}} {phrase} {{tail}}",
+            "label_vi": label,
+            "template": f"{{head}} {label} {{tail}}",
         }
 
     for r in project.get("relations") or []:
@@ -613,9 +728,11 @@ def _is_valid_entity_name(name: str, *, allow_short_value: bool = False) -> bool
 
 
 def _no_answer_leak(question: str, topic_names: list[str], answers: list[str]) -> bool:
-    """Đảm bảo câu hỏi chứa đúng thực thể hạt giống và không tự làm lộ đáp án mới."""
+    """Đảm bảo câu hỏi chứa đủ thực thể hạt giống, thuần tiếng Việt và không lộ đáp án."""
     q_norm = normal(question)
     if not q_norm or any(ban in q_norm for ban in _BANNED_QA_FRAGMENTS):
+        return False
+    if contains_raw_english_relation(question):
         return False
     topic_norms = [normal(t) for t in topic_names if normal(t)]
     if not topic_norms or not all(tn in q_norm for tn in topic_norms):
@@ -623,8 +740,6 @@ def _no_answer_leak(question: str, topic_names: list[str], answers: list[str]) -
     for ans in answers:
         a_norm = normal(ans)
         if len(a_norm) < 2:
-            continue
-        if any(a_norm in tn or tn in a_norm for tn in topic_norms):
             continue
         if re.search(rf"(?<![0-9a-zà-ỹ]){re.escape(a_norm)}(?![0-9a-zà-ỹ])", q_norm):
             return False
@@ -678,12 +793,22 @@ def _materialize_question_evidence(
     return gold_edge_ids, ev_edges, ev_items
 
 
+def _is_sane_hop_edge(src_kind: str, rel: str, tgt_kind: str) -> bool:
+    """Lọc bớt cạnh trích xuất nhiễu sai loại thực thể (ví dụ Cá nhân + OCCURRED_ON/OCCURRED_AT)."""
+    src_role = resolve_entity_type_spec(src_kind).role if src_kind else ""
+    rel_key = resolve_relation_spec(rel, source_kind=src_kind, target_kind=tgt_kind).relation_key
+    if src_role == "person" and rel_key in {"OCCURRED_ON", "OCCURRED_AT"}:
+        return False
+    return True
+
+
 def generate_gretriever_kgqa_questions(
     export_nodes_by_id: dict[str, dict[str, str]],
     export_edges: list[dict[str, Any]],
     evidence_by_id: dict[str, dict[str, str]],
     *,
     max_samples: int = 500,
+    relation_notes: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Sinh các câu hỏi chuẩn G-Retriever gồm single_hop, multi_hop (fwd+fwd & rev+fwd) và list."""
     max_samples = max(1, int(max_samples))
@@ -781,16 +906,23 @@ def generate_gretriever_kgqa_questions(
         if len(ans_pairs) == 1:
             t_id, e_id = ans_pairs[0]
             t_node = export_nodes_by_id[t_id]
-            t_hint = _kind_semantic_hint(t_node["type"])
-            rel_norm = normal(clean_rel_name(rel) or rel)
+            t_kind = t_node["type"]
+            t_hint = resolve_entity_type_spec(t_kind).short_noun if t_kind else ""
+            rel_norm = normal(clean_rel_name(rel, relation_notes=relation_notes) or rel)
             if any(x in rel_norm for x in ("dưới triều", "dưới thời", "triều vua", "đời vua")) and "nhân vật" in normal(t_hint):
-                q_txt = f"{u_name} {_natural_predicate_tail(rel, t_node['type'])}"
+                q_txt = f"{u_name} {_natural_predicate_tail(rel, t_kind, source_kind=u_node['type'], relation_notes=relation_notes)}"
             else:
                 q_txt = synthesize_1hop_natural_question(
-                    u_name, rel, t_node["canonical_name"], t_hint, idx_seed=seed_ctr
+                    u_name,
+                    rel,
+                    t_node["canonical_name"],
+                    t_kind,
+                    idx_seed=seed_ctr,
+                    u_kind=u_node["type"],
+                    relation_notes=relation_notes,
                 )
             if not _no_answer_leak(q_txt, [u_name], [t_node["canonical_name"]]):
-                q_txt = f"{u_name} {_natural_predicate_tail(rel, t_node['type'])}"
+                q_txt = f"{u_name} {_natural_predicate_tail(rel, t_kind, source_kind=u_node['type'], relation_notes=relation_notes)}"
             rec = _build_record(
                 question=q_txt,
                 question_type="single_hop",
@@ -804,8 +936,16 @@ def generate_gretriever_kgqa_questions(
                 single_hop_candidates.append(rec)
         elif 2 <= len(ans_pairs) <= 12:
             ans_ids = [p[0] for p in ans_pairs]
-            ans_kinds = [_kind_semantic_hint(export_nodes_by_id[aid]["type"]) for aid in ans_ids]
-            q_txt = synthesize_list_question(u_name, rel, "forward", ans_kinds, idx_seed=seed_ctr)
+            ans_kinds = [export_nodes_by_id[aid]["type"] for aid in ans_ids]
+            q_txt = synthesize_list_question(
+                u_name,
+                rel,
+                "forward",
+                ans_kinds,
+                idx_seed=seed_ctr,
+                topic_kind=u_node["type"],
+                relation_notes=relation_notes,
+            )
             rec = _build_record(
                 question=q_txt,
                 question_type="list",
@@ -821,7 +961,12 @@ def generate_gretriever_kgqa_questions(
     for (v_id, rel) in sorted(in_by_node_rel.keys()):
         v_node = export_nodes_by_id.get(v_id, {})
         v_name = v_node.get("canonical_name", "")
-        if not _is_valid_entity_name(v_name) or degree[v_id] > 40:
+        if (
+            not _is_valid_entity_name(v_name)
+            or normal(v_name) in _MACRO_HUB_TOPICS
+            or not is_valid_multihop_bridge_kind(v_node.get("type", ""))
+            or degree[v_id] > 35
+        ):
             continue
         group_edges = sorted(in_by_node_rel[(v_id, rel)], key=lambda x: x["edge_id"])
         src_pairs: list[tuple[str, str]] = []
@@ -838,14 +983,26 @@ def generate_gretriever_kgqa_questions(
         if len(src_pairs) == 1:
             s_id, e_id = src_pairs[0]
             s_node = export_nodes_by_id[s_id]
-            s_hint = _kind_semantic_hint(s_node["type"])
+            s_kind = s_node["type"]
             q_txt = synthesize_1hop_inverse_question(
-                s_node["canonical_name"], rel, v_name, s_hint, idx_seed=seed_ctr
+                s_node["canonical_name"],
+                rel,
+                v_name,
+                s_kind,
+                idx_seed=seed_ctr,
+                v_kind=v_node.get("type", ""),
+                relation_notes=relation_notes,
             )
             if not _no_answer_leak(q_txt, [v_name], [s_node["canonical_name"]]):
-                noun_hint = _infer_plural_noun_from_kind([s_hint])
-                rel_c = clean_rel_name(rel) or rel
-                q_txt = f"Những {noun_hint} nào {rel_c} {v_name}?"
+                noun_hint = _infer_plural_noun_from_kind([s_kind])
+                spec_inv = resolve_relation_spec(
+                    rel,
+                    source_kind=s_kind,
+                    target_kind=v_node.get("type", ""),
+                    relation_notes=relation_notes,
+                )
+                clause = (spec_inv.inverse_clause or f"{spec_inv.label_vi} {{obj}}").format(obj=v_name)
+                q_txt = f"Những {noun_hint} nào {clause}?"
             rec = _build_record(
                 question=q_txt,
                 question_type="single_hop",
@@ -859,8 +1016,16 @@ def generate_gretriever_kgqa_questions(
                 single_hop_candidates.append(rec)
         elif 2 <= len(src_pairs) <= 12:
             ans_ids = [p[0] for p in src_pairs]
-            ans_kinds = [_kind_semantic_hint(export_nodes_by_id[aid]["type"]) for aid in ans_ids]
-            q_txt = synthesize_list_question(v_name, rel, "reverse", ans_kinds, idx_seed=seed_ctr)
+            ans_kinds = [export_nodes_by_id[aid]["type"] for aid in ans_ids]
+            q_txt = synthesize_list_question(
+                v_name,
+                rel,
+                "reverse",
+                ans_kinds,
+                idx_seed=seed_ctr,
+                topic_kind=v_node.get("type", ""),
+                relation_notes=relation_notes,
+            )
             rec = _build_record(
                 question=q_txt,
                 question_type="list",
@@ -879,16 +1044,23 @@ def generate_gretriever_kgqa_questions(
         u_id, b_id, r1 = e1["source_id"], e1["target_id"], e1["relation"]
         if u_id == b_id or degree[b_id] > 25 or degree[u_id] > 35:
             continue
-        u_name = export_nodes_by_id[u_id]["canonical_name"]
+        u_node = export_nodes_by_id[u_id]
+        u_name = u_node["canonical_name"]
         b_node = export_nodes_by_id[b_id]
-        if not _is_valid_entity_name(u_name) or not _is_valid_entity_name(b_node["canonical_name"]):
+        if (
+            not _is_valid_entity_name(u_name)
+            or not _is_valid_entity_name(b_node["canonical_name"])
+            or not is_valid_multihop_bridge_kind(b_node["type"])
+            or not _is_sane_hop_edge(u_node["type"], r1, b_node["type"])
+        ):
             continue
         for e2 in out_by_node.get(b_id, ()):
             c_id, r2 = e2["target_id"], e2["relation"]
             if c_id in (u_id, b_id) or r1 == r2:
                 continue
-            c_name = export_nodes_by_id[c_id]["canonical_name"]
-            if not _is_valid_entity_name(c_name, allow_short_value=True):
+            c_node = export_nodes_by_id[c_id]
+            c_name = c_node["canonical_name"]
+            if not _is_valid_entity_name(c_name, allow_short_value=True) or not _is_sane_hop_edge(b_node["type"], r2, c_node["type"]):
                 continue
             fwd_fwd_groups[(u_id, r1, r2)].append((b_id, c_id, e1["edge_id"], e2["edge_id"]))
 
@@ -896,18 +1068,27 @@ def generate_gretriever_kgqa_questions(
     for e1 in export_edges:
         # bridge -[r1]-> topic(u) (duyệt reverse từ u qua r1 tới b) & bridge -[r2]-> c
         b_id, u_id, r1 = e1["source_id"], e1["target_id"], e1["relation"]
-        if u_id == b_id or degree[b_id] > 25 or degree[u_id] > 35:
+        if u_id == b_id or degree[b_id] > 25 or degree[u_id] > 30:
             continue
-        u_name = export_nodes_by_id[u_id]["canonical_name"]
+        u_node = export_nodes_by_id[u_id]
+        u_name = u_node["canonical_name"]
         b_node = export_nodes_by_id[b_id]
-        if not _is_valid_entity_name(u_name) or not _is_valid_entity_name(b_node["canonical_name"]):
+        if (
+            not _is_valid_entity_name(u_name)
+            or normal(u_name) in _MACRO_HUB_TOPICS
+            or not is_valid_multihop_bridge_kind(u_node["type"])
+            or not _is_valid_entity_name(b_node["canonical_name"])
+            or not is_valid_multihop_bridge_kind(b_node["type"])
+            or not _is_sane_hop_edge(b_node["type"], r1, u_node["type"])
+        ):
             continue
         for e2 in out_by_node.get(b_id, ()):
             c_id, r2 = e2["target_id"], e2["relation"]
             if c_id in (u_id, b_id) or r1 == r2 or e2["edge_id"] == e1["edge_id"]:
                 continue
-            c_name = export_nodes_by_id[c_id]["canonical_name"]
-            if not _is_valid_entity_name(c_name, allow_short_value=True):
+            c_node = export_nodes_by_id[c_id]
+            c_name = c_node["canonical_name"]
+            if not _is_valid_entity_name(c_name, allow_short_value=True) or not _is_sane_hop_edge(b_node["type"], r2, c_node["type"]):
                 continue
             rev_fwd_groups[(u_id, r1, r2)].append((b_id, c_id, e1["edge_id"], e2["edge_id"]))
 
@@ -938,11 +1119,13 @@ def generate_gretriever_kgqa_questions(
                 u_node["canonical_name"],
                 r1,
                 b_node["canonical_name"],
-                _kind_semantic_hint(b_node["type"]),
+                b_node["type"],
                 r2,
                 c_node["canonical_name"],
-                _kind_semantic_hint(c_node["type"]),
+                c_node["type"],
                 idx_seed=seed_ctr,
+                u_kind=u_node["type"],
+                relation_notes=relation_notes,
             )
             dirs = ["forward", "forward"]
         else:
@@ -956,6 +1139,7 @@ def generate_gretriever_kgqa_questions(
                 c_node["canonical_name"],
                 c_node["type"],
                 idx_seed=seed_ctr,
+                relation_notes=relation_notes,
             )
             dirs = ["reverse", "forward"]
         return _build_record(
@@ -989,9 +1173,25 @@ def generate_gretriever_kgqa_questions(
     selected: list[dict[str, Any]] = []
     seen_q_texts: set[str] = set()
 
-    def _take(pool: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    def _take(pool: list[dict[str, Any]], limit: int, *, max_per_answer: int = 0) -> list[dict[str, Any]]:
         kept: list[dict[str, Any]] = []
+        ans_counts: collections.Counter[str] = collections.Counter()
+        deferred: list[dict[str, Any]] = []
         for item in pool:
+            if len(kept) >= limit:
+                break
+            qn = normal(item["question"])
+            if qn in seen_q_texts:
+                continue
+            ans_key = normal(item.get("answer_text", ""))
+            if max_per_answer > 0 and ans_key and ans_counts[ans_key] >= max_per_answer:
+                deferred.append(item)
+                continue
+            seen_q_texts.add(qn)
+            if ans_key:
+                ans_counts[ans_key] += 1
+            kept.append(item)
+        for item in deferred:
             if len(kept) >= limit:
                 break
             qn = normal(item["question"])
@@ -1001,9 +1201,9 @@ def generate_gretriever_kgqa_questions(
             kept.append(item)
         return kept
 
-    selected.extend(_take(single_hop_candidates, q_single))
-    selected.extend(_take(multi_hop_candidates, q_multi))
-    selected.extend(_take(list_candidates, q_list))
+    selected.extend(_take(single_hop_candidates, q_single, max_per_answer=5))
+    selected.extend(_take(multi_hop_candidates, q_multi, max_per_answer=4))
+    selected.extend(_take(list_candidates, q_list, max_per_answer=4))
 
     if len(selected) < max_samples:
         for pool in (single_hop_candidates, multi_hop_candidates, list_candidates):
@@ -1136,7 +1336,7 @@ def apply_paraphrased_kgqa_results(
 
         cand_norm = normal(cand_q)
         orig_norm = normal(orig_q)
-        if any(ban in cand_norm for ban in _BANNED_QA_FRAGMENTS):
+        if any(ban in cand_norm for ban in _BANNED_QA_FRAGMENTS) or contains_raw_english_relation(cand_q):
             stats["rejected_robotic"] += 1
             continue
 
@@ -1198,6 +1398,7 @@ def build_kgqa_training_bundle(
         export_edges,
         evidence_by_id,
         max_samples=max_samples,
+        relation_notes=project.get("relation_notes") if isinstance(project.get("relation_notes"), dict) else None,
     )
 
     clean_edges = [

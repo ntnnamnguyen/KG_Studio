@@ -41,6 +41,15 @@ def render_extraction_page(project: dict) -> None:
 
     st.subheader(f"🚀 3. Trích xuất Tri thức (Chế độ: `{mode}`)")
     render_step_next_action("extraction", project)
+    recover_fn = getattr(facade, "recover_key_typo_runs", None)
+    if callable(recover_fn):
+        recovered_cnt = recover_fn(project)
+        if recovered_cnt > 0:
+            st.session_state[f"p03_last_failed_tasks_{proj_id}"] = []
+            st.success(
+                f"🎉 Đã tự động chuẩn hóa khóa JSON và khôi phục thành công **{recovered_cnt} lượt trích xuất** "
+                "từ phản hồi gốc của AI (không cần gọi lại API)!"
+            )
     if mode == MODE_FREE_TRIPLES:
         st.info(
             "Baseline B giữ bộ ba thô và bằng chứng để đánh giá độc lập. Không cần danh mục, "

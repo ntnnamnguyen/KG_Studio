@@ -28,6 +28,7 @@ from backend.domain.curation.service import (
     is_edge_exportable,
     list_gazetteer_entries as domain_list_gazetteer_entries,
     list_grouped_gazetteer_entries as domain_list_grouped_gazetteer_entries,
+    mark_edge_groups_not_duplicate_bulk as domain_mark_edge_groups_not_duplicate_bulk,
     mark_pair_not_duplicate as domain_mark_pair_not_duplicate,
     mark_pairs_not_duplicate_bulk as domain_mark_pairs_not_duplicate_bulk,
     mark_relation_pair_not_duplicate as domain_mark_relation_pair_not_duplicate,
@@ -47,6 +48,7 @@ from backend.domain.curation.service import (
     set_edge_status,
     set_edges_status,
     token_totals,
+    triple_duplicate_suggestions as domain_triple_duplicate_suggestions,
     update_edge,
     update_node,
     upsert_gazetteer_entry as domain_upsert_gazetteer_entry,
@@ -57,6 +59,7 @@ from shared.schemas.curation import (
     CurationResultDTO,
     CurationReviewRequestDTO,
     EdgeEditRequestDTO,
+    EdgeReviewDecisionDTO,
     EntityEditRequestDTO,
     EntityMergePreviewDTO,
     EntityMergeRequestDTO,
@@ -146,7 +149,33 @@ class CurationApplicationService:
             executor=_exec,
         )
 
-    # --- Entity Merge Operations ---
+    def reopen_edges_for_review(
+        self,
+        project: dict,
+        edge_ids: list[str],
+        *,
+        expected_revision: str = "",
+        request_id: str = "",
+        actor: str = "human_reviewer",
+    ) -> CurationResultDTO:
+        """Đưa các cạnh đã duyệt/xử lý bị lỗi toàn vẹn về trạng thái Cần kiểm tra qua transaction chuẩn."""
+        unique_ids = list(dict.fromkeys(str(eid).strip() for eid in edge_ids if str(eid).strip()))
+        if not unique_ids:
+            raise ValueError("Không có cạnh nào cần đưa về trạng thái Cần kiểm tra.")
+        req = CurationReviewRequestDTO(
+            project_id=str(project.get("project_id") or project.get("name") or ""),
+            decisions=[EdgeReviewDecisionDTO(edge_id=eid, action="check") for eid in unique_ids],
+            apply_mode="all_or_nothing",
+            is_batch=False,
+            actor=actor,
+            expected_revision=expected_revision,
+            request_id=request_id or uid(),
+            filter_summary={
+                "operation": "reopen_invalid_approved_from_integrity",
+                "count": len(unique_ids),
+            },
+        )
+        return self.apply_curation_decisions(project, req)
 
     def preview_entity_merge(
         self,
@@ -305,19 +334,49 @@ class CurationApplicationService:
             executor=_exec,
         )
 
+    def triple_duplicate_suggestions(
+        self,
+        project: dict,
+        fuzzy_threshold: float = 0.70,
+        *,
+        include_dismissed: bool = False,
+        include_fuzzy_same_endpoints: bool = True,
+        include_inverse_pairs: bool = True,
+    ) -> list[dict[str, Any]]:
+        return domain_triple_duplicate_suggestions(
+            project,
+            fuzzy_threshold=fuzzy_threshold,
+            include_dismissed=include_dismissed,
+            include_fuzzy_same_endpoints=include_fuzzy_same_endpoints,
+            include_inverse_pairs=include_inverse_pairs,
+        )
+
     def collapse_duplicate_edges(
         self,
         project: dict,
         *,
+        selected_groups: list[dict[str, Any] | list[str]] | None = None,
         actor: str = "human_reviewer",
         note: str = "",
     ) -> CurationResultDTO:
-        req_hash = sha(f"collapse_duplicate_edges::{project.get('name', '')}")[:16]
+        req_hash = sha(
+            json.dumps(
+                {
+                    "op": "collapse_duplicate_edges",
+                    "project": project.get("name", ""),
+                    "selected_count": len(selected_groups) if selected_groups is not None else -1,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        )[:16]
 
         def _exec(proj: dict) -> tuple[dict, CurationResultDTO]:
             rev_before = compute_project_revision(proj)
             candidate, dropped_count, records = domain_collapse_duplicate_edges(
                 proj,
+                selected_groups=selected_groups,
                 actor=actor,
                 note=note,
                 mutate_in_place=False,
@@ -344,6 +403,34 @@ class CurationApplicationService:
             request_id=uid(),
             request_hash=req_hash,
             executor=_exec,
+        )
+
+    def mark_edge_groups_not_duplicate_bulk(
+        self,
+        project: dict,
+        groups: list[dict[str, Any] | tuple[str, str] | list[str]],
+        *,
+        note: str = "",
+        actor: str = "human_reviewer",
+        save: bool = True,
+        expected_revision: str = "",
+    ) -> dict[str, Any]:
+        if not save:
+            return domain_mark_edge_groups_not_duplicate_bulk(project, groups, note=note, actor=actor)
+        req_hash = sha(
+            json.dumps(
+                {"op": "mark_edge_groups_not_dup", "count": len(groups), "note": note, "actor": actor},
+                ensure_ascii=False,
+                default=str,
+            )
+        )[:16]
+        return self._commit_with_domain_return(
+            project,
+            operation="mark_edge_groups_not_duplicate_bulk",
+            request_hash=req_hash,
+            expected_revision=expected_revision,
+            clone_keys=("not_duplicate_edge_pairs", "curation_history"),
+            fn=lambda c: domain_mark_edge_groups_not_duplicate_bulk(c, groups, note=note, actor=actor),
         )
 
     def _commit_with_domain_return(

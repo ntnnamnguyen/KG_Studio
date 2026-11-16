@@ -38,7 +38,7 @@ from backend.domain.curation.service import (
 )
 from backend.domain.dataset_exporter.exporter import ActiveLearningExporter
 from backend.domain.documents.processor import add_document
-from backend.domain.graph.service import approved_graph, validate_integrity
+from backend.domain.graph.service import approved_graph, inspect_integrity, validate_integrity
 from backend.facade import KGStudioFacade
 from backend.repositories.json_repo import JsonProjectRepository, empty_project
 from backend.repositories.sqlite_repo import SQLiteProjectRepository
@@ -1195,6 +1195,109 @@ class CurationMergeTests(unittest.TestCase):
             # Kiểm tra edge_redirects lưu đúng ánh xạ
             self.assertEqual(project["edge_redirects"]["e2"], "e1")
             self.assertEqual(project["edge_redirects"]["e3"], "e4")
+
+    def test_12_inspect_integrity_and_reopen_invalid_approved_edges(self) -> None:
+        """Kiểm tra inspect_integrity tách đúng ID cạnh Đã duyệt lỗi và reopen_edges_for_review hạ về Cần kiểm tra."""
+        from backend.bootstrap import AppContainer
+        from backend.modules.curation.public import CurationApplicationService
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            container = AppContainer(
+                json_repo=JsonProjectRepository(tmp_path / "projects"),
+                sqlite_repo=SQLiteProjectRepository(tmp_path / "test.db"),
+                vector_repo=VectorIndexRepository(index_root=tmp_path / "vectors"),
+            )
+            project = _seed_curation_project("Integrity_Reopen")
+            doc = project["documents"][0]
+            project["nodes"] = [
+                {"id": "n1", "name": "Chùa Một Cột", "kind": "di tích", "aliases": [], "documents": [doc["id"]]},
+                {"id": "n2", "name": "quận Ba Đình", "kind": "địa điểm", "aliases": [], "documents": [doc["id"]]},
+            ]
+            project["edges"] = [
+                {
+                    "id": "e_ok",
+                    "source": "n1",
+                    "target": "n2",
+                    "relation": "nằm tại",
+                    "evidence": "Chùa Một Cột tọa lạc tại quận Ba Đình",
+                    "evidence_found": True,
+                    "doc_id": doc["id"],
+                    "doc_name": doc["name"],
+                    "doc_fingerprint": doc_fingerprint(doc),
+                    "status": STATUS_APPROVED,
+                },
+                {
+                    "id": "e_loop_1",
+                    "source": "n1",
+                    "target": "n1",
+                    "relation": "nằm tại",
+                    "evidence": "Chùa Một Cột tọa lạc tại quận Ba Đình",
+                    "evidence_found": True,
+                    "doc_id": doc["id"],
+                    "doc_name": doc["name"],
+                    "doc_fingerprint": doc_fingerprint(doc),
+                    "status": STATUS_APPROVED,
+                    "self_loop_confirmed": True,
+                    "review_note": "",
+                },
+                {
+                    "id": "e_empty_ev",
+                    "source": "n1",
+                    "target": "n2",
+                    "relation": "nằm tại",
+                    "evidence": "",
+                    "doc_id": doc["id"],
+                    "doc_name": doc["name"],
+                    "doc_fingerprint": doc_fingerprint(doc),
+                    "status": STATUS_APPROVED,
+                    "override": True,
+                    "override_reason": "Bỏ qua lỗi",
+                },
+            ]
+            container.json_repo.save_project(project)
+
+            # Fail-closed nếu thiếu ProjectCommitCoordinator
+            no_coord = CurationApplicationService(commit_coordinator=None)
+            with self.assertRaises(RuntimeError):
+                no_coord.reopen_edges_for_review(project, ["e_loop_1"])
+
+            report = inspect_integrity(project)
+            self.assertEqual(report["problems"], validate_integrity(project))
+            self.assertEqual(report["invalid_approved_edge_ids"], ["e_loop_1", "e_empty_ev"])
+            # Không lặp cảnh báo kép cho cùng một cạnh tự nối / thiếu bằng chứng
+            self.assertEqual(len(report["problems"]), 2)
+            self.assertEqual(sum(1 for p in report["problems"] if "e_loop_1" in p), 1)
+            self.assertEqual(sum(1 for p in report["problems"] if "e_empty_ev" in p), 1)
+
+            # Chặn nếu expected_revision bị lệch
+            with self.assertRaises(ValueError):
+                container.curation_service.reopen_edges_for_review(
+                    project,
+                    report["invalid_approved_edge_ids"],
+                    expected_revision="stale_revision",
+                )
+
+            rev_before = compute_project_revision(project)
+            res = container.curation_service.reopen_edges_for_review(
+                project,
+                report["invalid_approved_edge_ids"],
+                expected_revision=rev_before,
+            )
+            self.assertEqual(res.applied_count, 2)
+            self.assertEqual(res.applied_ids, ["e_loop_1", "e_empty_ev"])
+            self.assertEqual(res.status, "committed")
+
+            reloaded = container.json_repo.load_project("Integrity_Reopen")
+            by_id = {e["id"]: e for e in reloaded["edges"]}
+            self.assertEqual(by_id["e_ok"]["status"], STATUS_APPROVED)
+            self.assertEqual(by_id["e_loop_1"]["status"], STATUS_CHECK)
+            self.assertFalse(by_id["e_loop_1"]["self_loop_confirmed"])
+            self.assertEqual(by_id["e_loop_1"]["review_note"], "")
+            self.assertEqual(by_id["e_empty_ev"]["status"], STATUS_CHECK)
+            self.assertFalse(by_id["e_empty_ev"]["override"])
+            self.assertEqual(by_id["e_empty_ev"]["override_reason"], "")
+            self.assertEqual(validate_integrity(reloaded), [])
 
 
 if __name__ == "__main__":

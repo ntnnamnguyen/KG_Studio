@@ -102,7 +102,7 @@ def _clone_if_mutable(value: Any) -> Any:
     return copy.deepcopy(value) if isinstance(value, (list, dict, set)) else value
 
 
-def bump_sync_nonce(nonce_key: str, state_store: dict[str, Any] | None = None) -> int:
+def bump_sync_nonce(nonce_key: str = "_global_sync_nonce", state_store: dict[str, Any] | None = None) -> int:
     """Tăng bộ đếm đồng bộ (nonce) để buộc widget có key cập nhật lại từ model state."""
     store = _store(state_store)
     next_val = int(store.get(nonce_key) or 0) + 1

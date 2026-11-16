@@ -47,6 +47,7 @@ graph TB
             subgraph "Graph & QA Subsystem"
                 GRAPH_SVC["domain/graph/service.py"]
                 G_RET["domain/graph/g_retriever.py (G-Retriever Graph RAG)"]
+                SCHEMA_VB["domain/graph/schema_verbalizer.py (Schema & Relation Verbalizer)"]
                 QA_GEN["domain/graph/qa_generator.py (Benchmark QA Generator)"]
                 KGQA_BND["domain/graph/kgqa_bundle.py (G-Retriever 5-File Bundle Exporter)"]
             end
@@ -240,10 +241,11 @@ Tầng này **không phụ thuộc** vào Backend, Frontend hay ML Lab. Nó là 
   - `curation/gazetteer.py`: Quản lý Từ điển Bí danh cấp dự án (`domain_gazetteer`), phân tích/xuất JSON & CSV hỗ trợ cả dạng 1-1 lẫn gom nhóm 1-N `aliases` ngăn cách `;`/`|` (`split_gazetteer_aliases`, `list_grouped_gazetteer_entries`, `expand_grouped_gazetteer_rows`, `parse_gazetteer_bytes`, `gazetteer_to_json_bytes`, `gazetteer_to_csv_bytes`), làm giàu tự động từ gộp thực thể (`enrich_gazetteer_from_merge`) và CRUD/nạp mẫu (`upsert_gazetteer_entry`, `delete_gazetteer_entry`, `replace_gazetteer_entries`, `merge_gazetteer_entries`, `clear_gazetteer`, `preload_gazetteer_template`).
   - `curation/service.py`: Điểm re-export công khai tương thích ngược 100% cho toàn bộ phân khu Curation.
 - `graph/` (**Phân khu Đồ thị & Graph RAG**):
-  - `graph/service.py`: Kiểm tra toàn vẹn đồ thị (`validate_integrity`), trích xuất đồ thị đã duyệt (`approved_graph`), sinh file JSON, CSV, ZIP.
+  - `graph/service.py`: Kiểm tra toàn vẹn đồ thị (`validate_integrity`, `inspect_integrity` tách ID cạnh Đã duyệt bị lỗi), trích xuất đồ thị đã duyệt (`approved_graph`), sinh file JSON, CSV, ZIP.
   - `graph/g_retriever.py`: **G-Retriever Graph RAG Engine**: Trích xuất đồ thị con tri thức phục vụ sinh câu trả lời RAG (tách token chuỗi `_` cho quan hệ CIDOC CRM, loại cạnh `STATUS_REJECTED`, không fallback khi approved rỗng, điều hướng PCST giảm chi phí hub mượt + PPR bảo toàn khối lượng xác suất nút treo, tham số `domain_topic` phi miền và giới hạn `max_input_tokens`).
-  - `graph/qa_generator.py`: **Benchmark QA Generator**: Sinh tự động các cặp câu hỏi - đáp (Multi-hop QA, Factoid QA) dựa trên đồ thị đã duyệt; mặc định `disjoint_split=True` phân chia `train/val/test` không rò rỉ cạnh qua Union-Find thành phần liên thông và khớp `target_entity_id` cho `Explainable Path`.
-  - `graph/kgqa_bundle.py`: **G-Retriever 5-File Bundle Exporter**: Module thuần domain đóng gói và xuất bộ 5 tệp chuẩn huấn luyện G-Retriever (`nodes.csv`, `edges.csv`, `evidence.csv`, `questions.csv`, `schema_contract.json` UTF-8 BOM), giữ nguyên loại thực thể/quan hệ gốc của dự án, gom bí danh theo ranh giới đồng âm, dồn bằng chứng đa nguồn trên cạnh, sinh đủ `single_hop` (`forward`/`reverse`), `multi_hop` (`forward->forward` & `reverse->forward`), `list` cùng `gold_paths`/`evidence_edges`/`evidence`, và hậu kiểm kết quả Paraphrase LLM (`apply_paraphrased_kgqa_results`) giữ thực thể hạt giống & chống lộ đáp án.
+  - `graph/schema_verbalizer.py`: **Schema & Relation Verbalizer**: Module thuần domain chuẩn hóa nhãn tiếng Việt ngắn gọn (`label_vi`) cho mọi loại thực thể và quan hệ (CIDOC, camelCase, snake_case, mở tiếng Việt), chuẩn hóa phân cực chủ động/bị động quan hệ thờ phụng (`resolve_worship_polarity`), lọc nút literal khỏi vai trò bridge 2-hop (`is_valid_multihop_bridge_kind`) và phát hiện mã quan hệ tiếng Anh rò rỉ (`contains_raw_english_relation`).
+  - `graph/qa_generator.py`: **Benchmark QA Generator**: Sinh tự động các cặp câu hỏi - đáp (Multi-hop QA, Factoid QA) dựa trên đồ thị đã duyệt bằng tiếng Việt chuẩn; mặc định `disjoint_split=True` phân chia `train/val/test` không rò rỉ cạnh qua Union-Find thành phần liên thông và khớp `target_entity_id` cho `Explainable Path`.
+  - `graph/kgqa_bundle.py`: **G-Retriever 5-File Bundle Exporter**: Module thuần domain đóng gói và xuất bộ 5 tệp chuẩn huấn luyện G-Retriever (`nodes.csv`, `edges.csv`, `evidence.csv`, `questions.csv`, `schema_contract.json` UTF-8 BOM), giữ nguyên loại thực thể/quan hệ gốc của dự án kèm `label_vi` ngắn gọn và `template` tiếng Việt, gom bí danh theo ranh giới đồng âm, dồn bằng chứng đa nguồn trên cạnh, sinh đủ `single_hop` (`forward`/`reverse`), `multi_hop` (`forward->forward` & `reverse->forward`), `list` cùng `gold_paths`/`evidence_edges`/`evidence`, và hậu kiểm kết quả Paraphrase LLM (`apply_paraphrased_kgqa_results`) giữ thực thể hạt giống, chống lộ đáp án (kể cả đáp án nằm trong tên topic dài) & chặn rò rỉ mã tiếng Anh.
 - `dataset_exporter/exporter.py`: Lớp `ActiveLearningExporter` xuất dữ liệu con người đã duyệt thành 3 tập JSONL chuẩn: `sr_triplets.jsonl`, `canonicalization_pairs.jsonl`, `sft_extractions.jsonl`.
 
 #### D. Các Phân Hệ Modular Monolith (`backend/modules/`)
@@ -267,7 +269,7 @@ Kiến trúc đích Modular Monolith theo nghiệp vụ với Ports & Adapters c
 
 4. **Phân hệ Kiểm Duyệt & Gộp Tri Thức (`backend/modules/curation/`)**:
    - `ports.py`: Port `CurationLLMPort` phục vụ gom cụm ngữ nghĩa AI.
-   - `application/service.py`: `CurationApplicationService` điều phối duyệt cạnh, chỉnh sửa sự thật fact, gộp thực thể/quan hệ/bộ ba 3 tầng (tự động hạ các cạnh `APPROVED` bị ảnh hưởng về `CHECK`), đối chiếu bằng chứng span ký tự, gom cụm ngữ nghĩa, và cam kết transactional bắt buộc qua `ProjectCommitCoordinator`.
+   - `application/service.py`: `CurationApplicationService` điều phối duyệt cạnh, đưa cạnh Đã duyệt lỗi toàn vẹn về Cần kiểm tra (`reopen_edges_for_review`), chỉnh sửa sự thật fact, gộp thực thể/quan hệ/bộ ba 3 tầng (tự động hạ các cạnh `APPROVED` bị ảnh hưởng về `CHECK`), đối chiếu bằng chứng span ký tự, gom cụm ngữ nghĩa, và cam kết transactional bắt buộc qua `ProjectCommitCoordinator`.
    - `public.py`: Hợp đồng API công khai của phân hệ Curation.
 
 5. **Phân hệ Đồ Thị Con & Graph QA (`backend/modules/graph_qa/`)**:
@@ -326,7 +328,7 @@ Kiến trúc đích Modular Monolith theo nghiệp vụ với Ports & Adapters c
 | `frontend/pages/p02_catalogs_prompts.py` | **Màn hình 2: Phương pháp & Thiết lập (SSOT cấu hình)**. Kết nối AI duy nhất (nêu rõ phạm vi `default.toml` / `.secrets.toml` / session), bộ chọn phương pháp, quản lý 3 tab Danh mục/Từ điển (kèm cảnh báo khi đang bật Baseline B), và ML Lab (`use_expander=False`). |
 | `frontend/pages/p03_extraction.py` | **Màn hình 3: Trích xuất & Trace**. Thẻ tóm tắt AI & Phương pháp chỉ đọc (liên kết về Bước 2), danh sách chọn tài liệu, expander thông số phân đoạn/đa luồng, minh bạch chi phí/API cho nút Dry-run & Run, và nhật ký tách tóm tắt với chi tiết kỹ thuật. |
 | `frontend/pages/p04_curation_hub.py` | **Màn hình 4: Trung tâm Kiểm duyệt & Chuẩn hóa Tri thức (Knowledge Curation Hub)**. Gồm 6 chỉ số sức khỏe, tháo gỡ quan hệ vướng danh mục, và 3 phân khu nghiệp vụ:<br>- *Phân khu 1: Chuẩn hóa Lược đồ (Schema EDC)*<br>- *Phân khu 2: Duyệt Quan hệ & Bằng chứng*<br>- *Phân khu 3: Quản lý & Gộp thực thể (tự động nạp bí danh sau gộp vào Từ điển Dự án kèm thông báo)* |
-| `frontend/pages/p05_graph_export.py` | **Màn hình 5: Graph RAG & Xuất Dữ liệu**. Chọn nguồn qua `components/graph_source.py`, hiển thị banner phân biệt rõ đồ thị Đã duyệt / Baseline B / File ngoài, gồm 5 tab tách bạch: Tab 1 Khám phá Graph RAG, Tab 2 Bản đồ & Xuất 11 tệp cũ, Tab 3 Benchmark, Tab 4 Sinh QA & PyG (Bản cũ), và Tab 5 Xuất Bộ 5 Tệp Chuẩn G-Retriever. |
+| `frontend/pages/p05_graph_export.py` | **Màn hình 5: Graph RAG & Xuất Dữ liệu**. Chọn nguồn qua `components/graph_source.py`, hiển thị banner phân biệt rõ đồ thị Đã duyệt / Baseline B / File ngoài + nút đưa `N` cạnh Đã duyệt lỗi toàn vẹn về `Cần kiểm tra` (kèm lối tắt sang Trang 4 đã lọc sẵn), gồm 5 tab tách bạch: Tab 1 Khám phá Graph RAG, Tab 2 Bản đồ & Xuất 11 tệp cũ, Tab 3 Benchmark, Tab 4 Sinh QA & PyG (Bản cũ), và Tab 5 Xuất Bộ 5 Tệp Chuẩn G-Retriever. |
 
 ---
 

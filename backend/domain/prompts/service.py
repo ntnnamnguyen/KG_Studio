@@ -13,6 +13,7 @@ import hashlib
 
 from shared.config_loader import CONFIG
 from shared.constants import (
+    DEFAULT_EDC_PLUS_R_PROMPT,
     DEFAULT_EDC_PROMPT,
     DEFAULT_FREE_TRIPLES_PROMPT,
     EXTRACTION_MODES,
@@ -29,7 +30,7 @@ DEFAULT_PROMPT_FIXED = CONFIG["knowledge"]["system_prompt"].strip()
 DEFAULT_PROMPTS = {
     MODE_FIXED: DEFAULT_PROMPT_FIXED,
     MODE_EDC: DEFAULT_EDC_PROMPT.strip(),
-    MODE_EDC_PLUS_R: DEFAULT_EDC_PROMPT.strip(),
+    MODE_EDC_PLUS_R: DEFAULT_EDC_PLUS_R_PROMPT.strip(),
     MODE_FREE_TRIPLES: DEFAULT_FREE_TRIPLES_PROMPT.strip(),
 }
 
@@ -53,7 +54,25 @@ def ensure_project_prompt_history(project: dict) -> bool:
         and has_versions
         and all(m in project["prompt_bindings"] for m in EXTRACTION_MODES)
     ):
-        return False
+        updated_seed = False
+        for mode in EXTRACTION_MODES:
+            active_vid = project["prompt_bindings"].get(mode)
+            mode_vers = [
+                v for v in project["prompt_versions"]
+                if isinstance(v, dict) and v.get("configuration_id") == mode
+            ]
+            if (
+                len(mode_vers) == 1
+                and mode_vers[0].get("id") == active_vid
+                and mode_vers[0].get("origin") == "default_seed"
+                and mode_vers[0].get("version") == 1
+            ):
+                default_text = DEFAULT_PROMPTS[mode]
+                if mode_vers[0].get("content") != default_text:
+                    mode_vers[0]["content"] = default_text
+                    mode_vers[0]["content_hash"] = compute_prompt_hash(default_text)
+                    updated_seed = True
+        return updated_seed
 
     bindings: dict[str, str] = dict(project.get("prompt_bindings") or {})
     existing_versions: list[dict] = list(project.get("prompt_versions") or [])
@@ -114,6 +133,12 @@ def ensure_project_prompt_history(project: dict) -> bool:
             elif mode == MODE_FREE_TRIPLES:
                 # Never seed the raw baseline with EDC's definition instructions.
                 content = DEFAULT_PROMPTS[MODE_FREE_TRIPLES]
+            elif mode == MODE_EDC_PLUS_R:
+                legacy_edc = str(project.get("edc_prompt") or "").strip()
+                if legacy_edc and legacy_edc != DEFAULT_EDC_PROMPT.strip():
+                    content = legacy_edc
+                else:
+                    content = DEFAULT_PROMPTS[MODE_EDC_PLUS_R]
             else:
                 content = str(project.get("edc_prompt") or DEFAULT_PROMPTS[mode]).strip()
 

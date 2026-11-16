@@ -20,7 +20,7 @@ import frontend.client as frontend_client
 import frontend.composition as frontend_composition
 from frontend.composition import FrontendComposition
 from shared.catalog_utils import apply_relations
-from shared.constants import MODE_EDC_PLUS_R, MODE_FIXED, STATUS_APPROVED, STATUS_PENDING
+from shared.constants import MODE_EDC_PLUS_R, MODE_FIXED, STATUS_APPROVED, STATUS_CHECK, STATUS_PENDING
 
 
 class _StreamlitPolicyRecorder(logging.Handler):
@@ -492,6 +492,93 @@ render_relation_merge_tab(proj, get_client(), get_curation_section_state(proj, "
             self.assertFalse(at.exception)
             self.assertEqual(at.multiselect(key="manual_rel_merge_sources").value, [])
             self.assertEqual(at.text_input(key="manual_rel_merge_target_input").value, "")
+
+        _assert_no_session_state_warnings(self, warnings)
+
+    def test_p05_reopen_invalid_approved_edges_button_and_navigation(self) -> None:
+        proj = _build_rich_project("IntegrityProj", "proj_int", mode=MODE_FIXED, edge_count=2, prop_count=0)
+        proj["edges"].extend(
+            [
+                {
+                    "id": "e_self_1",
+                    "source": "n_proj_int_1",
+                    "target": "n_proj_int_1",
+                    "relation": "tọa lạc tại",
+                    "evidence": "Chùa Một Cột tọa lạc tại Hà Nội.",
+                    "doc_id": "doc_proj_int_1",
+                    "doc_name": "integrityproj_doc_1.txt",
+                    "chunk_number": 1,
+                    "status": STATUS_APPROVED,
+                    "self_loop_confirmed": True,
+                    "review_note": "",
+                },
+                {
+                    "id": "e_self_2",
+                    "source": "n_proj_int_2",
+                    "target": "n_proj_int_2",
+                    "relation": "tọa lạc tại",
+                    "evidence": "Chùa Một Cột tọa lạc tại Hà Nội.",
+                    "doc_id": "doc_proj_int_1",
+                    "doc_name": "integrityproj_doc_1.txt",
+                    "chunk_number": 1,
+                    "status": STATUS_APPROVED,
+                    "self_loop_confirmed": True,
+                    "review_note": "",
+                },
+            ]
+        )
+        self.json_repo.save_project(proj)
+
+        script = """
+import streamlit as st
+from backend.facade import get_facade
+from frontend.pages.p04_curation_hub import render_curation_hub_page
+from frontend.pages.p05_graph_export import render_graph_export_page
+from frontend.state.session import get_active_step
+
+proj = get_facade().load_project("IntegrityProj")
+step_id, _, _ = get_active_step()
+if step_id == "review":
+    render_curation_hub_page(proj)
+else:
+    render_graph_export_page(proj)
+"""
+        with capture_streamlit_state_warnings() as warnings:
+            at = AppTest.from_string(script)
+            at.session_state["active_page"] = "5. Khai thác"
+            at.session_state["active_step"] = "explore"
+            at.run()
+            self.assertFalse(at.exception)
+
+            warnings_text = [str(w.value) for w in at.warning]
+            self.assertTrue(
+                any("Có 2 cảnh báo trên 2 cạnh Đã duyệt đang bị lỗi" in t for t in warnings_text),
+                f"Expected clear edge-count warning, got: {warnings_text}",
+            )
+            reopen_btn = at.button(key="p05_btn_reopen_invalid_approved_proj_int")
+            self.assertEqual(reopen_btn.label, "↩️ Đưa 2 cạnh đã duyệt bị lỗi về 'Cần kiểm tra'")
+
+            reopen_btn.click().run()
+            self.assertFalse(at.exception)
+            # Nút đưa về biến mất vì lỗi toàn vẹn đã sạch; xuất hiện nút chuyển sang Trang 4
+            self.assertFalse(any(b.key == "p05_btn_reopen_invalid_approved_proj_int" for b in at.button))
+            self.assertTrue(any(b.key == "p05_go_curation_recheck_proj_int" for b in at.button))
+
+            reloaded = self.json_repo.load_project("IntegrityProj")
+            by_id = {e["id"]: e for e in reloaded["edges"]}
+            self.assertEqual(by_id["e_proj_int_0"]["status"], STATUS_APPROVED)
+            self.assertEqual(by_id["e_self_1"]["status"], STATUS_CHECK)
+            self.assertFalse(by_id["e_self_1"]["self_loop_confirmed"])
+            self.assertEqual(by_id["e_self_2"]["status"], STATUS_CHECK)
+            self.assertFalse(by_id["e_self_2"]["self_loop_confirmed"])
+
+            # Nhấn "🔍 Mở Trang 4 xử lý ngay" -> chuyển sang Trang 4 lọc Cần kiểm tra và focus cạnh đầu tiên
+            at.button(key="p05_go_curation_recheck_proj_int").click().run()
+            self.assertFalse(at.exception)
+            self.assertEqual(at.session_state["active_step"], "review")
+            self.assertEqual(at.session_state["curation_hub_active_tab"], "edges")
+            self.assertEqual(at.selectbox(key="cur_edge_f_status").value, STATUS_CHECK)
+            self.assertEqual(at.selectbox(key="cur_focus_edge_select").value, "e_self_1")
 
         _assert_no_session_state_warnings(self, warnings)
 

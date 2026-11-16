@@ -53,12 +53,52 @@ def edc_prompt(instructions: str = DEFAULT_EDC_PROMPT) -> str:
     }
     return (
         instructions.strip()
-        + "\n\nCấu trúc bắt buộc (bốn trường đều là mảng, không dùng null/object thay mảng):\n"
+        + "\n\nCấu trúc bắt buộc (bốn trường đều là mảng, không dùng null/object thay mảng; mọi nguon/dich trong quan_he phải có mục ten khớp 100% ở thuc_the kèm loai cụ thể; trong dinh_nghia_quan_he và dinh_nghia_loai bắt buộc dùng đúng khóa \"ten\" và \"dinh_nghia\" có dấu gạch dưới, tuyệt đối KHÔNG viết khóa là \"dinh nghia\" hay \"dinh nghĩa\"):\n"
         + json.dumps(example, ensure_ascii=False)
     )
 
 
+def _ascii_snake_key(raw_key: object) -> str:
+    if not isinstance(raw_key, str):
+        return ""
+    decomposed = unicodedata.normalize("NFD", raw_key.strip())
+    stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
+    stripped = stripped.replace("đ", "d").replace("Đ", "d").lower()
+    return re.sub(r"[\s\-]+", "_", stripped).strip("_")
+
+
+def _normalize_dict_keys_in_place(obj: dict, allowed_keys: set[str]) -> None:
+    for key in list(obj.keys()):
+        if key in allowed_keys:
+            continue
+        canon = _ascii_snake_key(key)
+        if canon in allowed_keys:
+            val = obj.pop(key)
+            if canon not in obj or not str(obj.get(canon) or "").strip():
+                obj[canon] = val
+
+
+def normalize_extraction_payload_keys(data: object) -> object:
+    """Chuẩn hóa an toàn các khóa JSON trích xuất khi LLM vô tình viết có dấu hoặc khoảng trắng
+    (ví dụ: 'dinh nghia' / 'dinh nghĩa' -> 'dinh_nghia', 'mo ta' -> 'mo_ta').
+    Chỉ chuẩn hóa các khóa khớp đúng tập trường hợp lệ của lược đồ; giữ nguyên khóa lạ hoặc trùng lặp để báo lỗi."""
+    if not isinstance(data, dict):
+        return data
+    top_allowed = set(EDC_SCHEMA["required"])
+    _normalize_dict_keys_in_place(data, top_allowed)
+    for key, spec in EDC_SCHEMA["properties"].items():
+        items = data.get(key)
+        if not isinstance(items, list):
+            continue
+        item_allowed = set(spec["items"]["required"])
+        for item in items:
+            if isinstance(item, dict):
+                _normalize_dict_keys_in_place(item, item_allowed)
+    return data
+
+
 def validate_edc_payload(data: object) -> dict:
+    normalize_extraction_payload_keys(data)
     if not isinstance(data, dict) or set(data) != set(EDC_SCHEMA["required"]):
         raise ValueError("EDC cần đúng bốn trường: thuc_the, quan_he, dinh_nghia_quan_he, dinh_nghia_loai.")
     for key, spec in EDC_SCHEMA["properties"].items():

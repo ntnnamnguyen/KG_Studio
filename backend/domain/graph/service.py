@@ -4,9 +4,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+from typing import Any
 import zipfile
 
-from backend.domain.catalogs.service import schema_review_issue
 from backend.domain.curation.service import (
     build_curation_validation_context,
     is_edge_exportable,
@@ -16,14 +16,23 @@ from shared.constants import STATUS_APPROVED
 from shared.text_utils import now_iso, scrubbed
 
 
-def validate_integrity(project: dict) -> list[str]:
+def _collect_integrity_issues(project: dict) -> tuple[list[str], list[str]]:
+    """Thu thập danh sách cảnh báo toàn vẹn và các ID cạnh Đã duyệt bị lỗi."""
     problems: list[str] = []
     problems_seen: set[str] = set()
+    invalid_approved_ids: list[str] = []
+    invalid_approved_seen: set[str] = set()
 
     def _add_problem(msg: str) -> None:
         if msg not in problems_seen:
             problems_seen.add(msg)
             problems.append(msg)
+
+    def _mark_invalid_approved(edge_id: Any) -> None:
+        eid_str = str(edge_id or "").strip()
+        if eid_str and eid_str not in invalid_approved_seen:
+            invalid_approved_seen.add(eid_str)
+            invalid_approved_ids.append(eid_str)
 
     nodes = project.get("nodes", [])
     edges = project.get("edges", [])
@@ -45,30 +54,40 @@ def validate_integrity(project: dict) -> list[str]:
 
     for edge in edges:
         eid = edge.get("id")
-        if edge.get("source") not in known or edge.get("target") not in known:
-            _add_problem(f"Quan hệ {eid} trỏ tới thực thể không tồn tại")
-        if edge.get("source") == edge.get("target") and edge.get("status") == STATUS_APPROVED:
-            if not edge.get("self_loop_confirmed") or not str(edge.get("review_note") or "").strip():
-                _add_problem(f"Quan hệ {eid} là tự tham chiếu nhưng đang được duyệt")
-        if edge.get("status") == STATUS_APPROVED:
-            if schema_review_issue(project, edge, precomputed=val_ctx):
-                _add_problem(f"Quan hệ đã duyệt {eid} còn vướng đề xuất danh mục EDC")
-            if not str(edge.get("evidence") or "").strip():
-                _add_problem(f"Quan hệ đã duyệt {eid} thiếu bằng chứng")
-            val = validate_edge_for_approval(
-                project,
-                edge,
-                is_batch=False,
-                check_existing_override=True,
-                precomputed=val_ctx,
-                include_evidence_snippets=False,
-            )
-            if not val["ok"]:
-                for err in val["errors"]:
-                    _add_problem(f"Quan hệ đã duyệt {eid} mất hiệu lực: {err}")
-                if not val["evidence_ctx"].get("found") and not edge.get("override"):
-                    _add_problem(f"Quan hệ đã duyệt {eid} có bằng chứng không khớp nguồn")
+        is_approved = edge.get("status") == STATUS_APPROVED
+        if not is_approved:
+            if edge.get("source") not in known or edge.get("target") not in known:
+                _add_problem(f"Quan hệ {eid} trỏ tới thực thể không tồn tại")
+            continue
+
+        val = validate_edge_for_approval(
+            project,
+            edge,
+            is_batch=False,
+            check_existing_override=True,
+            precomputed=val_ctx,
+            include_evidence_snippets=False,
+        )
+        if not val["ok"]:
+            for err in val["errors"]:
+                _add_problem(f"Quan hệ đã duyệt {eid} mất hiệu lực: {err}")
+            _mark_invalid_approved(eid)
+    return problems, invalid_approved_ids
+
+
+def validate_integrity(project: dict) -> list[str]:
+    """Kiểm tra toàn vẹn đồ thị và trả về danh sách cảnh báo."""
+    problems, _ = _collect_integrity_issues(project)
     return problems
+
+
+def inspect_integrity(project: dict) -> dict[str, list[str]]:
+    """Kiểm tra toàn vẹn đồ thị: trả về cả danh sách cảnh báo lẫn các ID cạnh Đã duyệt bị lỗi."""
+    problems, invalid_approved_ids = _collect_integrity_issues(project)
+    return {
+        "problems": problems,
+        "invalid_approved_edge_ids": invalid_approved_ids,
+    }
 
 
 def approved_graph(project: dict) -> tuple[list[dict], list[dict]]:

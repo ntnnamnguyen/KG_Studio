@@ -64,11 +64,13 @@ from .merge import (
     bulk_apply_relation_merges,
     collapse_duplicate_edges,
     compute_entity_merge_hash,
+    mark_edge_groups_not_duplicate_bulk,
     mark_relation_pair_not_duplicate,
     mark_relation_pairs_not_duplicate_bulk,
     merge_nodes,
     preview_entity_merge,
     relation_duplicate_suggestions,
+    triple_duplicate_suggestions,
 )
 from .semantic_clustering import (
     apply_semantic_clusters,
@@ -144,10 +146,13 @@ __all__ = [
     "apply_entity_merge",
     "apply_bulk_entity_merges",
     "relation_duplicate_suggestions",
+    "triple_duplicate_suggestions",
     "apply_relation_merge",
     "bulk_apply_relation_merges",
     "collapse_duplicate_edges",
+    "mark_edge_groups_not_duplicate_bulk",
     "mark_relation_pair_not_duplicate",
+    "mark_relation_pairs_not_duplicate_bulk",
     "merge_nodes",
     # Semantic Clustering
     "preview_clustering_prompt",

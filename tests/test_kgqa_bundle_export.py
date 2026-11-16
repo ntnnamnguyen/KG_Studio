@@ -537,6 +537,150 @@ render_graph_export_page(proj)
             "Vẫn phải cho tải gói 5 tệp chuẩn sinh tự động khi thiếu API key paraphrase.",
         )
 
+    def test_concise_schema_contract_and_pure_vietnamese_qa_regression(self) -> None:
+        from backend.domain.graph.kgqa_bundle import _no_answer_leak, apply_paraphrased_kgqa_results
+        from backend.domain.graph.qa_generator import (
+            synthesize_1hop_natural_question,
+            synthesize_2hop_bridge_question,
+        )
+        from backend.domain.graph.schema_verbalizer import contains_raw_english_relation
+
+        proj = empty_project("Hanoi KG Regression")
+        proj["project_id"] = "reg_schema_qa"
+        proj["entity_types"] = [
+            {"name": "HistoricalPeriod", "definition": "Thời kỳ lịch sử kéo dài nhiều thế kỷ theo hệ thống phân kỳ..."},
+            {"name": "E25_ARCHITECTURAL_PART", "definition": "Tự động nạp loại thực thể E25_ARCHITECTURAL_PART từ đồ thị."},
+            {"name": "E24_RELIGIOUS_BUILDING", "definition": "Công trình tôn giáo"},
+            {"name": "E24_MUSEUM_BUILDING", "definition": "Bảo tàng"},
+            {"name": "E21_PERSON", "definition": "Nhân vật lịch sử"},
+            {"name": "E53_ADMIN_AREA", "definition": "Đơn vị hành chính"},
+            {"name": "E34_INSCRIPTION", "definition": "Văn bia"},
+            {"name": "E52_TIME_SPAN", "definition": "Mốc thời gian"},
+            {"name": "E7_CULTURAL_EVENT", "definition": "Sự kiện văn hóa"},
+            {"name": "E57_MATERIAL", "definition": "Chất liệu"},
+            {"name": "ban nhạc", "definition": "Nhóm nhạc công và ca sĩ cùng biểu diễn trên sân khấu"},
+        ]
+        proj["relations"] = [
+            "BUILT_BY",
+            "BUILT_IN",
+            "PART_OF_PLACE",
+            "HAS_AGE_PERIOD",
+            "IS_WORSHIPPED_AT",
+            "WORSHIPPED_AT",
+            "MADE_OF",
+            "biểu diễn vào ngày",
+            "góp mặt tại buổi hòa nhạc",
+            "có bộ sưu tập gồm gốm sứ thời",
+        ]
+        proj["relation_notes"] = {
+            "BUILT_BY": {"definition": "Quan hệ giữa công trình và tác giả xây dựng... Ví dụ: A BUILT_BY B"},
+        }
+        doc_text = (
+            "Đền Ngọc Sơn thờ Trần Hưng Đạo. Đền Ngọc Sơn thuộc quận Hoàn Kiếm. "
+            "Đền Ngọc Sơn có niên đại thời Lê Trung hưng. Đền Ngọc Sơn do Ngô Tất Tố tham gia ghi chép. "
+            "Đền Ngọc Sơn làm bằng đá xanh. Đá xanh có niên đại thời Lê Trung hưng. "
+            "Tấm bia dựng vào năm 1780. Simple Plan góp mặt tại MTV Exit. "
+            "Simple Plan biểu diễn ngày 26 tháng 5 năm 2012. "
+            "Bảo tàng Hà Nội lưu giữ gốm sứ thời nhà Lý. Bảo tàng Hà Nội lưu giữ gốm sứ thời nhà Trần."
+        )
+        proj["documents"] = [
+            {"id": "doc_reg_1", "name": "reg.txt", "text": doc_text, "chars": len(doc_text)}
+        ]
+        proj["nodes"] = [
+            {"id": "n1", "name": "Đền Ngọc Sơn", "kind": "E24_RELIGIOUS_BUILDING", "aliases": []},
+            {"id": "n2", "name": "Trần Hưng Đạo", "kind": "E21_PERSON", "aliases": []},
+            {"id": "n3", "name": "Ngô Tất Tố", "kind": "E21_PERSON", "aliases": []},
+            {"id": "n4", "name": "quận Hoàn Kiếm", "kind": "E53_ADMIN_AREA", "aliases": []},
+            {"id": "n5", "name": "thời Lê Trung hưng", "kind": "HistoricalPeriod", "aliases": []},
+            {"id": "n6", "name": "đá xanh", "kind": "E57_MATERIAL", "aliases": []},
+            {"id": "n7", "name": "Tấm bia cuối cùng dựng vào năm 1780", "kind": "E34_INSCRIPTION", "aliases": []},
+            {"id": "n8", "name": "năm 1780", "kind": "E52_TIME_SPAN", "aliases": []},
+            {"id": "n9", "name": "Simple Plan", "kind": "ban nhạc", "aliases": []},
+            {"id": "n10", "name": "MTV Exit", "kind": "E7_CULTURAL_EVENT", "aliases": []},
+            {"id": "n11", "name": "26 tháng 5 năm 2012", "kind": "E52_TIME_SPAN", "aliases": []},
+            {"id": "n12", "name": "Bảo tàng Hà Nội", "kind": "E24_MUSEUM_BUILDING", "aliases": []},
+            {"id": "n13", "name": "nhà Lý", "kind": "HistoricalPeriod", "aliases": []},
+            {"id": "n14", "name": "nhà Trần", "kind": "HistoricalPeriod", "aliases": []},
+        ]
+        proj["edges"] = [
+            {"id": "e1", "source": "n1", "target": "n2", "relation": "IS_WORSHIPPED_AT", "evidence": "Đền Ngọc Sơn thờ Trần Hưng Đạo.", "doc_id": "doc_reg_1", "status": STATUS_APPROVED},
+            {"id": "e2", "source": "n1", "target": "n4", "relation": "PART_OF_PLACE", "evidence": "Đền Ngọc Sơn thuộc quận Hoàn Kiếm.", "doc_id": "doc_reg_1", "status": STATUS_APPROVED},
+            {"id": "e3", "source": "n1", "target": "n5", "relation": "HAS_AGE_PERIOD", "evidence": "Đền Ngọc Sơn có niên đại thời Lê Trung hưng.", "doc_id": "doc_reg_1", "status": STATUS_APPROVED},
+            {"id": "e4", "source": "n1", "target": "n3", "relation": "BUILT_BY", "evidence": "Đền Ngọc Sơn do Ngô Tất Tố tham gia ghi chép.", "doc_id": "doc_reg_1", "status": STATUS_APPROVED},
+            {"id": "e5", "source": "n1", "target": "n6", "relation": "MADE_OF", "evidence": "Đền Ngọc Sơn làm bằng đá xanh.", "doc_id": "doc_reg_1", "status": STATUS_APPROVED},
+            {"id": "e6", "source": "n6", "target": "n5", "relation": "HAS_AGE_PERIOD", "evidence": "Đá xanh có niên đại thời Lê Trung hưng.", "doc_id": "doc_reg_1", "status": STATUS_APPROVED},
+            {"id": "e7", "source": "n7", "target": "n8", "relation": "BUILT_IN", "evidence": "Tấm bia dựng vào năm 1780.", "doc_id": "doc_reg_1", "status": STATUS_APPROVED},
+            {"id": "e8", "source": "n9", "target": "n10", "relation": "góp mặt tại buổi hòa nhạc", "evidence": "Simple Plan góp mặt tại MTV Exit.", "doc_id": "doc_reg_1", "status": STATUS_APPROVED},
+            {"id": "e9", "source": "n9", "target": "n11", "relation": "biểu diễn vào ngày", "evidence": "Simple Plan biểu diễn ngày 26 tháng 5 năm 2012.", "doc_id": "doc_reg_1", "status": STATUS_APPROVED},
+            {"id": "e10", "source": "n12", "target": "n13", "relation": "có bộ sưu tập gồm gốm sứ thời", "evidence": "Bảo tàng Hà Nội lưu giữ gốm sứ thời nhà Lý.", "doc_id": "doc_reg_1", "status": STATUS_APPROVED},
+            {"id": "e11", "source": "n12", "target": "n14", "relation": "có bộ sưu tập gồm gốm sứ thời", "evidence": "Bảo tàng Hà Nội lưu giữ gốm sứ thời nhà Trần.", "doc_id": "doc_reg_1", "status": STATUS_APPROVED},
+        ]
+
+        res = build_kgqa_training_bundle(proj, approved_only=True, max_samples=200)
+        sc = res["schema_contract"]
+        # 1) Concise label_vi + pure-Vietnamese template while preserving original keys
+        self.assertEqual(sc["node_types"]["HistoricalPeriod"]["label_vi"], "Thời kỳ lịch sử")
+        self.assertEqual(sc["node_types"]["E25_ARCHITECTURAL_PART"]["label_vi"], "Bộ phận kiến trúc")
+        self.assertEqual(sc["node_types"]["ban nhạc"]["label_vi"], "Ban nhạc")
+        self.assertEqual(sc["relation_types"]["BUILT_BY"]["label_vi"], "được xây dựng bởi")
+        self.assertEqual(sc["relation_types"]["BUILT_BY"]["template"], "{head} được xây dựng bởi {tail}")
+
+        # 2) Questions clean: 0 English leaks, no literal bridges (E57_MATERIAL), correct worship polarity & "thờ" vs "thời"
+        rows = list(csv.DictReader(io.StringIO(res["files"]["questions.csv"].decode("utf-8-sig"))))
+        self.assertTrue(rows)
+        for row in rows:
+            q = row["question"]
+            self.assertFalse(contains_raw_english_relation(q), f"Lọt mã tiếng Anh trong câu hỏi: {q}")
+            self.assertNotIn("vào ngày vào thời gian", q.lower())
+            if row["question_type"] == "multi_hop":
+                # n6 (đá xanh, E57_MATERIAL) không được dùng làm bridge 2-hop
+                gold_eids = json.loads(row["gold_edge_ids"])
+                self.assertNotIn("e5", gold_eids)
+                self.assertNotIn("e6", gold_eids)
+            if "có bộ sưu tập gồm gốm sứ thời" in row["relation_path"]:
+                self.assertNotIn("thờ phụng", q.lower())
+                self.assertIn("gốm sứ", q.lower())
+            if "góp mặt tại buổi hòa nhạc" in row["relation_path"] and row["traversal_directions"] == '["forward"]':
+                self.assertIn("buổi hòa nhạc", q.lower())
+                self.assertNotIn("nằm tại khu vực nào", q.lower())
+
+        # 3) Answer-in-topic substring leak must still be blocked when answer appears in question
+        self.assertFalse(
+            _no_answer_leak(
+                "Tấm bia cuối cùng dựng vào năm 1780 được xây dựng vào thời gian nào?",
+                ["Tấm bia cuối cùng dựng vào năm 1780"],
+                ["năm 1780"],
+            )
+        )
+
+        # 4) Active/passive worship polarity preserves direction & handles swapped raw labels
+        q_worship_active = synthesize_1hop_natural_question(
+            "Văn Miếu", "WORSHIPPED_AT", "Khổng Tử", "E21_PERSON", u_kind="E24_RELIGIOUS_BUILDING"
+        )
+        self.assertIn("thờ", q_worship_active.lower())
+        self.assertNotIn("được thờ", q_worship_active.lower())
+
+        q_worship_passive = synthesize_1hop_natural_question(
+            "Trần Hưng Đạo", "IS_WORSHIPPED_AT", "Đền Ngọc Sơn", "E24_RELIGIOUS_BUILDING", u_kind="E21_PERSON"
+        )
+        self.assertIn("được thờ", q_worship_passive.lower())
+
+        # 5) Multi-hop PART_OF + CROSSES does not hallucinate museum artifacts
+        q_bridge = synthesize_2hop_bridge_question(
+            "15 nhịp dầm thép", "PART_OF", "Cầu Long Biên", "E24_INFRASTRUCTURE",
+            "CROSSES", "Sông Hồng", "E53_NATURAL_PLACE", u_kind="E25_ARCHITECTURAL_PART",
+        )
+        self.assertNotIn("hiện vật", q_bridge.lower())
+        self.assertIn("bắc qua", q_bridge.lower())
+
+        # 6) LLM paraphrase rejects mixed English relation output
+        _, pstats = apply_paraphrased_kgqa_results(
+            res,
+            [{"question_id": res["question_records"][0]["question_id"], "question": "Đền Ngọc Sơn BUILT BY ai?"}],
+        )
+        self.assertEqual(pstats["accepted"], 0)
+        self.assertGreaterEqual(pstats["rejected_robotic"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

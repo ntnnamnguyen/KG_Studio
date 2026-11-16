@@ -22,6 +22,7 @@ from backend.domain.graph.service import (
     approved_json_bytes,
     csv_bytes,
     export_zip,
+    inspect_integrity,
     validate_integrity,
 )
 from ..domain.baseline_graph import build_baseline_graph
@@ -88,6 +89,10 @@ class GraphQAApplicationService:
 
     def validate_integrity(self, project: dict) -> list[str]:
         return validate_integrity(project)
+
+    def inspect_integrity(self, project: dict) -> dict[str, list[str]]:
+        """Kiểm tra toàn vẹn đồ thị, trả về danh sách cảnh báo và ID các cạnh Đã duyệt bị lỗi."""
+        return inspect_integrity(project)
 
     def approved_graph(self, project: dict) -> tuple[list[dict], list[dict]]:
         return approved_graph(project)

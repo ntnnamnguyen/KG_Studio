@@ -1,6 +1,9 @@
 """Kiểm tra đầu ra LLM và ghi nhận Thực thể / Quan hệ vào dự án (Độc lập 100%)."""
 from __future__ import annotations
 
+import json
+import re
+
 from backend.domain.catalogs.service import prepare_edc
 from backend.domain.curation.common import resolve_active_node_id
 from backend.domain.curation.service import doc_fingerprint, evidence_in_chunk
@@ -477,4 +480,76 @@ def cache_key(
     if extra_sig:
         parts.append(extra_sig)
     return sha("|".join(parts))
+
+
+def recover_key_typo_runs(project: dict) -> int:
+    """Khôi phục an toàn các lượt chạy EDC/EDC+R bị đánh dấu lỗi chỉ do khóa JSON có dấu/khoảng trắng
+    (ví dụ 'dinh nghia' / 'dinh nghĩa') nhưng đã có raw_response JSON hoàn chỉnh."""
+    runs = project.get("runs")
+    if not isinstance(runs, list) or not runs:
+        return 0
+    docs_by_id = {
+        d.get("id"): d
+        for d in project.get("documents", [])
+        if isinstance(d, dict) and d.get("id")
+    }
+    fence_re = re.compile(r"^```(?:json)?\s*|\s*```$", flags=re.IGNORECASE)
+    recovered = 0
+    for run in runs:
+        if not isinstance(run, dict) or run.get("status") != "error":
+            continue
+        mode = run.get("extraction_mode")
+        if mode not in (MODE_EDC, MODE_EDC_PLUS_R):
+            continue
+        if run.get("raw_truncated"):
+            continue
+        raw = fence_re.sub("", str(run.get("raw_response") or "").strip()).strip()
+        err = str(run.get("error") or "")
+        if not raw or "dinh_nghia_" not in err:
+            continue
+        doc = docs_by_id.get(run.get("doc_id"))
+        if not doc:
+            continue
+        try:
+            obj = json.loads(raw)
+            data = validate_edc_payload(obj)
+        except Exception:
+            continue
+        um = str((run.get("prepared_request") or {}).get("user_message") or "")
+        if "\n" in um:
+            chunk_text = um.split("\n", 1)[1]
+        else:
+            chunk_text = str(doc.get("text") or "")
+        prev_mode = project.get("extraction_mode")
+        try:
+            project["extraction_mode"] = mode
+            stats = ingest_extraction(
+                project,
+                data,
+                doc,
+                chunk_text,
+                int(run.get("chunk_number") or 1),
+                str(run.get("model") or ""),
+                str(run.get("prompt_id") or ""),
+                run_id=str(run.get("run_id") or ""),
+                chunk_hash=str(run.get("chunk_hash") or ""),
+            )
+        finally:
+            project["extraction_mode"] = prev_mode
+        run["status"] = "ok"
+        run.pop("error", None)
+        run.pop("error_kind", None)
+        run["added_nodes"] = stats["added_nodes"]
+        run["added_edges"] = stats["added_edges"]
+        run["duplicates"] = stats["duplicates"]
+        run["discarded"] = stats["discarded"]
+        run["evidence_mismatch"] = stats["evidence_mismatch"]
+        run["disallowed_relations"] = stats["disallowed_relations"]
+        run["rejected_items"] = stats["rejected_items"]
+        run["new_proposals"] = stats["new_proposals"]
+        c_key = str(run.get("cache_key") or "")
+        if c_key:
+            project.setdefault("processed_chunks", {})[c_key] = now_iso()
+        recovered += 1
+    return recovered
 

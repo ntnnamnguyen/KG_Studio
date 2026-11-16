@@ -280,6 +280,7 @@ def set_edge_status(
         # Chuyển về Cần kiểm tra / Chờ duyệt -> xóa hiệu lực duyệt/ngoại lệ cũ
         edge["override"] = False
         edge["override_reason"] = ""
+        edge["self_loop_confirmed"] = False
         if note.strip():
             edge["review_note"] = note.strip()
 

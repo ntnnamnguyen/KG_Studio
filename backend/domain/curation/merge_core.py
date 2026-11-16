@@ -220,8 +220,8 @@ def filter_dismissed_pairs(
     dismissed_map: dict[tuple[str, str], dict[str, Any]] = {}
     for rec in dismissed_records:
         k = normalize_pair_key(
-            str(rec.get("node_a_id") or rec.get("relation_a") or ""),
-            str(rec.get("node_b_id") or rec.get("relation_b") or ""),
+            str(rec.get("node_a_id") or rec.get("relation_a") or rec.get("edge_a_id") or ""),
+            str(rec.get("node_b_id") or rec.get("relation_b") or rec.get("edge_b_id") or ""),
             use_normal=use_normal,
         )
         dismissed_map[k] = rec
@@ -350,6 +350,7 @@ def _clone_project_for_merge_mutation(project: dict) -> dict:
     candidate["entity_types"] = [copy.deepcopy(r) for r in project.get("entity_types", [])]
     candidate["entity_type_aliases"] = copy.deepcopy(project.get("entity_type_aliases", {}))
     candidate["schema_proposals"] = list(project.get("schema_proposals", []))
+    candidate["not_duplicate_edge_pairs"] = list(project.get("not_duplicate_edge_pairs", []))
     return candidate
 
 

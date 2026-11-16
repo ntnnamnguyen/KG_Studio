@@ -24,7 +24,13 @@ from frontend.components.pipeline_banner import render_step_next_action
 from frontend.components.graph_source import select_graph_snapshot
 from frontend.components.graph_view import build_graph_dot
 from frontend.composition import get_ui_composition
-from frontend.state.session import bump_sync_nonce, navigate_to_step, sync_keyed_int, sync_keyed_value
+from frontend.state.session import (
+    bump_sync_nonce,
+    navigate_to_step,
+    prepare_curation_edges_recheck,
+    sync_keyed_int,
+    sync_keyed_value,
+)
 from shared.config_loader import CONFIG
 from shared.secrets_manager import get_api_key
 
@@ -42,18 +48,49 @@ def render_graph_export_page(project: dict) -> None:
     st.subheader("🕸️ 5. Khai thác Đồ thị Tri thức (G-Retriever & GraphRAG) & Xuất Dữ liệu")
     render_step_next_action("explore", project)
 
-    graph_service = get_ui_composition().graph_qa_service
+    composition = get_ui_composition()
+    graph_service = composition.graph_qa_service
+    curation_service = composition.curation_service
     selected = select_graph_snapshot(project, graph_service)
     if selected is None:
         return
     snapshot, source_selection = selected
     current_approved = source_selection == "approved"
     nodes, edges = snapshot.nodes, snapshot.edges
-    problems = graph_service.validate_integrity(project) if current_approved else [
-        f"{item.get('code')} · run {item.get('run_id', '')} · triple {item.get('triple_index', '')}"
-        for item in snapshot.diagnostics
-    ]
+    if current_approved:
+        if hasattr(graph_service, "inspect_integrity"):
+            integrity_report = graph_service.inspect_integrity(project)
+            problems = integrity_report.get("problems", [])
+            invalid_approved_ids = integrity_report.get("invalid_approved_edge_ids", [])
+        else:
+            problems = graph_service.validate_integrity(project)
+            invalid_approved_ids = []
+    else:
+        problems = [
+            f"{item.get('code')} · run {item.get('run_id', '')} · triple {item.get('triple_index', '')}"
+            for item in snapshot.diagnostics
+        ]
+        invalid_approved_ids = []
     proj_id = str(project.get("project_id", "default"))
+
+    reopen_notice_key = f"_p05_reopen_notice_{proj_id}"
+    reopen_notice = st.session_state.get(reopen_notice_key)
+    if isinstance(reopen_notice, dict):
+        if reopen_notice.get("revision") == compute_project_revision(project) and int(reopen_notice.get("count") or 0) > 0:
+            n_col1, n_col2 = st.columns([3.0, 1.4])
+            n_col1.success(
+                f"✅ Đã đưa {int(reopen_notice['count'])} cạnh đã duyệt bị lỗi về trạng thái 'Cần kiểm tra'."
+            )
+            if n_col2.button(
+                "🔍 Mở Trang 4 xử lý ngay",
+                key=f"p05_go_curation_recheck_{proj_id}",
+                width="stretch",
+            ):
+                st.session_state.pop(reopen_notice_key, None)
+                navigate_to_step("review")
+                st.rerun()
+        else:
+            st.session_state.pop(reopen_notice_key, None)
 
     # =========================================================================
     # PHÂN KHU 1: BÁO CÁO SỨC KHỎE ĐỒ THỊ & CHỌN NGUỒN DỮ LIỆU KHAI THÁC
@@ -78,7 +115,38 @@ def render_graph_export_page(project: dict) -> None:
         c3.metric("Tính toàn vẹn (Integrity)", status_text, help="Kiểm tra quan hệ treo, thiếu định danh hoặc vướng danh mục")
 
         if problems:
-            st.warning(f"⚠️ Có {len(problems)} diagnostics; xem chi tiết để phân biệt lỗi cấu trúc, bằng chứng và lượt trích xuất lỗi.")
+            if current_approved and invalid_approved_ids:
+                st.warning(
+                    f"⚠️ Có {len(problems)} cảnh báo trên {len(invalid_approved_ids)} cạnh Đã duyệt đang bị lỗi; "
+                    "xem chi tiết hoặc đưa về 'Cần kiểm tra' để xử lý."
+                )
+            else:
+                st.warning(
+                    f"⚠️ Có {len(problems)} cảnh báo / diagnostics; "
+                    "xem chi tiết để phân biệt lỗi cấu trúc, bằng chứng và lượt trích xuất lỗi."
+                )
+            if current_approved and invalid_approved_ids:
+                if st.button(
+                    f"↩️ Đưa {len(invalid_approved_ids)} cạnh đã duyệt bị lỗi về 'Cần kiểm tra'",
+                    key=f"p05_btn_reopen_invalid_approved_{proj_id}",
+                    type="primary",
+                    help="Chuyển các cạnh Đã duyệt đang bị lỗi toàn vẹn về trạng thái 'Cần kiểm tra' để xác nhận lại ở Trang 4.",
+                ):
+                    try:
+                        res = curation_service.reopen_edges_for_review(
+                            project,
+                            invalid_approved_ids,
+                            expected_revision=compute_project_revision(project),
+                        )
+                        prepare_curation_edges_recheck(project, res.applied_ids)
+                        bump_sync_nonce("_inspector_action_nonce")
+                        st.session_state[reopen_notice_key] = {
+                            "count": res.applied_count,
+                            "revision": res.revision_after,
+                        }
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Không thể đưa cạnh về 'Cần kiểm tra': {exc}")
             with st.expander(f"📋 Xem chi tiết {len(problems)} cảnh báo toàn vẹn", expanded=False):
                 for p in problems:
                     st.markdown(f"- {p}")

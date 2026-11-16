@@ -248,14 +248,51 @@ class FrontendClient:
             project, mappings, collapse_edges=collapse_edges, note=note, actor=actor
         )
 
+    def triple_duplicate_suggestions(
+        self,
+        project: dict,
+        fuzzy_threshold: float = 0.70,
+        *,
+        include_dismissed: bool = False,
+        include_fuzzy_same_endpoints: bool = True,
+        include_inverse_pairs: bool = True,
+    ) -> list[dict[str, Any]]:
+        return self.facade.triple_duplicate_suggestions(
+            project,
+            fuzzy_threshold=fuzzy_threshold,
+            include_dismissed=include_dismissed,
+            include_fuzzy_same_endpoints=include_fuzzy_same_endpoints,
+            include_inverse_pairs=include_inverse_pairs,
+        )
+
     def collapse_duplicate_edges(
         self,
         project: dict,
         *,
+        selected_groups: list[dict[str, Any] | list[str]] | None = None,
         note: str = "",
         actor: str = "human_reviewer",
     ) -> CurationResultDTO:
-        return self.facade.collapse_duplicate_edges(project, note=note, actor=actor)
+        return self.facade.collapse_duplicate_edges(
+            project,
+            selected_groups=selected_groups,
+            note=note,
+            actor=actor,
+        )
+
+    def mark_edge_groups_not_duplicate_bulk(
+        self,
+        project: dict,
+        groups: list[dict[str, Any] | tuple[str, str] | list[str]],
+        *,
+        note: str = "",
+    ) -> dict[str, Any]:
+        return self.facade.mark_edge_groups_not_duplicate_bulk(
+            project,
+            groups,
+            note=note,
+            save=True,
+        )
 
     def compute_apparent_duplicate_edge_groups(self, edges_or_project: list | dict) -> list[dict]:
         return self.facade.compute_apparent_duplicate_edge_groups(edges_or_project)

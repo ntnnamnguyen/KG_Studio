@@ -398,3 +398,97 @@ def render_relation_provenance_panel(
 
             if len(matching_edges) > max_edges_per_relation:
                 st.caption(f"*Và {len(matching_edges) - max_edges_per_relation} cạnh khác sử dụng quan hệ này...*")
+
+
+def render_edge_group_provenance_panel(
+    project: dict,
+    selected_groups: list[dict[str, Any]],
+    *,
+    max_groups: int = 8,
+) -> None:
+    """Hiển thị Khung đối chiếu Bằng chứng & Ngữ cảnh Văn bản Gốc cho các nhóm Bộ ba (Cạnh lặp) đang chọn."""
+    if not selected_groups:
+        st.info("Chưa có nhóm bộ ba nào được chọn để đối chiếu bằng chứng.")
+        return
+
+    nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", [])}
+    docs_by_id = {str(d.get("id", "")): d for d in project.get("documents", [])}
+    edges_by_id = {str(e.get("id", "")): e for e in project.get("edges", [])}
+
+    st.markdown("##### 🔍 Đối chiếu Bằng chứng & Ngữ cảnh của các Nhóm Bộ ba Đang Chọn (Triple Provenance)")
+    st.caption(
+        "So sánh trực tiếp câu trích dẫn bằng chứng, tài liệu nguồn và đoạn văn bản gốc của từng cạnh trong nhóm. "
+        "Giúp phân biệt chính xác **cạnh trùng dư thừa** với **sự kiện lịch sử lặp lại ở các thời điểm khác nhau** trước khi hợp nhất."
+    )
+
+    shown_groups = selected_groups[:max_groups]
+    tab_labels = [
+        f"{g.get('source_name', g.get('source', '?'))} → {g.get('relation', '?')} → {g.get('target_name', g.get('target', '?'))} ({g.get('count', 0)})"
+        for g in shown_groups
+    ]
+    g_tabs = st.tabs(tab_labels)
+
+    for g_idx, grp in enumerate(shown_groups):
+        with g_tabs[g_idx]:
+            rep_id = str(grp.get("representative_id", ""))
+            st.markdown(
+                f"- **Loại gợi ý:** `{grp.get('match_type_label', 'Trùng bộ ba')}` &nbsp;|&nbsp; "
+                f"**Độ tương đồng:** `{float(grp.get('score', 1.0)):.2f}` &nbsp;|&nbsp; "
+                f"**Cạnh đại diện giữ lại:** `{rep_id}` &nbsp;|&nbsp; "
+                f"**Lý do:** {grp.get('reason', '')}"
+            )
+
+            eids = [str(eid) for eid in grp.get("edge_ids", []) if str(eid) in edges_by_id]
+            for e_idx, eid in enumerate(eids, 1):
+                edge = edges_by_id[eid]
+                src_node = nodes_by_id.get(str(edge.get("source", "")), {})
+                tgt_node = nodes_by_id.get(str(edge.get("target", "")), {})
+                src_name = src_node.get("name", edge.get("source", "?"))
+                tgt_name = tgt_node.get("name", edge.get("target", "?"))
+                rel_name = str(edge.get("relation", ""))
+                status_val = str(edge.get("status", ""))
+                doc_id = str(edge.get("doc_id", ""))
+                doc_obj = docs_by_id.get(doc_id)
+                doc_name = edge.get("doc_name") or (doc_obj.get("name") if doc_obj else doc_id or "Không rõ")
+                chunk_num = edge.get("chunk_number")
+                page = edge.get("page")
+                evidence = str(edge.get("evidence") or "").strip()
+                is_rep = eid == rep_id
+                role_badge = "⭐ **Cạnh chuẩn giữ lại**" if is_rep else "🔗 Cạnh gộp vào"
+
+                with st.container(border=True):
+                    c_title, c_meta = st.columns([2.2, 1.5])
+                    with c_title:
+                        st.markdown(
+                            f"**Cạnh #{e_idx}** (`{eid}`) · {role_badge} · Trạng thái: `{status_val}`\n\n"
+                            f"`{src_name}` ──[**{rel_name}**]──► `{tgt_name}`"
+                        )
+                    with c_meta:
+                        meta_parts = [f"Tệp: `{doc_name}`"]
+                        if chunk_num is not None:
+                            meta_parts.append(f"Đoạn {chunk_num}")
+                        if page is not None:
+                            meta_parts.append(f"Trang {page}")
+                        st.caption(" · ".join(meta_parts))
+
+                    chunk_info = get_chunk_info(project, doc_id, chunk_num)
+                    if chunk_info and chunk_info.get("text"):
+                        highlight_targets = [evidence] if evidence else [src_name, tgt_name]
+                        rendered_html = highlight_text_html(
+                            chunk_info["text"],
+                            highlight_targets,
+                            background="#fed7aa" if evidence else "#fde047",
+                        )
+                        st.markdown(rendered_html, unsafe_allow_html=True)
+                    elif evidence:
+                        st.markdown(
+                            f"<div style='padding:8px 12px;background:#fffbeb;border-left:3px solid #f59e0b;border-radius:4px;color:#92400e;'>"
+                            f"💬 <em>&ldquo;{html.escape(evidence)}&rdquo;</em>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.caption("*Không có câu trích dẫn bằng chứng riêng.*")
+
+    if len(selected_groups) > max_groups:
+        st.caption(f"*Đang hiển thị {max_groups}/{len(selected_groups)} nhóm đã chọn.*")

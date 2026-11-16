@@ -435,6 +435,40 @@ def filter_edges_by_entity(
     e_state["page_nonce"] = int(e_state.get("page_nonce") or 0) + 1
 
 
+def prepare_curation_edges_recheck(
+    project: dict,
+    edge_ids: list[str],
+    state_store: dict[str, Any] | None = None,
+) -> None:
+    """Đưa ngữ cảnh Trang 4 về tab Quan hệ với bộ lọc Cần kiểm tra và mở chi tiết cạnh đầu tiên."""
+    set_active_curation_section(project, "edges", state_store)
+    e_state = get_curation_section_state(project, "edges", state_store)
+    filters = e_state["filters"]
+    filters.update(
+        {
+            "status": STATUS_CHECK,
+            "doc_id": "all",
+            "relation": "all",
+            "entity_id": "all",
+            "entity_kind": "all",
+            "evidence_state": "all",
+            "schema_state": "all",
+            "search": "",
+            "page": 1,
+        }
+    )
+    e_state["selected_ids"] = []
+    e_state["active_preview"] = None
+    e_state["preview_decisions"] = []
+    e_state["preview_request_id"] = ""
+    e_state["filter_nonce"] = int(e_state.get("filter_nonce") or 0) + 1
+    e_state["page_nonce"] = int(e_state.get("page_nonce") or 0) + 1
+    e_state["sel_editor_nonce"] = int(e_state.get("sel_editor_nonce") or 0) + 1
+    first_eid = next((str(eid).strip() for eid in edge_ids if str(eid).strip()), "")
+    if first_eid:
+        set_focused_edge(project, first_eid, state_store)
+
+
 def stage_entities_for_merge(
     project: dict,
     node_ids: list[str],

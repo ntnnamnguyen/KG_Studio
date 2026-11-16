@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-from shared.catalog_utils import validate_edc_payload
+from shared.catalog_utils import normalize_extraction_payload_keys, validate_edc_payload
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", flags=re.IGNORECASE)
 
@@ -40,6 +40,7 @@ def _load_first_json_object(text: str) -> Any:
 def clean_llm_json(text: str) -> dict:
     """Làm sạch markdown fence và parse JSON `{thuc_the, quan_he[, dinh_nghia_*]}` từ đầu ra LLM."""
     obj = _load_first_json_object(text)
+    normalize_extraction_payload_keys(obj)
     if not isinstance(obj, dict) or "thuc_the" not in obj or "quan_he" not in obj:
         raise ValueError("Cần một JSON object với khóa thuc_the và quan_he")
     if not isinstance(obj["thuc_the"], list) or not isinstance(obj["quan_he"], list):

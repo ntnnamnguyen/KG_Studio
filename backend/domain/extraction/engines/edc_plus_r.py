@@ -13,7 +13,7 @@ from backend.domain.schema_intelligence.retriever import SchemaRetriever
 from backend.integrations.embedder_gateway import default_embedder
 from backend.integrations.llm import LLMGateway
 from shared.catalog_utils import edc_prompt
-from shared.constants import DEFAULT_EDC_PROMPT, MODE_EDC, MODE_EDC_PLUS_R
+from shared.constants import DEFAULT_EDC_PLUS_R_PROMPT, MODE_EDC, MODE_EDC_PLUS_R
 from shared.schemas.graph import StepTraceDTO
 from shared.schemas.project import EDCPlusRSettingsDTO
 from shared.text_utils import uid
@@ -40,7 +40,7 @@ class EDCPlusREngine(BaseExtractionEngine):
             snap_proj["extraction_mode"] = MODE_EDC_PLUS_R
             s = EDCPlusRSettingsDTO.from_dict(project.get("edc_plus_r_settings"))
             v_id, v_hash, b_inst = self.resolve_prompt_version_info(snap_proj)
-            b_instructions = b_inst or project.get("edc_prompt", DEFAULT_EDC_PROMPT)
+            b_instructions = b_inst or project.get("edc_prompt", DEFAULT_EDC_PLUS_R_PROMPT)
             retrieval_snapshot = {
                 "project_id": project.get("project_id", ""),
                 "relations": copy.deepcopy(project.get("relations", [])),
