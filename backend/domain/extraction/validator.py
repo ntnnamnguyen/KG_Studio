@@ -480,8 +480,6 @@ def cache_key(
     if extra_sig:
         parts.append(extra_sig)
     return sha("|".join(parts))
-
-
 def recover_key_typo_runs(project: dict) -> int:
     """Khôi phục an toàn các lượt chạy EDC/EDC+R bị đánh dấu lỗi chỉ do khóa JSON có dấu/khoảng trắng
     (ví dụ 'dinh nghia' / 'dinh nghĩa') nhưng đã có raw_response JSON hoàn chỉnh."""

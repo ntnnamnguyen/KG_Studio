@@ -13,6 +13,8 @@ from ml_lab.trainers.train_schema_retriever import train_schema_retriever_model
 
 def render_ml_lab_panel(project: dict, save_cb, *, use_expander: bool = False) -> None:
     client = get_client()
+    proj_id = str(project.get("project_id") or project.get("name") or "default")
+    export_key = f"ml_last_export_{proj_id}"
 
     def _render_body() -> None:
         st.caption(
@@ -23,15 +25,15 @@ def render_ml_lab_panel(project: dict, save_cb, *, use_expander: bool = False) -
         with col1:
             if st.button("1. Xuất Dataset Active Learning", key="ml_export_btn", width="stretch"):
                 report = client.export_training_datasets(project)
-                st.session_state["ml_last_export"] = report
+                st.session_state[export_key] = report
                 st.success(
                     f"Đã xuất: {report['sr_triplets_count']} mẫu +R, "
                     f"{report['canonicalization_pairs_count']} cặp đồng nghĩa, "
                     f"{report['sft_records_count']} mẫu SFT."
                 )
 
-        export_info = st.session_state.get("ml_last_export")
-        sync_keyed_value("ml_model_tag", "sr-vi-custom", "init")
+        export_info = st.session_state.get(export_key)
+        sync_keyed_value("ml_model_tag", "sr-vi-custom", (proj_id, "ml_tag"))
         model_tag = st.text_input("Tên phiên bản mô hình muốn lưu vào Registry", key="ml_model_tag")
 
         with col2:

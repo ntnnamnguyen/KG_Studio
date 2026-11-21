@@ -30,7 +30,7 @@ gather_usage_stats = false
 default_provider = "deepseek"
 temperature = 0.0
 max_input_tokens = 64000
-max_tokens = 65536
+max_tokens = 131072
 timeout_seconds = 90.0
 max_retries = 1
 connection_timeout_seconds = 30.0
@@ -62,7 +62,7 @@ recommended_chunk_size = 4200
 model = "deepseek-flash"
 base_url = "https://api.deepseek.com"
 max_input_tokens = 64000
-max_tokens = 65536
+max_tokens = 131072
 recommended_chunk_size = 4800
 
 [llm.providers.ollama]

@@ -78,6 +78,12 @@ class LLMPackageTests(unittest.TestCase):
         value, warn = clamp_output_tokens(PROVIDER_DEEPSEEK, "deepseek-chat", 32000)
         self.assertEqual(value, 16384)
         self.assertIsNotNone(warn)
+        val_128k, warn_128k = clamp_output_tokens(PROVIDER_DEEPSEEK, "deepseek-flash", 131072)
+        self.assertEqual(val_128k, 131072)
+        self.assertIsNone(warn_128k)
+        val_over, warn_over = clamp_output_tokens(PROVIDER_DEEPSEEK, "deepseek-flash", 200000)
+        self.assertEqual(val_over, 131072)
+        self.assertIsNotNone(warn_over)
 
     def test_extract_deepseek_disables_thinking_and_sanitizes_base_url(self) -> None:
         fake = _FakeOpenAI(EMPTY)

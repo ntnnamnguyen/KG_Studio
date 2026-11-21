@@ -12,6 +12,7 @@ from frontend.components.pipeline_banner import render_step_next_action
 from frontend.components.step_traces_viewer import render_step_traces
 from frontend.composition import get_ui_composition
 from frontend.state.session import (
+    _safe_set_widget_state,
     navigate_to_step,
     sync_keyed_choice,
     sync_keyed_int,
@@ -66,8 +67,8 @@ def render_extraction_page(project: dict) -> None:
         if persisted:
             api_key = persisted
             st.session_state["llm_api_key"] = persisted
-            st.session_state["sb_llm_key"] = persisted
-            st.session_state["p02_llm_key"] = persisted
+            _safe_set_widget_state("sb_llm_key", persisted)
+            _safe_set_widget_state("p02_llm_key", persisted)
 
     in_tokens = int(st.session_state.get("llm_max_input_tokens", CONFIG["llm"].get("max_input_tokens", 16000)))
     out_tokens = int(st.session_state.get("llm_max_output_tokens", CONFIG["llm"].get("max_tokens", 16384)))

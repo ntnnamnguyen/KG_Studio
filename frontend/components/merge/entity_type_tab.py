@@ -279,6 +279,12 @@ def render_entity_type_merge_tab(
             )
             latest_snap = str(merges[-1].get("snapshot_path") or "")
             if latest_snap and Path(latest_snap).exists():
+                type_chk_nonce = int(st.session_state.get("_type_merge_snap_chk_nonce") or 0)
+                sync_keyed_value(
+                    "chk_restore_type_merge_snap",
+                    False,
+                    (proj_id, latest_snap, type_chk_nonce),
+                )
                 confirm_undo = st.checkbox(
                     f"Tôi xác nhận khôi phục toàn dự án về snapshot trước phiên gộp `{merges[-1].get('merge_id', '')}`",
                     key="chk_restore_type_merge_snap",
@@ -290,7 +296,8 @@ def render_entity_type_merge_tab(
                 ):
                     client.restore_snapshot(project, latest_snap)
                     bump_sync_nonce(f"_type_merge_nonce_{proj_id}")
-                    st.session_state["chk_restore_type_merge_snap"] = False
+                    bump_sync_nonce("_type_merge_snap_chk_nonce")
+                    bump_sync_nonce("_curation_snapshot_nonce")
                     reset_edc_state_if_project_changed(project, force=True)
                     reset_curation_state_if_project_changed(project, force=True)
                     st.success("Đã khôi phục dự án về snapshot trước khi gộp loại thực thể.")

@@ -5,8 +5,6 @@ Tích hợp trực tiếp phòng thí nghiệm G-Retriever (PCST), HippoRAG (PPR
 """
 from __future__ import annotations
 
-from datetime import datetime
-import json
 from typing import Any
 import streamlit as st
 
@@ -158,15 +156,14 @@ def render_graph_export_page(project: dict) -> None:
     st.caption(f"Graph fingerprint: {snapshot.fingerprint}")
 
     # =========================================================================
-    # PHÂN KHU 2: TÁCH BẠCH KHÁM PHÁ & NGHIÊN CỨU
+    # PHÂN KHU 2: TÁCH BẠCH KHÁM PHÁ & NGHIÊN CỨU (4 TAB TINH GỌN)
     # =========================================================================
-    tab_qa, tab_export, tab_bench, tab_train_studio, tab_gret_5files = st.tabs(
+    tab_qa, tab_export, tab_bench, tab_gret_5files = st.tabs(
         [
             "🔍 1. Khám phá & Hỏi đáp (G-Retriever)",
             "📦 2. Bản đồ, Bảng Quan hệ & Xuất tệp",
             "🧪 3. Nghiên cứu: Đối sánh Thuật toán (Benchmark)",
-            "🧬 4. Nghiên cứu: Sinh QA & PyG (Bản cũ)",
-            "🎯 5. Xuất Chuẩn G-Retriever (5 Tệp)",
+            "🎯 4. Xuất Chuẩn G-Retriever (5 Tệp)",
         ]
     )
 
@@ -175,12 +172,6 @@ def render_graph_export_page(project: dict) -> None:
 
     with tab_bench:
         render_benchmark_tab(graph_service, active_graph_project, graph_context_id)
-
-    with tab_train_studio:
-        if current_approved:
-            render_training_dataset_tab(facade, project, proj_id)
-        else:
-            st.info("Graph thô dùng để đánh giá; không tự coi observations là nhãn đúng để sinh dữ liệu huấn luyện.")
 
     with tab_gret_5files:
         if current_approved:
@@ -291,26 +282,11 @@ def render_graph_export_page(project: dict) -> None:
             ec["source_name"] = src.get("name", "")
             ec["target_name"] = tgt.get("name", "")
             enriched_edges.append(ec)
-        std_payload = {
-            "project_id": snapshot.project_id,
-            "source": snapshot.source,
-            "thuc_the": nodes,
-            "quan_he": enriched_edges,
-        }
-        std_json_bytes = json.dumps(std_payload, ensure_ascii=False, indent=2).encode("utf-8")
 
-        dl_col1, dl_col2 = st.columns(2)
+        dl_col1, dl_col2, dl_col3 = st.columns(3)
         with dl_col1:
             st.download_button(
-                "⬇️ Tải JSON Đầy đủ (thuc_the & quan_he)",
-                data=std_json_bytes,
-                file_name=f"{snapshot.source}_thuc_the_quan_he.json",
-                mime="application/json",
-                width="stretch",
-                key="p05_std_json",
-            )
-            st.download_button(
-                "⬇️ Tải graph đang chọn (JSON + manifest)",
+                "⬇️ Tải Đồ thị JSON (Nodes, Edges & Manifest)",
                 data=graph_service.export_graph_json(snapshot),
                 file_name=f"{snapshot.source}_graph.json",
                 mime="application/json",
@@ -319,7 +295,16 @@ def render_graph_export_page(project: dict) -> None:
             )
         with dl_col2:
             st.download_button(
-                "⬇️ Tải edges/observations (CSV)",
+                "⬇️ Tải Danh sách Thực thể (nodes.csv)",
+                data=graph_service.csv_bytes(nodes, ["id", "name", "kind", "description"]),
+                file_name=f"{snapshot.source}_nodes.csv",
+                mime="text/csv",
+                width="stretch",
+                key="p05_nodes_csv",
+            )
+        with dl_col3:
+            st.download_button(
+                "⬇️ Tải Danh sách Quan hệ (edges.csv)",
                 data=graph_service.csv_bytes(
                     enriched_edges,
                     ["id", "source_name", "relation", "target_name", "evidence", "source", "target", "doc_name", "run_id"],
@@ -329,74 +314,12 @@ def render_graph_export_page(project: dict) -> None:
                 width="stretch",
                 key="p05_graph_edges_csv",
             )
-            st.download_button(
-                "⬇️ Tải danh sách thực thể nodes (CSV)",
-                data=graph_service.csv_bytes(nodes, ["id", "name", "kind", "description"]),
-                file_name=f"{snapshot.source}_nodes.csv",
-                mime="text/csv",
-                width="stretch",
-                key="p05_nodes_csv",
-            )
 
         if snapshot.diagnostics:
             with st.expander("Diagnostics và mục không dựng được cạnh"):
                 st.json(snapshot.diagnostics)
         if not current_approved:
             return
-        with st.container(border=True):
-            st.markdown("#### 📦 Tải xuống Bộ dữ liệu Tri thức & Gói Huấn luyện G-Retriever")
-            st.caption(
-                "Gói ZIP bao gồm trọn bộ 11 tệp: `do_thi_da_duyet.json`, `du_an_day_du.json`, `thuc_the.csv`, `quan_he.csv`, "
-                "`pyg_nodes.csv`, `pyg_edges.csv`, `train.jsonl`, `val.jsonl`, `test.jsonl`, `bo_cau_hoi_g_retriever.json` và `.jsonl`."
-            )
-
-            export_rev = compute_project_revision(project)
-            info_c1, info_c2, info_c3 = st.columns(3)
-            info_c1.write(f"🏷️ **Dự án**: `{project.get('name', 'N/A')}`")
-            info_c2.write(f"🔢 **Revision**: `{export_rev[:10]}`")
-            info_c3.write(f"📅 **Thời điểm**: `{datetime.now().strftime('%Y-%m-%d %H:%M')}`")
-
-            export_key = f"_export_cache_{project.get('project_id', 'default')}_{snapshot.fingerprint}"
-            exp_cache = st.session_state.setdefault(export_key, {})
-
-            d1, d2 = st.columns(2)
-            with d1:
-                if "json_bytes" not in exp_cache:
-                    if st.button("🔨 Chuẩn bị tệp JSON Đã duyệt", width="stretch", key="btn_prep_json"):
-                        with st.spinner("Đang chuẩn bị JSON..."):
-                            exp_cache["json_bytes"] = facade.approved_json_bytes(project)
-                        st.rerun()
-                else:
-                    st.download_button(
-                        "⬇️ Tải JSON Đồ thị Đã duyệt (do_thi_da_duyet.json)",
-                        data=exp_cache["json_bytes"],
-                        file_name=f"{project.get('name', 'kg')}_do_thi_da_duyet.json",
-                        mime="application/json",
-                        width="stretch",
-                        key="btn_dl_json",
-                    )
-                    if st.button("🔄 Làm mới tệp JSON", width="stretch", key="btn_clear_json"):
-                        exp_cache.pop("json_bytes", None)
-                        st.rerun()
-
-            with d2:
-                if "zip_bytes" not in exp_cache:
-                    if st.button("🔨 Chuẩn bị Gói Sao lưu ZIP Đầy đủ (JSON + CSV + QA)", width="stretch", key="btn_prep_zip"):
-                        with st.spinner("Đang nén gói ZIP huấn luyện..."):
-                            exp_cache["zip_bytes"] = facade.export_zip(project)
-                        st.rerun()
-                else:
-                    st.download_button(
-                        "⬇️ Tải Gói Sao lưu ZIP Đầy đủ (JSON + PyG CSV + Train/Val/Test JSONL)",
-                        data=exp_cache["zip_bytes"],
-                        file_name=f"{project.get('name', 'kg_studio')}_export.zip",
-                        mime="application/zip",
-                        width="stretch",
-                        key="btn_dl_zip",
-                    )
-                    if st.button("🔄 Làm mới gói ZIP", width="stretch", key="btn_clear_zip"):
-                        exp_cache.pop("zip_bytes", None)
-                        st.rerun()
 
         with st.expander("🗄️ Tích hợp Cơ sở dữ liệu Đồ thị Neo4j (Tùy chọn nâng cao)", expanded=False):
             st.caption("Đẩy trực tiếp các thực thể và quan hệ đã duyệt vào cơ sở dữ liệu Neo4j qua giao thức Bolt.")

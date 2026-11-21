@@ -15,12 +15,60 @@ from frontend.state.session import (
 )
 
 
+def render_triple_dedup_history_body(project: dict) -> None:
+    """Nội dung lịch sử khử trùng cạnh lặp, cặp miễn trừ sự kiện độc lập và bảng ánh xạ edge_redirects."""
+    hist = [
+        h for h in project.get("curation_history", [])
+        if h.get("operation") == "collapse_duplicate_edges" or h.get("action") == "collapse_duplicate_edges"
+    ]
+    dismissed_edges = project.get("not_duplicate_edge_pairs", [])
+    edge_redirects = project.get("edge_redirects", {})
+    if dismissed_edges:
+        st.caption("Danh sách các cặp/nhóm cạnh đã đánh dấu **Sự kiện Độc lập (Không gộp)** (`not_duplicate_edge_pairs`):")
+        st.dataframe(
+            [
+                {
+                    "Cạnh A": d.get("edge_a_id", ""),
+                    "Cạnh B / Nhóm": d.get("edge_b_id", ""),
+                    "Thời điểm": d.get("at", ""),
+                    "Người duyệt": d.get("actor", ""),
+                    "Ghi chú": d.get("note", ""),
+                }
+                for d in reversed(dismissed_edges)
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+    if edge_redirects:
+        st.caption("Bảng ánh xạ phẳng `edge_redirects` (`old_edge_id -> canonical_edge_id`):")
+        st.json(edge_redirects)
+    if hist:
+        st.dataframe(
+            [
+                {
+                    "Thời điểm": h.get("at", ""),
+                    "Người thực hiện": h.get("actor", ""),
+                    "Số nhóm gộp": h.get("groups_count", 0),
+                    "Số cạnh đã thu gọn": h.get("dropped_edges_count", h.get("dropped_count", 0)),
+                    "Ghi chú": h.get("note", ""),
+                }
+                for h in reversed(hist)
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+    elif not dismissed_edges and not edge_redirects:
+        st.info("Chưa có phiên khử trùng cạnh lặp hoặc cặp miễn trừ nào được ghi nhận.")
+
+
 def render_triple_dedup_tab(
     project: dict,
     client: FrontendClient,
+    *,
+    show_history: bool = True,
 ) -> None:
     """Nội dung Tab Khử trùng Cạnh Lặp theo Bộ Ba (Gợi ý thông minh, Chọn lọc & Đối chiếu bằng chứng)."""
-    st.markdown("### ✨ 4. Gợi ý & Khử trùng Cạnh Lặp theo Bộ Ba (Triple Deduplication)")
+    st.markdown("#### ✨ 3A. Gợi ý & Khử trùng Cạnh Lặp theo Bộ Ba (Triple Deduplication)")
     st.caption(
         "Phát hiện thông minh các nhóm bộ ba `(Nguồn – Quan hệ – Đích)` bị trùng lặp tuyệt đối, "
         "cùng cặp nút nhưng vị từ tương đồng hoặc ngược chiều Chủ động – Bị động. "
@@ -35,11 +83,11 @@ def render_triple_dedup_tab(
         c_thresh, c_filter, c_dis = st.columns([1.8, 1.6, 1.3])
         with c_thresh:
             thresh_key = f"triple_dedup_thresh_{proj_id}"
+            sync_keyed_value(thresh_key, 0.70, (proj_id, "triple_thresh"))
             fuzzy_thresh = st.slider(
                 "Ngưỡng tương đồng vị từ trên cùng cặp nút",
                 min_value=0.50,
                 max_value=1.00,
-                value=float(st.session_state.get(thresh_key, 0.70)),
                 step=0.05,
                 key=thresh_key,
                 help=(
@@ -62,10 +110,11 @@ def render_triple_dedup_tab(
             )
         with c_dis:
             st.markdown("<div style='height:26px'></div>", unsafe_allow_html=True)
+            inc_dis_key = f"triple_dedup_inc_dis_{proj_id}"
+            sync_keyed_value(inc_dis_key, False, (proj_id, "triple_inc_dis"))
             include_dismissed = st.checkbox(
                 "Hiện cả nhóm đã giữ riêng",
-                value=False,
-                key=f"triple_dedup_inc_dis_{proj_id}",
+                key=inc_dis_key,
                 help="Hiển thị cả những nhóm cạnh đã được đánh dấu là Sự kiện độc lập (Không gộp).",
             )
 
@@ -248,50 +297,15 @@ def render_triple_dedup_tab(
                     )
                     st.rerun()
 
-    # Hiển thị lịch sử các lần khử trùng cạnh & danh sách miễn trừ
-    hist = [
-        h for h in project.get("curation_history", [])
-        if h.get("operation") == "collapse_duplicate_edges" or h.get("action") == "collapse_duplicate_edges"
-    ]
-    dismissed_edges = project.get("not_duplicate_edge_pairs", [])
-    edge_redirects = project.get("edge_redirects", {})
-    with st.expander(
-        f"📜 Lịch sử Khử trùng ({len(hist)} phiên) · Miễn trừ ({len(dismissed_edges)} cặp) · Ánh xạ Cạnh ({len(edge_redirects)} chuyển hướng)",
-        expanded=False,
-    ):
-        if dismissed_edges:
-            st.caption("Danh sách các cặp/nhóm cạnh đã đánh dấu **Sự kiện Độc lập (Không gộp)** (`not_duplicate_edge_pairs`):")
-            st.dataframe(
-                [
-                    {
-                        "Cạnh A": d.get("edge_a_id", ""),
-                        "Cạnh B / Nhóm": d.get("edge_b_id", ""),
-                        "Thời điểm": d.get("at", ""),
-                        "Người duyệt": d.get("actor", ""),
-                        "Ghi chú": d.get("note", ""),
-                    }
-                    for d in reversed(dismissed_edges)
-                ],
-                width="stretch",
-                hide_index=True,
-            )
-        if edge_redirects:
-            st.caption("Bảng ánh xạ phẳng `edge_redirects` (`old_edge_id -> canonical_edge_id`):")
-            st.json(edge_redirects)
-        if hist:
-            st.dataframe(
-                [
-                    {
-                        "Thời điểm": h.get("at", ""),
-                        "Người thực hiện": h.get("actor", ""),
-                        "Số nhóm gộp": h.get("groups_count", 0),
-                        "Số cạnh đã thu gọn": h.get("dropped_edges_count", h.get("dropped_count", 0)),
-                        "Ghi chú": h.get("note", ""),
-                    }
-                    for h in reversed(hist)
-                ],
-                width="stretch",
-                hide_index=True,
-            )
-        elif not dismissed_edges and not edge_redirects:
-            st.info("Chưa có phiên khử trùng cạnh lặp hoặc cặp miễn trừ nào được ghi nhận.")
+    if show_history:
+        hist = [
+            h for h in project.get("curation_history", [])
+            if h.get("operation") == "collapse_duplicate_edges" or h.get("action") == "collapse_duplicate_edges"
+        ]
+        dismissed_edges = project.get("not_duplicate_edge_pairs", [])
+        edge_redirects = project.get("edge_redirects", {})
+        with st.expander(
+            f"📜 Lịch sử Khử trùng ({len(hist)} phiên) · Miễn trừ ({len(dismissed_edges)} cặp) · Ánh xạ Cạnh ({len(edge_redirects)} chuyển hướng)",
+            expanded=False,
+        ):
+            render_triple_dedup_history_body(project)

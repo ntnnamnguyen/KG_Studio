@@ -202,7 +202,7 @@ def _render_edc_draft_and_preview_controls(
 ) -> None:
     """Expander chuẩn bị bản nháp, gán đích chung và kích hoạt xem trước quyết định."""
     selected_count = len(selected_ids)
-    with st.expander(f"⚙️ Chuẩn bị Bản nháp & Xem trước Quyết định cho {selected_count} mục đã chọn ({kind_label})", expanded=selected_count > 0):
+    with st.expander(f"⚙️ Chuẩn bị Bản nháp & Xem trước Quyết định cho {selected_count} mục đã chọn ({kind_label})", expanded=False):
         m1, m2, m3 = st.columns([2.0, 1.2, 1.8])
         shared_target = m1.selectbox(
             f"Chọn cùng một đích có sẵn trong danh mục {kind_label}",

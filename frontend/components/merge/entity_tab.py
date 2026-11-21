@@ -40,11 +40,12 @@ def _render_bulk_duplicate_entity_section(
             "Hỗ trợ **chọn nhiều và gộp hàng loạt** an toàn theo thuật toán cụm liên thông (DSU) bảo toàn bậc kết nối."
         )
         proj_id = str(project.get("project_id") or project.get("name") or "default")
+        snap_nonce = int(st.session_state.get("_curation_snapshot_nonce") or 0)
         sc1, sc2 = st.columns([1.6, 2.4])
         sync_keyed_value(
             "merge_fuzzy_slider",
             float(m_state.get("fuzzy_threshold", 0.82)),
-            (proj_id, "ent_fuzzy"),
+            (proj_id, "ent_fuzzy", snap_nonce),
         )
         fuzzy_val = sc1.slider(
             "Ngưỡng tương đồng tên thực thể (Fuzzy threshold)",
@@ -124,7 +125,7 @@ def _render_bulk_duplicate_entity_section(
             ]
             edited_cands = st.data_editor(
                 table_cand_rows,
-                key=f"editor_cand_pairs_{len(suggestions)}_{fuzzy_val}",
+                key=f"editor_cand_pairs_{proj_id}_{snap_nonce}_{len(suggestions)}_{fuzzy_val}",
                 width='stretch',
                 hide_index=True,
                 disabled=[
@@ -474,51 +475,66 @@ def _render_three_step_entity_workbench(
                     st.error(str(exc))
 
 
-def _render_entity_merge_history_section(project: dict, client: FrontendClient) -> None:
-    """Phần 3: Lịch sử gộp thực thể, bảng node_redirects và khôi phục snapshot."""
+def render_entity_merge_history_body(project: dict, client: FrontendClient) -> None:
+    """Nội dung lịch sử gộp thực thể, bảng node_redirects và khôi phục snapshot."""
     merges = list(reversed(project.get("entity_merges", [])))
     redirects = project.get("node_redirects", {})
-    with st.expander(f"📜 Lịch sử Gộp Thực thể ({len(merges)} phiên) & Bảng Chuyển hướng ID ({len(redirects)} ID cũ)", expanded=False):
-        if redirects:
-            st.caption("Bảng ánh xạ phẳng `node_redirects` (`old_node_id -> canonical_node_id`):")
-            st.json(redirects)
-        if not merges:
-            st.info("Chưa có phiên gộp thực thể nào trong dự án.")
-        else:
-            st.dataframe(
-                [
-                    {
-                        "Mã phiên": m.get("merge_id", ""),
-                        "Thời điểm": m.get("at", ""),
-                        "Giữ lại ID": m.get("keep_id", ""),
-                        "Gộp các ID": ", ".join(m.get("drop_ids", [])),
-                        "Tên chuẩn": m.get("canonical_name", ""),
-                        "Loại chuẩn": m.get("canonical_kind", ""),
-                        "Cạnh duy nhất đổi": m.get("affected_edge_count", 0),
-                        "Đầu mút đổi": m.get("changed_endpoint_count", 0),
-                    }
-                    for m in merges
-                ],
-                width='stretch',
-                hide_index=True,
+    if redirects:
+        st.caption("Bảng ánh xạ phẳng `node_redirects` (`old_node_id -> canonical_node_id`):")
+        st.json(redirects)
+    if not merges:
+        st.info("Chưa có phiên gộp thực thể nào trong dự án.")
+    else:
+        st.dataframe(
+            [
+                {
+                    "Mã phiên": m.get("merge_id", ""),
+                    "Thời điểm": m.get("at", ""),
+                    "Giữ lại ID": m.get("keep_id", ""),
+                    "Gộp các ID": ", ".join(m.get("drop_ids", [])),
+                    "Tên chuẩn": m.get("canonical_name", ""),
+                    "Loại chuẩn": m.get("canonical_kind", ""),
+                    "Cạnh duy nhất đổi": m.get("affected_edge_count", 0),
+                    "Đầu mút đổi": m.get("changed_endpoint_count", 0),
+                }
+                for m in merges
+            ],
+            width='stretch',
+            hide_index=True,
+        )
+        latest_snap = str(merges[0].get("snapshot_path") or "")
+        if latest_snap and Path(latest_snap).exists():
+            proj_id = str(project.get("project_id") or project.get("name") or "default")
+            snap_chk_nonce = int(st.session_state.get("_entity_merge_snap_chk_nonce") or 0)
+            sync_keyed_value(
+                "chk_restore_entity_merge_snap",
+                False,
+                (proj_id, latest_snap, snap_chk_nonce),
             )
-            latest_snap = str(merges[0].get("snapshot_path") or "")
-            if latest_snap and Path(latest_snap).exists():
-                confirm_undo = st.checkbox(
-                    f"Tôi xác nhận khôi phục toàn dự án về snapshot ngay trước phiên gộp `{merges[0].get('merge_id', '')}`",
-                    key="chk_restore_entity_merge_snap",
-                )
-                if st.button(
-                    "⏪ Khôi phục toàn dự án về Snapshot trước phiên gộp này",
-                    disabled=not confirm_undo,
-                    key="btn_restore_entity_merge_snap",
-                ):
-                    client.restore_snapshot(project, latest_snap)
-                    st.session_state["chk_restore_entity_merge_snap"] = False
-                    reset_edc_state_if_project_changed(project, force=True)
-                    reset_curation_state_if_project_changed(project, force=True)
-                    st.success("Đã khôi phục dự án về snapshot trước khi gộp thực thể.")
-                    st.rerun()
+            confirm_undo = st.checkbox(
+                f"Tôi xác nhận khôi phục toàn dự án về snapshot ngay trước phiên gộp `{merges[0].get('merge_id', '')}`",
+                key="chk_restore_entity_merge_snap",
+            )
+            if st.button(
+                "⏪ Khôi phục toàn dự án về Snapshot trước phiên gộp này",
+                disabled=not confirm_undo,
+                key="btn_restore_entity_merge_snap",
+            ):
+                client.restore_snapshot(project, latest_snap)
+                bump_sync_nonce("_entity_merge_snap_chk_nonce")
+                bump_sync_nonce("_curation_snapshot_nonce")
+                reset_edc_state_if_project_changed(project, force=True)
+                reset_curation_state_if_project_changed(project, force=True)
+                st.success("Đã khôi phục dự án về snapshot trước khi gộp thực thể.")
+                st.rerun()
+
+
+def _render_entity_merge_history_section(project: dict, client: FrontendClient) -> None:
+    """Phần 3: Lịch sử gộp thực thể, bảng node_redirects và khôi phục snapshot (dạng expander độc lập)."""
+    merges = project.get("entity_merges", [])
+    redirects = project.get("node_redirects", {})
+    with st.expander(f"📜 Lịch sử Gộp Thực thể ({len(merges)} phiên) & Bảng Chuyển hướng ID ({len(redirects)} ID cũ)", expanded=False):
+        render_entity_merge_history_body(project, client)
 
 
 def render_entity_merge_tab(
@@ -528,6 +544,8 @@ def render_entity_merge_tab(
     nodes: list[dict],
     nodes_by_id: dict[str, dict],
     degrees: dict[str, dict[str, int]],
+    *,
+    show_history: bool = True,
 ) -> None:
     """Nội dung Tab 1: Phát hiện nghi trùng, Chọn nhiều & Gộp thực thể số lượng lớn, Bàn gộp 3 bước."""
     for flash_msg in list(m_state.get("flash_messages", [])):
@@ -537,12 +555,14 @@ def render_entity_merge_tab(
     _render_bulk_duplicate_entity_section(project, client, m_state, nodes_by_id)
     st.divider()
     _render_three_step_entity_workbench(project, m_state, nodes, nodes_by_id, degrees)
-    _render_entity_merge_history_section(project, client)
+    if show_history:
+        _render_entity_merge_history_section(project, client)
 
 
 __all__ = [
     "_format_gazetteer_merge_notice",
     "build_entity_merge_preview",
     "execute_entity_merge_apply",
+    "render_entity_merge_history_body",
     "render_entity_merge_tab",
 ]

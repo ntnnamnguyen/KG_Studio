@@ -2,16 +2,30 @@
 import importlib
 import sys
 
-_HOT_PATCH_REV = "2026-11-16-triple-dedup-v7"
+_HOT_PATCH_REV = "2026-11-17-state-sync-fix-v12"
 
 
 def _ensure_hot_modules_synced() -> None:
     cat_mod = sys.modules.get("shared.catalog_utils")
     if cat_mod is not None and getattr(cat_mod, "_HOT_PATCH_REV", "") != _HOT_PATCH_REV:
+        saved_container = getattr(sys.modules.get("backend.bootstrap"), "_CONTAINER", None)
+        saved_facade = getattr(sys.modules.get("backend.facade"), "_FACADE", None)
+        saved_comp = getattr(sys.modules.get("frontend.composition"), "_COMPOSITION", None)
+        saved_client = getattr(sys.modules.get("frontend.client"), "_CLIENT", None)
+        cfg_mod = sys.modules.get("shared.config_loader")
+        if cfg_mod is not None and hasattr(cfg_mod, "load_config") and hasattr(cfg_mod, "CONFIG"):
+            try:
+                fresh_cfg = cfg_mod.load_config(getattr(cfg_mod, "CONFIG_PATH", None))
+                cfg_mod.CONFIG.clear()
+                cfg_mod.CONFIG.update(fresh_cfg)
+            except Exception:
+                pass
         for mod_name in (
             "shared.constants",
             "shared.catalog_utils",
+            "backend.integrations.llm.token_budget",
             "backend.integrations.llm.parsing",
+            "backend.integrations.llm.gateway",
             "backend.domain.prompts.service",
             "backend.domain.extraction.validator",
             "backend.domain.curation.merge_core",
@@ -20,21 +34,40 @@ def _ensure_hot_modules_synced() -> None:
             "backend.domain.curation.service",
             "backend.modules.curation.application.service",
             "backend.modules.curation.public",
-            "backend.bootstrap",
-            "backend.facade",
-            "frontend.composition",
-            "frontend.client",
             "frontend.state.core",
+            "frontend.state.curation_state",
             "frontend.state.session",
+            "frontend.components.shared_curation_ui",
+            "frontend.components.edc_bulk_actions.view",
+            "frontend.components.edc_bulk_actions",
+            "frontend.components.curation_table.entity_view",
+            "frontend.components.curation_table",
+            "frontend.components.evidence_panel.edge_inspector",
+            "frontend.components.evidence_panel.entity_inspector",
+            "frontend.components.evidence_panel",
             "frontend.components.merge.provenance_view",
+            "frontend.components.merge.entity_tab",
+            "frontend.components.merge.relation_tab",
+            "frontend.components.merge.entity_type_tab",
             "frontend.components.merge.triple_dedup_tab",
             "frontend.components.merge",
+            "frontend.components.ml_lab_panel",
             "frontend.components.entity_merge_panel",
+            "frontend.pages.p02_catalogs_prompts",
             "frontend.pages.p04_curation_hub",
             "frontend.pages.p03_extraction",
+            "frontend.pages.p05_graph_export",
         ):
             if mod_name in sys.modules:
                 importlib.reload(sys.modules[mod_name])
+        if saved_container is not None and "backend.bootstrap" in sys.modules:
+            setattr(sys.modules["backend.bootstrap"], "_CONTAINER", saved_container)
+        if saved_facade is not None and "backend.facade" in sys.modules:
+            setattr(sys.modules["backend.facade"], "_FACADE", saved_facade)
+        if saved_comp is not None and "frontend.composition" in sys.modules:
+            setattr(sys.modules["frontend.composition"], "_COMPOSITION", saved_comp)
+        if saved_client is not None and "frontend.client" in sys.modules:
+            setattr(sys.modules["frontend.client"], "_CLIENT", saved_client)
         cat_mod = sys.modules["shared.catalog_utils"]
         parse_mod = sys.modules.get("backend.integrations.llm.parsing")
         gw_mod = sys.modules.get("backend.integrations.llm.gateway")

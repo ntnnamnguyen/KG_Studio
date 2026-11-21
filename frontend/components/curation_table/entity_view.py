@@ -321,7 +321,7 @@ def render_entity_table(project: dict) -> dict[str, Any]:
             filter_edges_by_entity(project, chosen_nid)
             st.rerun()
 
-        if act3.button("➕ Đưa vào bàn gộp (Khu vực C)", width='stretch', key="btn_ent_stage_merge"):
+        if act3.button("➕ Đưa vào Bàn gộp Thực thể", width='stretch', key="btn_ent_stage_merge"):
             stage_entities_for_merge(project, [chosen_nid], switch_to_merge=True)
             st.rerun()
     else:

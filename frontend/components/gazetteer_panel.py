@@ -99,7 +99,6 @@ def render_gazetteer_setup_tab(project: dict) -> list[dict[str, str]]:
         f"Hiện có **{len(grouped_rows)}** chủ thể · **{len(entries)}** quy tắc bí danh. "
         "Mỗi dòng khai báo **một thực thể chuẩn** kèm **nhiều bí danh / tên khác** ngăn cách bằng dấu chấm phẩy `;` "
         "hoặc dấu gạch đứng `|` (ví dụ: *Trần Hưng Đạo* ← *Hưng Đạo Vương; Hưng Đạo Đại Vương | Quốc Công Tiết Chế*). "
-        "Bước Ingestion tự bung phẳng và tra cứu $O(1)$."
     )
 
     up_col, tpl_col = st.columns([2.2, 1.2])

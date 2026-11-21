@@ -1,6 +1,7 @@
 """Các thành phần giao diện và tiện ích dùng chung cho Kiểm duyệt & Chuẩn hóa Tri thức (Trang 4 & 5)."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 import math
 from pathlib import Path
@@ -218,17 +219,22 @@ def render_decision_batch_history(
     on_restore_callbacks: list[Callable] | None = None,
     key_prefix: str = "batch",
     enable_jump_to_proposal: bool = False,
+    use_expander: bool = True,
 ) -> None:
     """Hiển thị lịch sử các lô quyết định đã thực thi và hỗ trợ khôi phục Snapshot toàn vẹn."""
     client = get_client()
     batches = list(reversed(project.get(batch_key, [])))
 
-    with st.expander(f"📜 {title} ({len(batches)} lô đã lưu)", expanded=False):
+    container_ctx = st.expander(f"📜 {title} ({len(batches)} lô đã lưu)", expanded=False) if use_expander else nullcontext()
+    with container_ctx:
         if not batches:
             st.info("Dự án chưa có lô quyết định nào được lưu.")
             return
 
         batch_options = [b.get("batch_id", "") for b in batches if b.get("batch_id")]
+        if not batch_options:
+            st.info("Chưa có lô quyết định hợp lệ nào được lưu.")
+            return
         by_batch_id = {b["batch_id"]: b for b in batches if b.get("batch_id")}
 
         def _format_batch(bid: str) -> str:

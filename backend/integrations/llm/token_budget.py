@@ -23,7 +23,7 @@ class TokenProfile:
 
 
 # Hồ sơ theo họ mô hình. Thứ tự quan trọng: mục đầu tiên khớp sẽ được dùng.
-_DEEPSEEK_FLASH = TokenProfile(64000, 16384, 4800, 65536)  # DeepSeek V4.1/Flash: Context 1M, output mở rộng lên tới 64K+
+_DEEPSEEK_FLASH = TokenProfile(64000, 16384, 4800, 131072)  # DeepSeek V4.1/Flash: Context 1M, cho phép output tới 128K (131072)
 _DEEPSEEK_REASONER = TokenProfile(16000, 8192, 4800, 16384)
 _DEEPSEEK_CHAT = TokenProfile(12000, 8192, 2400, 16384)  # DeepSeek V3: API hỗ trợ output 8K-16K
 _OPENAI = TokenProfile(16000, 8192, 4800, 16384)
@@ -60,7 +60,7 @@ def _config_profile(pkey: str) -> TokenProfile:
         recommended_chunk_size=int(
             prov_cfg.get("recommended_chunk_size") or CONFIG.get("extraction", {}).get("chunk_size", 4800)
         ),
-        api_max_output_cap=65536,
+        api_max_output_cap=131072,
     )
 
 

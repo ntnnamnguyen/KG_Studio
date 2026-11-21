@@ -96,7 +96,7 @@ def _render_proposed_fact_card(
         if edge.get("model") or edge.get("run_id"):
             st.caption(f"Model trích xuất: `{edge.get('model', 'Không rõ')}` · Run: `{edge.get('run_id', '-')}`")
 
-        # Nếu bị chặn bởi đề xuất EDC ở Trang 4 -> hiển thị nút liên kết trực tiếp sang tab Lược đồ
+        # Nếu bị chặn bởi đề xuất EDC -> hiển thị nút liên kết trực tiếp sang Bước 1 (Lược đồ)
         blocking_pids = schema_info.get("blocking_proposal_ids", [])
         if schema_info["status_code"] != "valid":
             st.warning(f"⚠️ **Chặn duyệt theo danh mục:** {schema_info['issue']}")
@@ -106,7 +106,7 @@ def _render_proposed_fact_card(
                     prop = proposals_by_id.get(str(pid), {})
                     p_label = f"{prop.get('name', pid)} ({prop.get('kind', '')} · {prop.get('status', 'pending')})"
                     if st.button(
-                        f"🔗 Mở đề xuất `{p_label}` ở Trang 4 để xử lý",
+                        f"🔗 Mở đề xuất `{p_label}` ở Bước 1 (Lược đồ) để xử lý",
                         key=f"btn_jump_p04_from_edge_{edge['id']}_{pid}",
                         width='stretch',
                     ):

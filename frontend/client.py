@@ -25,7 +25,7 @@ from shared.schemas.edc import (
 
 class FrontendClient:
     def __init__(self, api_base_url: str | KGStudioFacade = "", facade: KGStudioFacade | None = None) -> None:
-        if isinstance(api_base_url, KGStudioFacade):
+        if api_base_url is not None and not isinstance(api_base_url, str):
             self.api_base_url = ""
             self.facade = api_base_url
         else:

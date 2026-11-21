@@ -7,7 +7,6 @@ from typing import Any
 import streamlit as st
 
 from backend.domain.catalogs.service import compute_project_revision
-from backend.domain.curation.service import compute_apparent_duplicate_edge_groups
 from backend.integrations.llm.providers import DEFAULT_MODELS
 from frontend.client import FrontendClient
 from frontend.components.merge.provenance_view import render_relation_provenance_panel
@@ -454,26 +453,10 @@ def _render_manual_relation_and_dedup_section(project: dict, client: FrontendCli
                 except Exception as exc:
                     st.error(str(exc))
 
-    dup_groups = compute_apparent_duplicate_edge_groups(project.get("edges", []))
-    if dup_groups:
-        total_dup_edges = sum(g.get("count", 1) - 1 for g in dup_groups)
-        with st.container(border=True):
-            st.markdown("#### ✨ 3. Khử trùng Cạnh Lặp (Triples Deduplication Utility)")
-            st.warning(
-                f"⚠️ Đang có **{len(dup_groups)}** nhóm cạnh có cùng bộ ba (Nguồn – Quan hệ – Đích), "
-                f"tương ứng **{total_dup_edges}** cạnh bị trùng lặp."
+            st.caption(
+                "💡 Sau khi gộp nhãn quan hệ xong, hãy chuyển sang **Bước 3 (Mục 3A: Khử trùng Cạnh Lặp)** "
+                "để đối chiếu bằng chứng từng nhóm, đánh dấu *Sự kiện Độc lập* hoặc thu gọn bộ ba trùng phát sinh."
             )
-            if st.button(
-                f"⚡ Hợp nhất ngay {total_dup_edges} cạnh trùng lặp (Dồn bằng chứng an toàn)",
-                type="primary",
-                key="btn_collapse_dup_edges_direct",
-                help="Giữ lại cạnh chuẩn nhất cho từng bộ ba, dồn toàn bộ bằng chứng nguyên văn và xóa các cạnh dư thừa.",
-            ):
-                res = client.collapse_duplicate_edges(project)
-                reset_edc_state_if_project_changed(project, force=True)
-                reset_curation_state_if_project_changed(project, force=True)
-                st.success(f"Đã hợp nhất thành công {res.merged_duplicate_edges} cạnh trùng bộ ba!")
-                st.rerun()
 
 
 def _render_relation_merge_history_section(project: dict, client: FrontendClient) -> None:
@@ -508,6 +491,13 @@ def _render_relation_merge_history_section(project: dict, client: FrontendClient
             )
             latest_snap = str(rel_merges[0].get("snapshot_path") or "")
             if latest_snap and Path(latest_snap).exists():
+                proj_id = str(project.get("project_id") or project.get("name") or "default")
+                rel_chk_nonce = int(st.session_state.get("_rel_merge_snap_chk_nonce") or 0)
+                sync_keyed_value(
+                    "chk_restore_rel_merge_snap",
+                    False,
+                    (proj_id, latest_snap, rel_chk_nonce),
+                )
                 confirm_undo = st.checkbox(
                     f"Tôi xác nhận khôi phục toàn dự án về snapshot ngay trước phiên gộp `{rel_merges[0].get('merge_id', '')}`",
                     key="chk_restore_rel_merge_snap",
@@ -517,10 +507,10 @@ def _render_relation_merge_history_section(project: dict, client: FrontendClient
                     disabled=not confirm_undo,
                     key="btn_restore_rel_merge_snap",
                 ):
-                    proj_id = str(project.get("project_id") or project.get("name") or "default")
                     client.restore_snapshot(project, latest_snap)
                     bump_sync_nonce(f"_rel_merge_nonce_{proj_id}")
-                    st.session_state["chk_restore_rel_merge_snap"] = False
+                    bump_sync_nonce("_rel_merge_snap_chk_nonce")
+                    bump_sync_nonce("_curation_snapshot_nonce")
                     reset_edc_state_if_project_changed(project, force=True)
                     reset_curation_state_if_project_changed(project, force=True)
                     st.success("Đã khôi phục dự án về snapshot trước khi gộp quan hệ.")

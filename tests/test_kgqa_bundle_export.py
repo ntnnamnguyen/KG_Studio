@@ -443,14 +443,27 @@ render_graph_export_page(proj)
             at.run()
             self.assertFalse(at.exception)
 
-            # Tab 4 (bản cũ) và Tab 5 (5 tệp mới) tách biệt độc lập
-            self.assertTrue(
+            # Trang 5 tinh gọn về 4 tab chuẩn (bỏ tab 'Sinh QA & PyG (Bản cũ)' và bỏ nút tải trùng)
+            self.assertEqual(
+                [t.label for t in at.tabs],
+                [
+                    "🔍 1. Khám phá & Hỏi đáp (G-Retriever)",
+                    "📦 2. Bản đồ, Bảng Quan hệ & Xuất tệp",
+                    "🧪 3. Nghiên cứu: Đối sánh Thuật toán (Benchmark)",
+                    "🎯 4. Xuất Chuẩn G-Retriever (5 Tệp)",
+                ],
+            )
+            self.assertFalse(
                 any(b.key == "_p06_btn_gen_natural_qa_proj_kgqa_hn" for b in at.button),
-                "Tab 4 bản cũ vẫn phải độc lập không bị xóa.",
+                "Tab Sinh QA & PyG (Bản cũ) không còn hiển thị trên Bước 5.",
+            )
+            self.assertFalse(
+                any(b.key in ("btn_prep_json", "btn_prep_zip") for b in at.button),
+                "Khối tải gói 11 tệp cũ trùng lặp đã được gỡ khỏi Tab 2.",
             )
             self.assertTrue(
                 any(b.key == "p05_gret_studio_proj_kgqa_hn_btn_build" for b in at.button),
-                "Tab 5 mới phải có nút tạo Bộ 5 tệp chuẩn G-Retriever riêng.",
+                "Tab 4 phải có nút tạo Bộ 5 tệp chuẩn G-Retriever riêng.",
             )
 
             at.button(key="p05_gret_studio_proj_kgqa_hn_btn_build").click().run()

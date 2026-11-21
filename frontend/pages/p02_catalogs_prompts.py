@@ -56,6 +56,8 @@ def render_catalogs_prompts_page(project: dict) -> None:
             "**Lưu cấu hình mặc định** ghi vào `config/default.toml` (dùng chung mọi dự án khi mở mới); "
         )
         c_p, c_m = st.columns([1.5, 2.5])
+        if current_provider in LLMGateway.PROVIDERS:
+            _safe_set_widget_state("p02_llm_prov", current_provider)
         c_p.selectbox(
             "Nhà cung cấp LLM",
             LLMGateway.PROVIDERS,
@@ -87,7 +89,8 @@ def render_catalogs_prompts_page(project: dict) -> None:
             c_key.caption("ℹ️ Khóa chỉ tạm thời trong phiên. Bấm **Lưu API Key an toàn** bên dưới để lưu bền vững.")
 
         c_tok1, c_tok2 = st.columns(2)
-        _safe_set_widget_state("p02_llm_max_in", int(st.session_state.get("llm_max_input_tokens", 16000)))
+        clamped_in = max(1024, min(128000, int(st.session_state.get("llm_max_input_tokens", 16000) or 16000)))
+        _safe_set_widget_state("p02_llm_max_in", clamped_in)
         c_tok1.slider(
             "📥 Token đầu vào tối đa (Input Tokens)",
             min_value=1024,
@@ -97,15 +100,16 @@ def render_catalogs_prompts_page(project: dict) -> None:
             on_change=on_p02_llm_max_in_change,
             help="Ngân sách token đầu vào tối đa (bao gồm system prompt và đoạn văn bản).",
         )
-        _safe_set_widget_state("p02_llm_max_out", int(st.session_state.get("llm_max_output_tokens", 16384)))
+        clamped_out = max(512, min(131072, int(st.session_state.get("llm_max_output_tokens", 16384) or 16384)))
+        _safe_set_widget_state("p02_llm_max_out", clamped_out)
         c_tok2.slider(
             "📤 Token đầu ra tối đa (Output Tokens / max_tokens)",
             min_value=512,
-            max_value=65536,
+            max_value=131072,
             step=512,
             key="p02_llm_max_out",
             on_change=on_p02_llm_max_out_change,
-            help="Giới hạn số token tối đa cho phản hồi của mô hình.",
+            help="Giới hạn số token tối đa cho phản hồi của mô hình (tối đa 128K / 131.072 tokens).",
         )
 
         b1, b2, b3, b4 = st.columns([1.2, 1.2, 1.4, 1.4])

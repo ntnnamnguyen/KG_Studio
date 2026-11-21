@@ -257,17 +257,49 @@ st.session_state["_cap_ent_mode"] = get_curation_section_state(proj, "entities")
             at = AppTest.from_string(script)
             at.run()
             self.assertFalse(at.exception)
+            self.assertEqual(
+                list(at.radio(key="curation_hub_radio_subtab").options),
+                [
+                    "📐 Bước 1: Chuẩn hóa Lược đồ (Schema EDC)",
+                    "🏛️ Bước 2: Gộp Thực thể & Hồ sơ Bí danh",
+                    "🔬 Bước 3: Khử Cạnh Lặp & Duyệt Bằng chứng",
+                ],
+            )
 
-            # Action card -> Quan hệ & Bằng chứng
-            at.button(key="btn_act_goto_edges").click().run()
+            self.assertFalse(any(b.key and b.key.startswith("btn_act_goto_") for b in at.button))
+            self.assertEqual(
+                [t.label for t in at.tabs],
+                [
+                    "🏷️ 1A. Đề xuất Loại thực thể (`entity_types`)",
+                    "🔗 1B. Đề xuất Quan hệ (`relations`)",
+                ],
+            )
+
+            # Bước 1 (Schema): mở công cụ bổ sung cho EDC mở không phát sinh lỗi nested expander và không còn nút khử trùng lặp
+            at.checkbox(key="cb_hub_show_open_edc_tools").set_value(True).run()
+            self.assertFalse(at.exception)
+            self.assertFalse(any(b.key == "btn_collapse_dup_edges_direct" for b in at.button))
+            at.checkbox(key="cb_hub_show_open_edc_tools").set_value(False).run()
+            self.assertFalse(at.exception)
+
+            # Chuyển thẳng qua Bước 3 (Quan hệ & Bằng chứng) trên thanh điều hướng duy nhất + mở bàn Khử trùng Cạnh Lặp (Bước 3A)
+            at.radio(key="curation_hub_radio_subtab").set_value("edges").run()
             self.assertFalse(at.exception)
             self.assertEqual(at.session_state["_cap_sec"], "edges")
             self.assertEqual(at.radio(key="curation_hub_radio_subtab").value, "edges")
+            at.checkbox(key="cb_hub_show_triple_dedup").set_value(True).run()
+            self.assertFalse(at.exception)
+            self.assertEqual(
+                sum(1 for e in at.expander if "Lịch sử Kiểm duyệt Quan hệ" in str(e.label) or "Lịch sử Khử trùng" in str(e.label)),
+                1,
+            )
+            at.checkbox(key="cb_hub_show_triple_dedup").set_value(False).run()
+            self.assertFalse(at.exception)
             at.run()
             self.assertEqual(at.radio(key="curation_hub_radio_subtab").value, "edges")
 
-            # Action card -> Hồ sơ thực thể -> đổi submode sang Gộp thực thể -> quay lại Danh sách -> Lọc quan hệ theo thực thể
-            at.button(key="btn_act_goto_entities_list").click().run()
+            # Chuyển sang Bước 2 (Hồ sơ thực thể) -> đổi submode sang Gộp thực thể -> quay lại Danh sách -> Lọc quan hệ theo thực thể
+            at.radio(key="curation_hub_radio_subtab").set_value("entities").run()
             self.assertFalse(at.exception)
             self.assertEqual(at.session_state["_cap_sec"], "entities")
             self.assertEqual(at.radio(key="curation_hub_radio_subtab").value, "entities")
@@ -280,6 +312,10 @@ st.session_state["_cap_ent_mode"] = get_curation_section_state(proj, "entities")
             self.assertFalse(at.exception)
             self.assertEqual(at.session_state["_cap_sec"], "merge")
             self.assertEqual(at.radio(key="hub_entity_submode_radio").value, merge_label)
+            self.assertEqual(
+                sum(1 for e in at.expander if "Lịch sử Gộp Thực thể" in str(e.label)),
+                1,
+            )
 
             # Đổi radio con sang Danh sách thực thể -> Lọc quan hệ theo thực thể tập trung
             at.radio(key="hub_entity_submode_radio").set_value(list_label).run()
@@ -579,6 +615,60 @@ else:
             self.assertEqual(at.session_state["curation_hub_active_tab"], "edges")
             self.assertEqual(at.selectbox(key="cur_edge_f_status").value, STATUS_CHECK)
             self.assertEqual(at.selectbox(key="cur_focus_edge_select").value, "e_self_1")
+
+        _assert_no_session_state_warnings(self, warnings)
+
+    def test_merge_snapshot_restore_and_clamped_p02_sliders_no_state_errors(self) -> None:
+        proj = _build_rich_project("SnapProj", "proj_snap", mode=MODE_EDC_PLUS_R, edge_count=4, prop_count=1)
+        self.json_repo.save_project(proj)
+        self.facade.apply_bulk_entity_merges(
+            proj,
+            [("n_proj_snap_1", "n_proj_snap_4")],
+            note="Gộp thử trước khi test restore",
+        )
+
+        script = """
+import streamlit as st
+from backend.facade import get_facade
+from frontend.pages.p02_catalogs_prompts import render_catalogs_prompts_page
+from frontend.pages.p04_curation_hub import render_curation_hub_page
+
+proj = get_facade().load_project("SnapProj")
+if st.session_state.get("_test_view") == "p02":
+    render_catalogs_prompts_page(proj)
+else:
+    render_curation_hub_page(proj, default_tab="entities")
+"""
+        with capture_streamlit_state_warnings() as warnings:
+            at = AppTest.from_string(script, default_timeout=15)
+            at.session_state["_test_view"] = "p04"
+            at.run()
+            self.assertFalse(at.exception)
+
+            # Tích xác nhận & bấm Khôi phục Snapshot sau gộp thực thể -> không crash StreamlitAPIException
+            at.checkbox(key="chk_restore_entity_merge_snap").set_value(True).run()
+            self.assertFalse(at.exception)
+            at.button(key="btn_restore_entity_merge_snap").click().run()
+            self.assertFalse(at.exception)
+            reloaded = self.json_repo.load_project("SnapProj")
+            self.assertEqual(len(reloaded["nodes"]), 4)
+
+            # Bật bàn Khử trùng Cạnh Lặp (Bước 3A) -> slider/checkbox không phát sinh warning default value
+            at.radio(key="curation_hub_radio_subtab").set_value("edges").run()
+            self.assertFalse(at.exception)
+            at.checkbox(key="cb_hub_show_triple_dedup").set_value(True).run()
+            self.assertFalse(at.exception)
+            at.slider(key="triple_dedup_thresh_proj_snap").set_value(0.80).run()
+            self.assertFalse(at.exception)
+
+            # Mở Trang 2 với giá trị token vượt biên -> slider tự clamp sạch không exception
+            at.session_state["_test_view"] = "p02"
+            at.session_state["llm_max_input_tokens"] = 999999
+            at.session_state["llm_max_output_tokens"] = 999999
+            at.run()
+            self.assertFalse(at.exception)
+            self.assertEqual(at.slider(key="p02_llm_max_in").value, 128000)
+            self.assertEqual(at.slider(key="p02_llm_max_out").value, 131072)
 
         _assert_no_session_state_warnings(self, warnings)
 

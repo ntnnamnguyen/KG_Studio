@@ -88,14 +88,14 @@ def _render_entity_profile_form(project: dict, client: Any, node: dict) -> None:
             except Exception as exc:
                 st.error(str(exc))
 
-        # Liên kết sang Trang 4 tab Lược đồ nếu thực thể còn đề xuất loại EDC
+        # Liên kết sang Bước 1 (Lược đồ) nếu thực thể còn đề xuất loại EDC
         prop_ids = list(node.get("schema_proposal_ids", []))
         if prop_ids:
             st.divider()
             st.caption("Đề xuất loại thực thể EDC liên quan:")
             for pid in prop_ids:
                 if st.button(
-                    f"🔗 Mở đề xuất loại `{pid}` ở Trang 4",
+                    f"🔗 Mở đề xuất loại `{pid}` ở Bước 1 (Lược đồ)",
                     key=f"btn_jump_p04_from_node_{node['id']}_{pid}",
                 ):
                     navigate_to_edc_proposal_from_curation(
@@ -140,11 +140,11 @@ def _render_entity_connected_edges_card(
             )
             je1, je2 = st.columns([2.0, 1.2])
             jump_eid = je1.selectbox(
-                "Chọn cạnh để mở đối chiếu bằng chứng ở Khu vực A",
+                "Chọn cạnh để mở đối chiếu bằng chứng ở Bước 3 (Quan hệ)",
                 [str(e["id"]) for e in connected],
                 key=f"ent_jump_edge_sel_{node['id']}",
             )
-            if je2.button("🔬 Mở cạnh này ở Khu vực A", width='stretch', key=f"btn_ent_jump_edge_{node['id']}"):
+            if je2.button("🔬 Mở cạnh này ở Bước 3", width='stretch', key=f"btn_ent_jump_edge_{node['id']}"):
                 filter_edges_by_entity(project, str(node["id"]))
                 set_focused_edge(project, jump_eid)
                 st.rerun()

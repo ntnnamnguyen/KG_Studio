@@ -90,7 +90,7 @@ def _default_curation_section_state(project_id: str, section: str) -> dict[str, 
             "preview_request_id": "",
             "last_result": None,
         }
-    raise ValueError(f"Phân khu Trang 5 không hợp lệ: {section}")
+    raise ValueError(f"Phân khu Hub Kiểm duyệt không hợp lệ: {section}")
 
 
 def _sync_hub_navigation_for_section(store: dict[str, Any], section: str) -> None:
@@ -142,7 +142,7 @@ def get_curation_section_state(
 ) -> dict[str, Any]:
     """Lấy (hoặc khởi tạo nếu thiếu) dictionary trạng thái cho phân khu `edges` / `entities` / `merge`."""
     if section not in ("edges", "entities", "merge"):
-        raise ValueError(f"Phân khu Trang 5 không hợp lệ: {section}")
+        raise ValueError(f"Phân khu Hub Kiểm duyệt không hợp lệ: {section}")
     store = _store(state_store)
     reset_curation_state_if_project_changed(project, store)
     proj_id = str(project.get("project_id") or project.get("name") or "default")
@@ -167,7 +167,7 @@ def set_active_curation_section(
 ) -> None:
     """Chuyển phân khu đang hoạt động trong Trang Rà soát và đồng bộ điều hướng Hub."""
     if section not in ("edges", "entities", "merge"):
-        raise ValueError(f"Phân khu Trang 5 không hợp lệ: {section}")
+        raise ValueError(f"Phân khu Hub Kiểm duyệt không hợp lệ: {section}")
     store = _store(state_store)
     reset_curation_state_if_project_changed(project, store)
     _sync_hub_navigation_for_section(store, section)
@@ -426,7 +426,7 @@ def filter_edges_by_entity(
     node_id: str,
     state_store: dict[str, Any] | None = None,
 ) -> None:
-    """Chuyển sang Khu vực A (Quan hệ & bằng chứng) và lọc ngay theo thực thể được chọn từ Khu vực B."""
+    """Chuyển sang Bước 3 (Quan hệ & bằng chứng) và lọc ngay theo thực thể được chọn từ Bước 2."""
     set_active_curation_section(project, "edges", state_store)
     e_state = get_curation_section_state(project, "edges", state_store)
     e_state["filters"]["entity_id"] = str(node_id or "all")
@@ -477,7 +477,7 @@ def stage_entities_for_merge(
     switch_to_merge: bool = True,
     state_store: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Đưa 1 hoặc nhiều thực thể vào bàn gộp ở Khu vực C và khởi tạo gợi ý mặc định an toàn."""
+    """Đưa 1 hoặc nhiều thực thể vào Bàn gộp Thực thể (Bước 2) và khởi tạo gợi ý mặc định an toàn."""
     m_state = get_curation_section_state(project, "merge", state_store)
     nodes_by_id = {str(n.get("id", "")): n for n in project.get("nodes", []) if n.get("id")}
     current = [nid for nid in m_state.get("member_ids", []) if nid in nodes_by_id]
